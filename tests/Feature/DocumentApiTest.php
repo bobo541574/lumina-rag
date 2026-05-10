@@ -16,7 +16,7 @@ test('test_document_upload_rejects_invalid_file_type', function (): void {
 });
 
 test('test_document_upload_rejects_oversized_file', function (): void {
-    $file = UploadedFile::fake()->create('test.pdf', 10241);
+    $file = UploadedFile::fake()->create('test.pdf', 51201);
 
     $response = $this->postJson('/api/documents', [
         'file' => $file,

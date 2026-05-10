@@ -10,9 +10,9 @@ class TextChunkingService implements TextChunkingServiceInterface
 {
     private array $separators;
 
-    public function __construct()
+    public function __construct(?array $separators = null)
     {
-        $this->separators = ["\n\n", "\n", '.', ',', ' ', ''];
+        $this->separators = $separators ?? ["\n\n", "\n", '.', ',', ' ', ''];
     }
 
     public function chunk(string $text, int $chunkSize = 1000, int $overlap = 200): array
@@ -21,19 +21,20 @@ class TextChunkingService implements TextChunkingServiceInterface
             return [];
         }
 
-        if (mb_strlen($text) <= $chunkSize) {
+        $length = mb_strlen($text);
+
+        if ($length <= $chunkSize) {
             return [
                 [
                     'content' => $text,
                     'char_start' => 0,
-                    'char_end' => mb_strlen($text),
+                    'char_end' => $length,
                 ],
             ];
         }
 
         $chunks = [];
         $start = 0;
-        $length = mb_strlen($text);
 
         while ($start < $length) {
             $end = $start + $chunkSize;
@@ -47,25 +48,28 @@ class TextChunkingService implements TextChunkingServiceInterface
                 break;
             }
 
-            $splitAt = $this->findSplitPoint($text, $start, $end);
+            $splitAt = $this->findSplitPoint($text, $start, $end, $overlap);
+
+            $chunkEnd = min($splitAt, $end);
 
             $chunks[] = [
-                'content' => mb_substr($text, $start, $splitAt - $start),
+                'content' => mb_substr($text, $start, $chunkEnd - $start),
                 'char_start' => $start,
-                'char_end' => $splitAt,
+                'char_end' => $chunkEnd,
             ];
 
-            $start = $splitAt - $overlap;
+            $nextStart = $chunkEnd - $overlap;
+            $start = max($nextStart, $start + 1);
 
-            if ($start < 0) {
-                $start = 0;
+            if ($start >= $length) {
+                break;
             }
         }
 
         return $chunks;
     }
 
-    private function findSplitPoint(string $text, int $start, int $end): int
+    private function findSplitPoint(string $text, int $start, int $end, int $overlap): int
     {
         $segment = mb_substr($text, $start, $end - $start);
 
@@ -76,7 +80,7 @@ class TextChunkingService implements TextChunkingServiceInterface
 
             $pos = mb_strrpos($segment, $separator);
 
-            if ($pos !== false) {
+            if ($pos !== false && $pos > $overlap) {
                 return $start + $pos + mb_strlen($separator);
             }
         }
