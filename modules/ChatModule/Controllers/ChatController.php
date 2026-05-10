@@ -1,0 +1,134 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Modules\ChatModule\Controllers;
+
+use Illuminate\Http\JsonResponse;
+use Illuminate\Routing\Controller;
+use Modules\ChatModule\Contracts\RAGPipelineServiceInterface;
+use Modules\ChatModule\Requests\ChatRequest;
+use Symfony\Component\HttpFoundation\StreamedResponse;
+
+class ChatController extends Controller
+{
+    private RAGPipelineServiceInterface $pipeline;
+
+    public function __construct(RAGPipelineServiceInterface $pipeline)
+    {
+        $this->pipeline = $pipeline;
+    }
+
+    public function ask(ChatRequest $request): JsonResponse|StreamedResponse
+    {
+        $stream = $request->boolean('stream', true);
+
+        if ($stream) {
+            return $this->streamResponse($request);
+        }
+
+        try {
+            $result = $this->pipeline->ask(
+                $request->input('question'),
+                [
+                    'session_id' => $request->input('session_id'),
+                    'document_filter' => $request->input('document_filter', []),
+                ],
+            );
+
+            return response()->json([
+                'success' => true,
+                'data' => $result,
+            ]);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 400);
+        } catch (\RuntimeException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 422);
+        }
+    }
+
+    public function sessions(): JsonResponse
+    {
+        $sessions = $this->pipeline->listSessions();
+
+        return response()->json([
+            'success' => true,
+            'data' => $sessions,
+        ]);
+    }
+
+    public function showSession(string $id): JsonResponse
+    {
+        try {
+            $session = $this->pipeline->getSession($id);
+
+            return response()->json([
+                'success' => true,
+                'data' => $session,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Session not found.',
+            ], 404);
+        }
+    }
+
+    public function destroySession(string $id): JsonResponse
+    {
+        try {
+            $this->pipeline->deleteSession($id);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Session deleted successfully.',
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Session not found.',
+            ], 404);
+        }
+    }
+
+    private function streamResponse(ChatRequest $request): StreamedResponse
+    {
+        return response()->stream(function () use ($request): void {
+            header('Content-Type: text/event-stream');
+            header('Cache-Control: no-cache');
+            header('Connection: keep-alive');
+            header('X-Accel-Buffering: no');
+
+            try {
+                $generator = $this->pipeline->askStream(
+                    $request->input('question'),
+                    [
+                        'session_id' => $request->input('session_id'),
+                        'document_filter' => $request->input('document_filter', []),
+                    ],
+                );
+
+                foreach ($generator as $event) {
+                    echo "data: {$event}\n\n";
+                    ob_flush();
+                    flush();
+                }
+            } catch (\Throwable $e) {
+                echo 'data: '.json_encode(['type' => 'error', 'message' => $e->getMessage()])."\n\n";
+                ob_flush();
+                flush();
+            }
+        }, 200, [
+            'Content-Type' => 'text/event-stream',
+            'Cache-Control' => 'no-cache',
+            'Connection' => 'keep-alive',
+            'X-Accel-Buffering' => 'no',
+        ]);
+    }
+}
