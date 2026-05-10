@@ -1,0 +1,41 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Modules\DocumentModule\Requests;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class UploadDocumentRequest extends FormRequest
+{
+    public function authorize(): bool
+    {
+        return true;
+    }
+
+    public function rules(): array
+    {
+        return [
+            'file' => [
+                'required',
+                'file',
+                'mimes:pdf,docx,txt,csv,md',
+                'max:51200',
+            ],
+            'title' => [
+                'nullable',
+                'string',
+                'max:255',
+            ],
+        ];
+    }
+
+    public function messages(): array
+    {
+        return [
+            'file.required' => 'A document file is required.',
+            'file.mimes' => 'File must be one of: PDF, DOCX, TXT, CSV, MD.',
+            'file.max' => 'File size must not exceed 50MB.',
+        ];
+    }
+}
