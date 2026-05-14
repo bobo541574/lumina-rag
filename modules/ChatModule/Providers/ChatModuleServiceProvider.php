@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Modules\ChatModule\Providers;
 
 use Illuminate\Support\ServiceProvider;
+use Modules\ChatModule\Commands\CleanupExpiredSessions;
 use Modules\ChatModule\Contracts\RAGPipelineServiceInterface;
 use Modules\ChatModule\Services\RAGPipelineService;
 use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
@@ -28,7 +29,17 @@ class ChatModuleServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        if (! config('modules.modules.chat.enabled', true)) {
+            return;
+        }
+
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
         $this->loadRoutesFrom(__DIR__.'/../Routes/chat.php');
+
+        if ($this->app->runningInConsole()) {
+            $this->commands([
+                CleanupExpiredSessions::class,
+            ]);
+        }
     }
 }

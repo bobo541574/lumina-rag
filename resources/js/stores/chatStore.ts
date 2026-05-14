@@ -10,6 +10,7 @@ export const useChatStore = defineStore('chat', () => {
   const isLoading = ref(false)
   const isStreaming = ref(false)
   const error = ref<string | null>(null)
+  const streamAbortController = ref<AbortController | null>(null)
 
   const currentSessionId = computed(() => currentSession.value?.id ?? null)
 
@@ -42,17 +43,96 @@ export const useChatStore = defineStore('chat', () => {
       created_at: new Date().toISOString(),
     }
     messages.value.push(userMessage)
+
+    const assistantId = `stream-${Date.now()}`
+    messages.value.push({
+      id: assistantId,
+      role: 'assistant',
+      content: '',
+      sources: [],
+      created_at: new Date().toISOString(),
+    })
+
+    isStreaming.value = true
+    isLoading.value = true
+    error.value = null
+
+    let finalContent = ''
+
+    streamAbortController.value = chatService.askStreaming(
+      question,
+      currentSessionId.value ?? undefined,
+      {
+        onSources(sources) {
+          const msg = messages.value.find(m => m.id === assistantId)
+          if (msg) msg.sources = sources
+        },
+        onChunk(chunk) {
+          finalContent += chunk
+          const msg = messages.value.find(m => m.id === assistantId)
+          if (msg) msg.content = finalContent
+        },
+        onDone(sessionId) {
+          currentSession.value = {
+            id: sessionId,
+            title: '',
+            is_archived: false,
+            message_count: 0,
+            last_activity_at: new Date().toISOString(),
+            created_at: new Date().toISOString(),
+          }
+          const msg = messages.value.find(m => m.id === assistantId)
+          if (msg) msg.id = `${sessionId}-${Date.now()}`
+          isStreaming.value = false
+          isLoading.value = false
+          fetchSessions()
+        },
+        onError(message) {
+          error.value = message
+          const msg = messages.value.find(m => m.id === assistantId)
+          if (msg && !msg.content) msg.content = message
+          isStreaming.value = false
+          isLoading.value = false
+        },
+      },
+    )
+  }
+
+  function abortStream() {
+    if (streamAbortController.value) {
+      streamAbortController.value.abort()
+      streamAbortController.value = null
+    }
+    isStreaming.value = false
+    isLoading.value = false
+    messages.value = messages.value.filter(m => !m.id.startsWith('stream-'))
+  }
+
+  async function sendMessageNonStreaming(question: string) {
+    if (!question.trim()) return
+
+    const userMessage: ChatMessage = {
+      id: `temp-${Date.now()}`,
+      role: 'user',
+      content: question,
+      created_at: new Date().toISOString(),
+    }
+    messages.value.push(userMessage)
     isLoading.value = true
     error.value = null
 
     try {
       const response = await chatService.ask(question, currentSessionId.value ?? undefined)
-      currentSession.value = response.data.session
-        ? (response.data.session as ChatSession)
-        : { id: response.data.session_id, title: '', is_archived: false, message_count: 0, last_activity_at: '', created_at: '' }
+      currentSession.value = {
+        id: response.data.session_id,
+        title: '',
+        is_archived: false,
+        message_count: 0,
+        last_activity_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+      }
 
-      const assistantMessage = response.data.message as ChatMessage
-      messages.value.push(assistantMessage)
+      messages.value.push(response.data.message)
       await fetchSessions()
     } catch (e: any) {
       error.value = e.response?.data?.message ?? 'Failed to get answer'
@@ -75,6 +155,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function startNewChat() {
+    abortStream()
     currentSession.value = null
     messages.value = []
   }
@@ -94,8 +175,10 @@ export const useChatStore = defineStore('chat', () => {
     fetchSessions,
     fetchSession,
     sendMessage,
+    sendMessageNonStreaming,
     deleteSession,
     startNewChat,
+    abortStream,
     clearError,
   }
 })

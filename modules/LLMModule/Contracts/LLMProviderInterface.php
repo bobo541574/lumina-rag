@@ -8,9 +8,9 @@ use Generator;
 
 interface LLMProviderInterface
 {
-    public function complete(string $systemPrompt, string $userPrompt, array $options): LLMResponseInterface;
+    public function complete(string $systemPrompt, string $userPrompt, array $options = []): LLMResponseInterface;
 
-    public function completeStream(string $systemPrompt, string $userPrompt, array $options): Generator;
+    public function completeStream(string $systemPrompt, string $userPrompt, array $options = []): Generator;
 
     public function getModelName(): string;
 

@@ -25,6 +25,10 @@ class VectorStoreModuleServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        if (! config('modules.modules.vector_store.enabled', true)) {
+            return;
+        }
+
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
     }
 }

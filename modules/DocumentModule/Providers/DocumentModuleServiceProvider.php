@@ -36,6 +36,10 @@ class DocumentModuleServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        if (! config('modules.modules.document.enabled', true)) {
+            return;
+        }
+
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
         $this->loadRoutesFrom(__DIR__.'/../Routes/document.php');
 

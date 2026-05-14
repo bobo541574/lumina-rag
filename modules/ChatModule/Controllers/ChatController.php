@@ -28,11 +28,13 @@ class ChatController extends Controller
         }
 
         try {
+            $user = $request->input('authenticated_user');
             $result = $this->pipeline->ask(
                 $request->input('question'),
                 [
                     'session_id' => $request->input('session_id'),
                     'document_filter' => $request->input('document_filter', []),
+                    'user_id' => $user?->id,
                 ],
             );
 
@@ -55,7 +57,8 @@ class ChatController extends Controller
 
     public function sessions(): JsonResponse
     {
-        $sessions = $this->pipeline->listSessions();
+        $user = request()->input('authenticated_user');
+        $sessions = $this->pipeline->listSessions($user?->id);
 
         return response()->json([
             'success' => true,
@@ -66,7 +69,8 @@ class ChatController extends Controller
     public function showSession(string $id): JsonResponse
     {
         try {
-            $session = $this->pipeline->getSession($id);
+            $user = request()->input('authenticated_user');
+            $session = $this->pipeline->getSession($id, $user?->id);
 
             return response()->json([
                 'success' => true,
@@ -83,7 +87,8 @@ class ChatController extends Controller
     public function destroySession(string $id): JsonResponse
     {
         try {
-            $this->pipeline->deleteSession($id);
+            $user = request()->input('authenticated_user');
+            $this->pipeline->deleteSession($id, $user?->id);
 
             return response()->json([
                 'success' => true,
@@ -99,7 +104,9 @@ class ChatController extends Controller
 
     private function streamResponse(ChatRequest $request): StreamedResponse
     {
-        return response()->stream(function () use ($request): void {
+        $user = $request->input('authenticated_user');
+
+        return response()->stream(function () use ($request, $user): void {
             header('Content-Type: text/event-stream');
             header('Cache-Control: no-cache');
             header('Connection: keep-alive');
@@ -111,6 +118,7 @@ class ChatController extends Controller
                     [
                         'session_id' => $request->input('session_id'),
                         'document_filter' => $request->input('document_filter', []),
+                        'user_id' => $user?->id,
                     ],
                 );
 

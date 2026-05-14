@@ -15,7 +15,7 @@ class VectorStoreService implements VectorStoreInterface
         $this->driver = $driver;
     }
 
-    public function upsert(array $vectors, array $metadata, string $chunkId, string $namespace): array
+    public function upsert(array $vectors, array $metadata, string|array $chunkId, string $namespace): array
     {
         return $this->driver->upsert($vectors, $metadata, $chunkId, $namespace);
     }

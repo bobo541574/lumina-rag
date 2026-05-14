@@ -5,7 +5,7 @@ declare(strict_types=1);
 use Illuminate\Support\Facades\Route;
 use Modules\DocumentModule\Controllers\DocumentController;
 
-Route::prefix('api/documents')->group(function (): void {
+Route::prefix('api/documents')->middleware('auth.token')->group(function (): void {
     Route::get('/', [DocumentController::class, 'index']);
     Route::post('/', [DocumentController::class, 'upload']);
     Route::get('{id}', [DocumentController::class, 'show'])->whereUlid('id');

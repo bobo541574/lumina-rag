@@ -8,7 +8,7 @@ use Generator;
 
 interface LLMServiceInterface
 {
-    public function complete(string $systemPrompt, string $userPrompt, array $context, array $options): LLMResponseInterface;
+    public function complete(string $systemPrompt, string $userPrompt, array $context, array $options = []): LLMResponseInterface;
 
-    public function completeStream(string $systemPrompt, string $userPrompt, array $context, array $options): Generator;
+    public function completeStream(string $systemPrompt, string $userPrompt, array $context, array $options = []): Generator;
 }

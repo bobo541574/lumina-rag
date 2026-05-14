@@ -31,6 +31,8 @@ class AuthenticateWithToken
             ], 401);
         }
 
+        $request->merge(['authenticated_user' => $user]);
+
         return $next($request);
     }
 }

@@ -17,6 +17,10 @@ class UserModuleServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        if (! config('modules.modules.user.enabled', true)) {
+            return;
+        }
+
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
         $this->loadRoutesFrom(__DIR__.'/../Routes/auth.php');
     }

@@ -64,7 +64,7 @@ class DocumentService
         $this->batchSize = $batchSize;
     }
 
-    public function upload(UploadedFile $file, ?string $title = null): Document
+    public function upload(UploadedFile $file, ?string $title = null, ?string $userId = null): Document
     {
         $this->validateFile($file);
         $hash = hash_file('sha256', $file->getPathname());
@@ -87,6 +87,7 @@ class DocumentService
             'mime_type' => $file->getMimeType(),
             'file_hash' => $hash,
             'status' => 'pending',
+            'user_id' => $userId,
         ]);
 
         ProcessDocumentJob::dispatch($document->id);
@@ -94,18 +95,27 @@ class DocumentService
         return $document->fresh();
     }
 
-    public function deleteDocument(string $id): void
+    public function deleteDocument(string $id, ?string $userId = null): void
     {
-        $document = Document::findOrFail($id);
+        $query = Document::where('id', $id);
+
+        if ($userId !== null) {
+            $query->where('user_id', $userId);
+        }
+
+        $document = $query->firstOrFail();
         $this->vectorStore->deleteByDocumentId($document->id);
         $document->chunks()->delete();
         Storage::delete($document->file_path);
         $document->delete();
     }
 
-    public function listDocuments(array $filters = []): array
+    public function listDocuments(array $filters = [], ?string $userId = null): array
     {
         $query = Document::query();
+        if ($userId !== null) {
+            $query->where('user_id', $userId);
+        }
         if (isset($filters['status'])) {
             $query->where('status', $filters['status']);
         }
@@ -118,17 +128,80 @@ class DocumentService
 
     private function validateFile(UploadedFile $file): void
     {
+        if (! $file->isValid() || $file->getError() !== UPLOAD_ERR_OK) {
+            throw new \RuntimeException('File upload failed or file is corrupted');
+        }
+
+        if ($file->getSize() === 0) {
+            throw new \InvalidArgumentException('Uploaded file is empty');
+        }
+
+        if ($file->getSize() > $this->maxFileSize) {
+            $maxMb = $this->maxFileSize / 1024 / 1024;
+            throw new \InvalidArgumentException("File size exceeds the {$maxMb}MB limit");
+        }
+
         $mime = $file->getMimeType();
         if (! in_array($mime, $this->allowedMimeTypes, true)) {
             throw new \InvalidArgumentException(
                 "File type {$mime} is not supported. Allowed: PDF, DOCX, TXT, CSV, Markdown"
             );
         }
-        if ($file->getSize() > $this->maxFileSize) {
-            throw new \InvalidArgumentException('File size exceeds the 50MB limit');
+
+        $extension = strtolower($file->getClientOriginalExtension());
+        $expectedMime = $this->extensionToMime($extension);
+        if ($expectedMime !== null && $expectedMime !== $mime) {
+            throw new \InvalidArgumentException(
+                "File extension .{$extension} does not match its MIME type ({$mime})"
+            );
         }
-        if (! $file->isValid() || $file->getError() !== UPLOAD_ERR_OK) {
-            throw new \RuntimeException('File upload failed or file is corrupted');
+
+        if (in_array($extension, ['pdf', 'docx'], true)) {
+            $this->validateMagicBytes($file, $extension);
+        }
+
+        $this->validateFilename($file);
+    }
+
+    private function extensionToMime(string $extension): ?string
+    {
+        return match ($extension) {
+            'pdf' => 'application/pdf',
+            'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'txt' => 'text/plain',
+            'csv' => 'text/csv',
+            'md' => 'text/markdown',
+            default => null,
+        };
+    }
+
+    private function validateMagicBytes(UploadedFile $file, string $extension): void
+    {
+        $handle = fopen($file->getPathname(), 'rb');
+        if ($handle === false) {
+            return;
+        }
+        $bytes = fread($handle, 8);
+        fclose($handle);
+
+        $expected = match ($extension) {
+            'pdf' => str_starts_with((string) $bytes, '%PDF-'),
+            'docx' => str_starts_with((string) $bytes, "PK\x03\x04"),
+            default => true,
+        };
+
+        if (! $expected) {
+            throw new \InvalidArgumentException(
+                "File content does not match its .{$extension} extension"
+            );
+        }
+    }
+
+    private function validateFilename(UploadedFile $file): void
+    {
+        $name = $file->getClientOriginalName();
+        if (str_contains($name, '..') || str_contains($name, '/') || str_contains($name, '\\')) {
+            throw new \InvalidArgumentException('Filename contains invalid characters');
         }
     }
 }

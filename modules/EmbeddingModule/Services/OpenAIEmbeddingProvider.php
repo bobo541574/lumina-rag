@@ -124,43 +124,57 @@ class OpenAIEmbeddingProvider implements EmbeddingProviderInterface
      */
     private function sendRequest(array $batch): array
     {
+        $maxAttempts = 3;
+        $backoff = [1_000_000, 5_000_000, 25_000_000];
+
         $url = 'https://api.openai.com/v1/embeddings';
         $payload = [
             'model' => $this->model,
             'input' => $batch,
         ];
 
-        $ch = curl_init($url);
-        curl_setopt_array($ch, [
-            CURLOPT_POST => true,
-            CURLOPT_HTTPHEADER => [
-                'Authorization: Bearer '.$this->apiKey,
-                'Content-Type: application/json',
-            ],
-            CURLOPT_POSTFIELDS => json_encode($payload),
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => $this->timeout,
-        ]);
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_POST => true,
+                CURLOPT_HTTPHEADER => [
+                    'Authorization: Bearer '.$this->apiKey,
+                    'Content-Type: application/json',
+                ],
+                CURLOPT_POSTFIELDS => json_encode($payload),
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => $this->timeout,
+            ]);
 
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $error = curl_error($ch);
-        curl_close($ch);
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $error = curl_error($ch);
+            curl_close($ch);
+
+            if ($error === '' && $httpCode === 200) {
+                $data = json_decode($response, true, 512, JSON_THROW_ON_ERROR);
+                if (! isset($data['data']) || ! is_array($data['data'])) {
+                    throw new \RuntimeException('Embedding API returned unexpected response structure');
+                }
+
+                usort($data['data'], fn (array $a, array $b): int => $a['index'] - $b['index']);
+
+                return array_map(fn (array $item): array => $item['embedding'], $data['data']);
+            }
+
+            if ($httpCode >= 400 && $httpCode < 500) {
+                throw new \RuntimeException("Embedding API returned HTTP {$httpCode}: {$response}");
+            }
+
+            if ($attempt < $maxAttempts) {
+                usleep($backoff[$attempt - 1]);
+            }
+        }
 
         if ($error !== '') {
-            throw new \RuntimeException("Embedding API request failed: {$error}");
-        }
-        if ($httpCode !== 200) {
-            throw new \RuntimeException("Embedding API returned HTTP {$httpCode}: {$response}");
+            throw new \RuntimeException("Embedding API request failed after {$maxAttempts} attempts: {$error}");
         }
 
-        $data = json_decode($response, true, 512, JSON_THROW_ON_ERROR);
-        if (! isset($data['data']) || ! is_array($data['data'])) {
-            throw new \RuntimeException('Embedding API returned unexpected response structure');
-        }
-
-        usort($data['data'], fn (array $a, array $b): int => $a['index'] - $b['index']);
-
-        return array_map(fn (array $item): array => $item['embedding'], $data['data']);
+        throw new \RuntimeException("Embedding API returned HTTP {$httpCode} after {$maxAttempts} attempts: {$response}");
     }
 }

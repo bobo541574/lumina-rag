@@ -50,11 +50,13 @@ class LLMService implements LLMServiceInterface
         $totalTokens = 0;
 
         foreach ($chunks as $chunk) {
-            $title = $chunk->document_title ?? ($chunk['document_title'] ?? 'Unknown');
-            $content = $chunk->content ?? ($chunk['content'] ?? '');
-            $page = $chunk->page_number ?? ($chunk['page_number'] ?? null);
+            $title = $chunk->document_title ?? 'Unknown';
+            $content = $chunk->content ?? '';
+            $page = $chunk->page_number ?? null;
+            $score = $chunk->similarity_score ?? null;
 
-            $sourceLabel = "[Source: {$title}]";
+            $scoreLabel = $score !== null ? ' ('.round((float) $score * 100).'%)' : '';
+            $sourceLabel = "[Source: {$title}{$scoreLabel}]";
             $text = $page !== null
                 ? "{$sourceLabel}, Page {$page}\n{$content}"
                 : "{$sourceLabel}\n{$content}";

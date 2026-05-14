@@ -6,5 +6,5 @@ namespace Modules\DocumentModule\Contracts;
 
 interface TextChunkingServiceInterface
 {
-    public function chunk(string $text, int $chunkSize, int $overlap): array;
+    public function chunk(string $text, int $chunkSize = 1000, int $overlap = 200): array;
 }

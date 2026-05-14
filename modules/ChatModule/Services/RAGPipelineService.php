@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Modules\ChatModule\Services;
 
+use Carbon\Carbon;
 use Generator;
+use Illuminate\Support\Facades\Log;
 use Modules\ChatModule\Contracts\RAGPipelineServiceInterface;
 use Modules\ChatModule\Models\ChatMessage;
 use Modules\ChatModule\Models\ChatSession;
@@ -28,6 +30,8 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
     private int $maxMessagesPerSession;
 
+    private ?string $userId;
+
     public function __construct(
         EmbeddingServiceInterface $embedder,
         VectorStoreInterface $vectorStore,
@@ -36,6 +40,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         float $similarityThreshold = 0.65,
         int $maxQuestionLength = 1000,
         int $maxMessagesPerSession = 100,
+        ?string $userId = null,
     ) {
         $this->embedder = $embedder;
         $this->vectorStore = $vectorStore;
@@ -44,33 +49,69 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $this->similarityThreshold = $similarityThreshold;
         $this->maxQuestionLength = $maxQuestionLength;
         $this->maxMessagesPerSession = $maxMessagesPerSession;
+        $this->userId = $userId;
     }
 
     public function ask(string $question, array $options = []): array
     {
+        set_time_limit(120);
+        $start = microtime(true);
         $question = $this->normalizeQuestion($question);
-        $session = $this->resolveSession($options['session_id'] ?? null);
+        $session = $this->resolveSession($options['session_id'] ?? null, $options['user_id'] ?? $this->userId);
         $this->checkMessageLimit($session);
         $this->saveUserMessage($session, $question);
+
+        $t0 = microtime(true);
         $questionVector = $this->embedder->embed($question);
+        $embedTime = (microtime(true) - $t0) * 1000;
+
+        $t0 = microtime(true);
         $filters = $options['document_filter'] ?? [];
         $filters['similarity_threshold'] = $this->similarityThreshold;
         $chunks = $this->vectorStore->search($questionVector, $this->topK, $filters);
+        $searchTime = (microtime(true) - $t0) * 1000;
 
         if ($chunks === []) {
             $answer = $this->buildRefusalResponse($session);
+            $totalTime = (microtime(true) - $start) * 1000;
+            Log::channel(config('rag.logging.channel', 'rag'))->info('RAG pipeline: refusal (no chunks)', [
+                'session_id' => $session->id,
+                'question_length' => mb_strlen($question),
+                'embed_time_ms' => round($embedTime, 1),
+                'search_time_ms' => round($searchTime, 1),
+                'total_time_ms' => round($totalTime, 1),
+            ]);
 
             return $answer;
         }
 
         $confidence = $this->assessConfidence($chunks);
-        $systemPrompt = $this->buildSystemPrompt($confidence);
+        $hasOldDocs = $this->hasOldDocuments($chunks);
+        $systemPrompt = $this->buildSystemPrompt($confidence, $hasOldDocs);
         $context = array_slice($chunks, 0, $this->topK);
+
+        $t0 = microtime(true);
         $response = $this->llm->complete($systemPrompt, $question, $context, [
             'temperature' => 0.3,
         ]);
+        $llmTime = (microtime(true) - $t0) * 1000;
+
         $sources = $this->buildSources($chunks);
         $message = $this->saveAssistantMessage($session, $response->getContent(), $sources);
+
+        $totalTime = (microtime(true) - $start) * 1000;
+        Log::channel(config('rag.logging.channel', 'rag'))->info('RAG pipeline: complete', [
+            'session_id' => $session->id,
+            'question_length' => mb_strlen($question),
+            'chunks_found' => count($chunks),
+            'embed_time_ms' => round($embedTime, 1),
+            'search_time_ms' => round($searchTime, 1),
+            'llm_time_ms' => round($llmTime, 1),
+            'total_time_ms' => round($totalTime, 1),
+            'prompt_tokens' => $response->getPromptTokens(),
+            'completion_tokens' => $response->getCompletionTokens(),
+            'total_tokens' => $response->getTotalTokens(),
+        ]);
 
         return [
             'session_id' => $session->id,
@@ -87,55 +128,103 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
     public function askStream(string $question, array $options = []): Generator
     {
+        set_time_limit(120);
+        $start = microtime(true);
         $question = $this->normalizeQuestion($question);
-        $session = $this->resolveSession($options['session_id'] ?? null);
+        $session = $this->resolveSession($options['session_id'] ?? null, $options['user_id'] ?? $this->userId);
         $this->saveUserMessage($session, $question);
+
+        $t0 = microtime(true);
         $questionVector = $this->embedder->embed($question);
+        $embedTime = (microtime(true) - $t0) * 1000;
+
+        $t0 = microtime(true);
         $filters = $options['document_filter'] ?? [];
         $filters['similarity_threshold'] = $this->similarityThreshold;
         $chunks = $this->vectorStore->search($questionVector, $this->topK, $filters);
+        $searchTime = (microtime(true) - $t0) * 1000;
 
         if ($chunks === []) {
             $refusal = $this->buildRefusalResponse($session);
+            $totalTime = (microtime(true) - $start) * 1000;
+            Log::channel(config('rag.logging.channel', 'rag'))->info('RAG pipeline (stream): refusal (no chunks)', [
+                'session_id' => $session->id,
+                'question_length' => mb_strlen($question),
+                'embed_time_ms' => round($embedTime, 1),
+                'search_time_ms' => round($searchTime, 1),
+                'total_time_ms' => round($totalTime, 1),
+            ]);
             yield json_encode(['type' => 'answer', 'content' => $refusal['message']['content']]);
             yield json_encode(['type' => 'sources', 'sources' => []]);
 
             return;
         }
 
-        $systemPrompt = $this->buildSystemPrompt($this->assessConfidence($chunks));
+        $confidence = $this->assessConfidence($chunks);
+        $hasOldDocs = $this->hasOldDocuments($chunks);
+        $systemPrompt = $this->buildSystemPrompt($confidence, $hasOldDocs);
         $sources = $this->buildSources($chunks);
         yield json_encode(['type' => 'sources', 'sources' => $sources]);
 
         $fullContent = '';
+        $t0 = microtime(true);
         $stream = $this->llm->completeStream($systemPrompt, $question, $chunks, ['temperature' => 0.3]);
 
         foreach ($stream as $chunk) {
             $fullContent .= $chunk;
             yield json_encode(['type' => 'chunk', 'content' => $chunk]);
         }
+        $llmTime = (microtime(true) - $t0) * 1000;
 
         $this->saveAssistantMessage($session, $fullContent, $sources);
+
+        $totalTime = (microtime(true) - $start) * 1000;
+        Log::channel(config('rag.logging.channel', 'rag'))->info('RAG pipeline (stream): complete', [
+            'session_id' => $session->id,
+            'question_length' => mb_strlen($question),
+            'chunks_found' => count($chunks),
+            'embed_time_ms' => round($embedTime, 1),
+            'search_time_ms' => round($searchTime, 1),
+            'llm_time_ms' => round($llmTime, 1),
+            'total_time_ms' => round($totalTime, 1),
+            'response_length' => mb_strlen($fullContent),
+        ]);
         yield json_encode(['type' => 'done', 'session_id' => $session->id]);
     }
 
-    public function listSessions(): array
+    public function listSessions(?string $userId = null): array
     {
-        return ChatSession::orderByDesc('last_activity_at')
-            ->paginate(20)
-            ->toArray();
+        $query = ChatSession::orderByDesc('last_activity_at');
+
+        if ($userId !== null) {
+            $query->where('user_id', $userId);
+        }
+
+        return $query->paginate(20)->toArray();
     }
 
-    public function getSession(string $id): array
+    public function getSession(string $id, ?string $userId = null): array
     {
-        $session = ChatSession::with('messages')->findOrFail($id);
+        $query = ChatSession::with('messages')->where('id', $id);
+
+        if ($userId !== null) {
+            $query->where('user_id', $userId);
+        }
+
+        $session = $query->firstOrFail();
 
         return $session->toArray();
     }
 
-    public function deleteSession(string $id): void
+    public function deleteSession(string $id, ?string $userId = null): void
     {
-        $session = ChatSession::findOrFail($id);
+        $query = ChatSession::where('id', $id);
+
+        if ($userId !== null) {
+            $query->where('user_id', $userId);
+        }
+
+        $session = $query->firstOrFail();
         $session->messages()->delete();
         $session->delete();
     }
@@ -153,15 +242,24 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         return $question;
     }
 
-    private function resolveSession(?string $sessionId): ChatSession
+    private function resolveSession(?string $sessionId, ?string $userId = null): ChatSession
     {
         if ($sessionId !== null) {
-            $session = ChatSession::find($sessionId);
+            $query = ChatSession::where('id', $sessionId);
+
+            if ($userId !== null) {
+                $query->where('user_id', $userId);
+            }
+
+            $session = $query->first();
             if ($session === null) {
                 throw new \RuntimeException('Chat session not found.');
             }
             if ($session->trashed()) {
                 throw new \RuntimeException('Chat session has been deleted.');
+            }
+            if ($session->last_activity_at < now()->subHours(24)) {
+                throw new \RuntimeException('Chat session has expired. Please start a new chat.');
             }
             $session->update(['last_activity_at' => now()]);
 
@@ -171,6 +269,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         return ChatSession::create([
             'title' => 'New Chat',
             'last_activity_at' => now(),
+            'user_id' => $userId,
         ]);
     }
 
@@ -184,11 +283,6 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
     private function saveUserMessage(ChatSession $session, string $question): ChatMessage
     {
-        if ($session->title === 'New Chat') {
-            $session->update([
-                'title' => mb_substr($question, 0, 50),
-            ]);
-        }
         $session->update(['last_activity_at' => now()]);
         $session->increment('message_count');
 
@@ -201,6 +295,11 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
     private function saveAssistantMessage(ChatSession $session, string $content, array $sources): ChatMessage
     {
+        if ($session->title === 'New Chat') {
+            $session->update([
+                'title' => mb_substr($content, 0, 50),
+            ]);
+        }
         $session->update(['last_activity_at' => now()]);
         $session->increment('message_count');
 
@@ -214,7 +313,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
     private function buildRefusalResponse(ChatSession $session): array
     {
-        $content = 'I cannot answer this question based on the available documents.';
+        $content = 'I cannot answer this question based on the available documents. Try asking about the content of your uploaded documents, or upload documents containing relevant information.';
         $message = $this->saveAssistantMessage($session, $content, []);
 
         return [
@@ -240,21 +339,38 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         };
     }
 
-    private function buildSystemPrompt(string $confidence): string
+    private function buildSystemPrompt(string $confidence, bool $hasOldDocuments = false): string
     {
-        $prompt = 'You are a helpful AI assistant. Answer the user\'s question based ONLY on the provided context.
+        $prompt = 'You are a precise document-answering assistant. Follow these rules strictly:
 
-Rules:
-1. If the context contains the answer, provide it clearly and concisely.
-2. Do not use any knowledge outside the provided context.
-3. Cite sources when possible by referencing the document title.
-4. Answer in the same language as the question.';
+1. Answer ONLY using the provided context. Do NOT use prior knowledge.
+2. If the context does not fully answer the question, state what you know and what information is missing.
+3. NEVER make up or hallucinate information. If uncertain, say so.
+4. Cite sources by document title for every factual claim.
+5. Respond in the SAME LANGUAGE as the user\'s question.';
 
         if ($confidence === 'low') {
-            $prompt .= "\n5. Note: The available information may be limited. If you are uncertain, acknowledge this.";
+            $prompt .= "\n\n6. Note: The available information may be limited. Acknowledge uncertainty clearly and suggest what additional information would help.";
+        }
+
+        if ($hasOldDocuments) {
+            $prompt .= "\n\n7. Important: Some source documents are over a year old. Note this when the information may be time-sensitive.";
         }
 
         return $prompt;
+    }
+
+    private function hasOldDocuments(array $chunks): bool
+    {
+        $oneYearAgo = now()->subYear();
+
+        foreach ($chunks as $chunk) {
+            if (isset($chunk->document_created_at) && Carbon::parse($chunk->document_created_at)->lt($oneYearAgo)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function buildSources(array $chunks): array

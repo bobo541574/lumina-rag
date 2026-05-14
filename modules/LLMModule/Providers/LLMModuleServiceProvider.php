@@ -40,6 +40,8 @@ class LLMModuleServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
-        //
+        if (! config('modules.modules.llm.enabled', true)) {
+            return;
+        }
     }
 }

@@ -127,6 +127,14 @@ return [
             'path' => storage_path('logs/laravel.log'),
         ],
 
+        'rag' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/rag.log'),
+            'level' => env('RAG_LOG_LEVEL', 'info'),
+            'days' => env('RAG_LOG_DAYS', 30),
+            'replace_placeholders' => true,
+        ],
+
     ],
 
 ];

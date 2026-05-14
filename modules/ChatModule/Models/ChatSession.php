@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\ChatModule\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -36,5 +37,23 @@ class ChatSession extends Model
     public function messages(): HasMany
     {
         return $this->hasMany(ChatMessage::class, 'session_id');
+    }
+
+    public function scopeActive(Builder $query): void
+    {
+        $query->whereNull('deleted_at')
+            ->where('last_activity_at', '>=', now()->subHours(24));
+    }
+
+    public function scopeExpired(Builder $query): void
+    {
+        $query->whereNull('deleted_at')
+            ->where('last_activity_at', '<', now()->subHours(24));
+    }
+
+    public function scopeStale(Builder $query): void
+    {
+        $query->whereNull('deleted_at')
+            ->where('last_activity_at', '<', now()->subDays(30));
     }
 }

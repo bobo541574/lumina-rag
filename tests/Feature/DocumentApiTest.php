@@ -2,30 +2,53 @@
 
 declare(strict_types=1);
 
+use App\Models\User;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Hash;
 use Modules\DocumentModule\Models\Document;
 
+function createAuthenticatedUser(): array
+{
+    $user = User::create([
+        'name' => 'Doc Test User',
+        'email' => 'doc-test@example.com',
+        'password' => Hash::make('password123'),
+        'api_token' => 'doc-test-token-'.bin2hex(random_bytes(8)),
+    ]);
+
+    return [
+        'user' => $user,
+        'headers' => ['Authorization' => 'Bearer '.$user->api_token],
+    ];
+}
+
 test('test_document_upload_rejects_invalid_file_type', function (): void {
+    $auth = createAuthenticatedUser();
     $file = UploadedFile::fake()->create('test.exe', 100);
 
-    $response = $this->postJson('/api/documents', [
-        'file' => $file,
-    ]);
+    $response = $this->withHeaders($auth['headers'])
+        ->postJson('/api/documents', [
+            'file' => $file,
+        ]);
 
     $response->assertStatus(422);
 });
 
 test('test_document_upload_rejects_oversized_file', function (): void {
+    $auth = createAuthenticatedUser();
     $file = UploadedFile::fake()->create('test.pdf', 51201);
 
-    $response = $this->postJson('/api/documents', [
-        'file' => $file,
-    ]);
+    $response = $this->withHeaders($auth['headers'])
+        ->postJson('/api/documents', [
+            'file' => $file,
+        ]);
 
     $response->assertStatus(422);
 });
 
 test('test_document_list_returns_paginated_results', function (): void {
+    $auth = createAuthenticatedUser();
+
     Document::create([
         'title' => 'Test Document',
         'original_filename' => 'test.pdf',
@@ -34,9 +57,11 @@ test('test_document_list_returns_paginated_results', function (): void {
         'mime_type' => 'application/pdf',
         'file_hash' => md5('test'),
         'status' => 'completed',
+        'user_id' => $auth['user']->id,
     ]);
 
-    $response = $this->getJson('/api/documents');
+    $response = $this->withHeaders($auth['headers'])
+        ->getJson('/api/documents');
 
     $response->assertStatus(200);
     $response->assertJsonStructure([
@@ -46,6 +71,8 @@ test('test_document_list_returns_paginated_results', function (): void {
 });
 
 test('test_document_show_returns_document', function (): void {
+    $auth = createAuthenticatedUser();
+
     $doc = Document::create([
         'title' => 'Test Document',
         'original_filename' => 'test.pdf',
@@ -54,15 +81,19 @@ test('test_document_show_returns_document', function (): void {
         'mime_type' => 'application/pdf',
         'file_hash' => md5('test-show'),
         'status' => 'completed',
+        'user_id' => $auth['user']->id,
     ]);
 
-    $response = $this->getJson("/api/documents/{$doc->id}");
+    $response = $this->withHeaders($auth['headers'])
+        ->getJson("/api/documents/{$doc->id}");
 
     $response->assertStatus(200);
     $response->assertJsonPath('success', true);
 });
 
 test('test_document_delete_removes_document', function (): void {
+    $auth = createAuthenticatedUser();
+
     $doc = Document::create([
         'title' => 'Test Document',
         'original_filename' => 'test.pdf',
@@ -71,9 +102,11 @@ test('test_document_delete_removes_document', function (): void {
         'mime_type' => 'application/pdf',
         'file_hash' => md5('test-delete'),
         'status' => 'completed',
+        'user_id' => $auth['user']->id,
     ]);
 
-    $response = $this->deleteJson("/api/documents/{$doc->id}");
+    $response = $this->withHeaders($auth['headers'])
+        ->deleteJson("/api/documents/{$doc->id}");
 
     $response->assertStatus(200);
     expect(Document::find($doc->id))->toBeNull();

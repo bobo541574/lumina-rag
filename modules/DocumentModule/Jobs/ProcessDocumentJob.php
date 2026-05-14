@@ -170,18 +170,26 @@ class ProcessDocumentJob implements ShouldQueue
             $vectors = $embedder->embedBatch($batch);
             $offset = $batchIndex * $batchSize;
 
+            $allVectors = [];
+            $allChunkIds = [];
+            $allMetadata = [];
+
             foreach ($vectors as $j => $vector) {
                 $chunk = $chunks[$offset + $j];
-                $vectorStore->upsert(
-                    vectors: [$vector],
-                    metadata: [
-                        'model_name' => $modelName,
-                        'content_hash' => md5($chunk->content),
-                    ],
-                    chunkId: $chunk->id,
-                    namespace: "document_{$document->id}",
-                );
+                $allVectors[] = $vector;
+                $allChunkIds[] = $chunk->id;
+                $allMetadata[] = [
+                    'model_name' => $modelName,
+                    'content_hash' => md5($chunk->content),
+                ];
             }
+
+            $vectorStore->upsert(
+                vectors: $allVectors,
+                metadata: $allMetadata,
+                chunkId: $allChunkIds,
+                namespace: "document_{$document->id}",
+            );
         }
     }
 

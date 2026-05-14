@@ -52,7 +52,7 @@ return [
     */
     'search' => [
         'top_k' => (int) env('RAG_SEARCH_TOP_K', 5),
-        'similarity_threshold' => (float) env('RAG_SEARCH_SIMILARITY_THRESHOLD', 0.65),
+        'similarity_threshold' => (float) env('RAG_SEARCH_SIMILARITY_THRESHOLD', 0.50),
     ],
 
     /*
@@ -73,6 +73,16 @@ return [
     'chat' => [
         'max_question_length' => (int) env('RAG_MAX_QUESTION_LENGTH', 1000),
         'max_messages_per_session' => (int) env('RAG_MAX_MESSAGES_PER_SESSION', 100),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Logging Configuration
+    |--------------------------------------------------------------------------
+    */
+    'logging' => [
+        'channel' => env('RAG_LOG_CHANNEL', 'rag'),
+        'level' => env('RAG_LOG_LEVEL', 'info'),
     ],
 
 ];

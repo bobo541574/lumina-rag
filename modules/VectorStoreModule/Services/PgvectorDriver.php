@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Modules\VectorStoreModule\Services;
 
 use Illuminate\Database\DatabaseManager;
+use Illuminate\Support\Str;
 use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
 use Modules\VectorStoreModule\Models\VectorEmbedding;
 
@@ -20,20 +21,28 @@ class PgvectorDriver implements VectorStoreInterface
         $this->table = 'vector_embeddings';
     }
 
-    public function upsert(array $vectors, array $metadata, string $chunkId, string $namespace): array
+    public function upsert(array $vectors, array $metadata, string|array $chunkId, string $namespace): array
     {
+        $chunkIds = is_array($chunkId) ? $chunkId : array_fill(0, count($vectors), $chunkId);
+        $now = now();
+        $records = [];
         $ids = [];
 
         foreach ($vectors as $i => $vector) {
-            $model = VectorEmbedding::create([
-                'chunk_id' => $chunkId,
+            $meta = isset($metadata[$i]) ? $metadata[$i] : $metadata;
+            $id = (string) Str::ulid();
+            $ids[] = $id;
+            $records[] = [
+                'id' => $id,
+                'chunk_id' => $chunkIds[$i] ?? $chunkIds[0],
                 'embedding' => $vector,
-                'model_name' => $metadata['model_name'] ?? 'text-embedding-ada-002',
-                'content_hash' => $metadata['content_hash'] ?? md5((string) $i),
-            ]);
-
-            $ids[] = $model->id;
+                'model_name' => $meta['model_name'] ?? 'text-embedding-ada-002',
+                'content_hash' => $meta['content_hash'] ?? md5((string) $i),
+                'created_at' => $now,
+            ];
         }
+
+        VectorEmbedding::insert($records);
 
         return $ids;
     }
@@ -50,7 +59,8 @@ class PgvectorDriver implements VectorStoreInterface
                 'd.id as document_id',
                 'd.title as document_title',
                 'dc.chunk_index',
-                'dc.page_number'
+                'dc.page_number',
+                'd.created_at as document_created_at',
             )
             ->selectRaw('1 - (ve.embedding <=> ?::vector) as similarity_score', [$vectorLiteral])
             ->join('document_chunks as dc', 'dc.id', '=', 've.chunk_id')

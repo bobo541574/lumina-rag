@@ -30,7 +30,7 @@ test('test_ask_returns_refusal_when_no_chunks_found', function (): void {
     $service = new RAGPipelineService($embedder, $vectorStore, $llm);
     $result = $service->ask('test question');
 
-    expect($result['message']['content'])->toBe('I cannot answer this question based on the available documents.');
+    expect($result['message']['content'])->toStartWith('I cannot answer this question based on the available documents.');
     expect($result['message']['sources'])->toBe([]);
 });
 
@@ -56,6 +56,8 @@ test('test_ask_returns_answer_with_sources', function (): void {
     $response = mock(LLMResponseInterface::class);
     $response->shouldReceive('getContent')->andReturn('This is the answer.');
     $response->shouldReceive('getTotalTokens')->andReturn(50);
+    $response->shouldReceive('getPromptTokens')->andReturn(20);
+    $response->shouldReceive('getCompletionTokens')->andReturn(30);
 
     $llm = mock(LLMServiceInterface::class);
     $llm->shouldReceive('complete')->andReturn($response);

@@ -71,7 +71,9 @@ class OllamaLLMProvider implements LLMProviderInterface
             ],
         ];
 
-        $url = $this->baseUrl . '/api/chat';
+        $url = $this->baseUrl.'/api/chat';
+
+        $deltas = [];
 
         $ch = curl_init($url);
         curl_setopt_array($ch, [
@@ -82,7 +84,7 @@ class OllamaLLMProvider implements LLMProviderInterface
             CURLOPT_POSTFIELDS => json_encode($payload),
             CURLOPT_RETURNTRANSFER => false,
             CURLOPT_TIMEOUT => $this->timeout,
-            CURLOPT_WRITEFUNCTION => function ($ch, $data) use (&$content): int {
+            CURLOPT_WRITEFUNCTION => function ($ch, $data) use (&$deltas): int {
                 $lines = explode("\n", $data);
                 foreach ($lines as $line) {
                     $line = trim($line);
@@ -93,9 +95,7 @@ class OllamaLLMProvider implements LLMProviderInterface
                     $parsed = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
                     $delta = $parsed['message']['content'] ?? '';
                     if ($delta !== '') {
-                        echo $delta;
-                        ob_flush();
-                        flush();
+                        $deltas[] = $delta;
                     }
                 }
 
@@ -105,6 +105,8 @@ class OllamaLLMProvider implements LLMProviderInterface
 
         curl_exec($ch);
         curl_close($ch);
+
+        yield from $deltas;
     }
 
     public function getModelName(): string
@@ -119,32 +121,45 @@ class OllamaLLMProvider implements LLMProviderInterface
 
     private function sendRequest(array $payload): array
     {
-        $url = $this->baseUrl . '/api/chat';
+        $maxAttempts = 3;
+        $backoff = [1_000_000, 5_000_000, 25_000_000];
 
-        $ch = curl_init($url);
-        curl_setopt_array($ch, [
-            CURLOPT_POST => true,
-            CURLOPT_HTTPHEADER => [
-                'Content-Type: application/json',
-            ],
-            CURLOPT_POSTFIELDS => json_encode($payload),
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => $this->timeout,
-        ]);
+        $url = $this->baseUrl.'/api/chat';
 
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $error = curl_error($ch);
-        curl_close($ch);
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_POST => true,
+                CURLOPT_HTTPHEADER => [
+                    'Content-Type: application/json',
+                ],
+                CURLOPT_POSTFIELDS => json_encode($payload),
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => $this->timeout,
+            ]);
+
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $error = curl_error($ch);
+            curl_close($ch);
+
+            if ($error === '' && $httpCode === 200) {
+                return json_decode($response, true, 512, JSON_THROW_ON_ERROR);
+            }
+
+            if ($httpCode >= 400 && $httpCode < 500) {
+                throw new \RuntimeException("Ollama LLM returned HTTP {$httpCode}: {$response}");
+            }
+
+            if ($attempt < $maxAttempts) {
+                usleep($backoff[$attempt - 1]);
+            }
+        }
 
         if ($error !== '') {
-            throw new \RuntimeException("Ollama LLM request failed: {$error}");
+            throw new \RuntimeException("Ollama LLM request failed after {$maxAttempts} attempts: {$error}");
         }
 
-        if ($httpCode !== 200) {
-            throw new \RuntimeException("Ollama LLM returned HTTP {$httpCode}: {$response}");
-        }
-
-        return json_decode($response, true, 512, JSON_THROW_ON_ERROR);
+        throw new \RuntimeException("Ollama LLM returned HTTP {$httpCode} after {$maxAttempts} attempts: {$response}");
     }
 }

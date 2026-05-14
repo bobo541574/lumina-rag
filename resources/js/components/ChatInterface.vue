@@ -1,6 +1,6 @@
 <template>
   <div class="flex flex-col h-full">
-    <div class="flex-1 overflow-y-auto space-y-4 p-4">
+    <div ref="messagesContainer" class="flex-1 overflow-y-auto space-y-4 p-4">
       <div v-if="messages.length === 0 && !isLoading" class="text-center text-gray-500 py-12">
         <p class="text-lg">Ask a question about your documents</p>
       </div>
@@ -19,13 +19,9 @@
         </div>
       </div>
 
-      <div v-if="isLoading" class="flex justify-start">
+      <div v-if="isStreaming && messages.length > 0" class="flex justify-start">
         <div class="bg-white border border-gray-200 rounded-lg px-4 py-3">
-          <div class="flex gap-1">
-            <span class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay: 0s"></span>
-            <span class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay: 0.15s"></span>
-            <span class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay: 0.3s"></span>
-          </div>
+          <span class="inline-block w-2 h-4 bg-blue-600 animate-pulse"></span>
         </div>
       </div>
 
@@ -41,10 +37,19 @@
           type="text"
           placeholder="Ask a question..."
           class="flex-1 rounded-lg border border-gray-300 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          :disabled="isLoading"
+          :disabled="isLoading || isStreaming"
           maxlength="1000"
         />
         <button
+          v-if="isStreaming"
+          type="button"
+          @click="store.abortStream()"
+          class="bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-red-700"
+        >
+          Stop
+        </button>
+        <button
+          v-else
           type="submit"
           :disabled="isLoading || !question.trim()"
           class="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
@@ -57,13 +62,21 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, nextTick, watch } from 'vue'
 import { useChatStore } from '../stores/chatStore'
 import { storeToRefs } from 'pinia'
 
 const store = useChatStore()
-const { messages, isLoading, error } = storeToRefs(store)
+const { messages, isLoading, isStreaming, error } = storeToRefs(store)
 const question = ref('')
+const messagesContainer = ref<HTMLElement | null>(null)
+
+watch(messages, async () => {
+  await nextTick()
+  if (messagesContainer.value) {
+    messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+  }
+}, { deep: true })
 
 async function handleSubmit() {
   if (!question.value.trim() || isLoading.value) return

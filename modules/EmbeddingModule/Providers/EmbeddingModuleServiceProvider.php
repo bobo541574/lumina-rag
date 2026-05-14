@@ -46,6 +46,8 @@ class EmbeddingModuleServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
-        //
+        if (! config('modules.modules.embedding.enabled', true)) {
+            return;
+        }
     }
 }

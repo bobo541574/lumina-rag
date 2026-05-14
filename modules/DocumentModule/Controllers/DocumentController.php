@@ -23,9 +23,11 @@ class DocumentController extends Controller
     public function upload(UploadDocumentRequest $request): JsonResponse
     {
         try {
+            $user = $request->input('authenticated_user');
             $document = $this->documentService->upload(
                 $request->file('file'),
                 $request->input('title'),
+                $user?->id,
             );
 
             return response()->json([
@@ -48,8 +50,10 @@ class DocumentController extends Controller
 
     public function index(Request $request): JsonResponse
     {
+        $user = $request->input('authenticated_user');
         $documents = $this->documentService->listDocuments(
             $request->only(['status', 'per_page']),
+            $user?->id,
         );
 
         return response()->json([
@@ -58,9 +62,16 @@ class DocumentController extends Controller
         ]);
     }
 
-    public function show(string $id): JsonResponse
+    public function show(Request $request, string $id): JsonResponse
     {
-        $document = Document::withCount('chunks')->findOrFail($id);
+        $user = $request->input('authenticated_user');
+        $query = Document::withCount('chunks')->where('id', $id);
+
+        if ($user !== null) {
+            $query->where('user_id', $user->id);
+        }
+
+        $document = $query->firstOrFail();
 
         return response()->json([
             'success' => true,
@@ -68,9 +79,16 @@ class DocumentController extends Controller
         ]);
     }
 
-    public function status(string $id): JsonResponse
+    public function status(Request $request, string $id): JsonResponse
     {
-        $document = Document::findOrFail($id);
+        $user = $request->input('authenticated_user');
+        $query = Document::where('id', $id);
+
+        if ($user !== null) {
+            $query->where('user_id', $user->id);
+        }
+
+        $document = $query->firstOrFail();
 
         return response()->json([
             'success' => true,
@@ -84,10 +102,11 @@ class DocumentController extends Controller
         ]);
     }
 
-    public function destroy(string $id): JsonResponse
+    public function destroy(Request $request, string $id): JsonResponse
     {
         try {
-            $this->documentService->deleteDocument($id);
+            $user = $request->input('authenticated_user');
+            $this->documentService->deleteDocument($id, $user?->id);
 
             return response()->json([
                 'success' => true,

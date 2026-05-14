@@ -6,9 +6,9 @@ namespace Modules\VectorStoreModule\Contracts;
 
 interface VectorStoreInterface
 {
-    public function upsert(array $vectors, array $metadata, string $chunkId, string $namespace): array;
+    public function upsert(array $vectors, array $metadata, string|array $chunkId, string $namespace): array;
 
-    public function search(array $queryVector, int $topK, array $filters): array;
+    public function search(array $queryVector, int $topK = 5, array $filters = []): array;
 
     public function delete(array $ids): void;
 

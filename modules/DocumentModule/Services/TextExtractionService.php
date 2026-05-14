@@ -5,6 +5,14 @@ declare(strict_types=1);
 namespace Modules\DocumentModule\Services;
 
 use Modules\DocumentModule\Contracts\TextExtractionServiceInterface;
+use PhpOffice\PhpWord\Element\Link;
+use PhpOffice\PhpWord\Element\ListItem;
+use PhpOffice\PhpWord\Element\ListItemRun;
+use PhpOffice\PhpWord\Element\Table;
+use PhpOffice\PhpWord\Element\Text;
+use PhpOffice\PhpWord\Element\TextBreak;
+use PhpOffice\PhpWord\Element\TextRun;
+use PhpOffice\PhpWord\Element\Title;
 use PhpOffice\PhpWord\IOFactory;
 use Smalot\PdfParser\Parser;
 
@@ -78,18 +86,93 @@ class TextExtractionService implements TextExtractionServiceInterface
 
         foreach ($phpWord->getSections() as $section) {
             foreach ($section->getElements() as $element) {
-                if (method_exists($element, 'getText')) {
-                    $text .= $element->getText()."\n";
-                } elseif (method_exists($element, 'getElements')) {
-                    foreach ($element->getElements() as $child) {
-                        if (method_exists($child, 'getText')) {
-                            $text .= $child->getText()."\n";
-                        }
-                    }
-                }
+                $text .= $this->extractDocxElement($element);
             }
+            $text .= "\n";
         }
 
         return trim($text);
+    }
+
+    private function extractDocxElement($element): string
+    {
+        if ($element instanceof Title) {
+            return "\n".$element->getText()."\n";
+        }
+
+        if ($element instanceof ListItem) {
+            return $this->extractListItemText($element)."\n";
+        }
+
+        if ($element instanceof ListItemRun) {
+            return $this->extractContainerText($element)."\n";
+        }
+
+        if ($element instanceof TextRun) {
+            return $this->extractContainerText($element)."\n";
+        }
+
+        if ($element instanceof Text) {
+            return $element->getText()."\n";
+        }
+
+        if ($element instanceof Link) {
+            return $element->getText()."\n";
+        }
+
+        if ($element instanceof Table) {
+            return $this->extractTableText($element);
+        }
+
+        if ($element instanceof TextBreak) {
+            return "\n";
+        }
+
+        return '';
+    }
+
+    private function extractContainerText($container): string
+    {
+        $text = '';
+        foreach ($container->getElements() as $child) {
+            if ($child instanceof Text) {
+                $text .= $child->getText();
+            } elseif ($child instanceof Link) {
+                $text .= $child->getText();
+            } elseif ($child instanceof TextBreak) {
+                $text .= "\n";
+            } elseif (method_exists($child, 'getText')) {
+                $text .= $child->getText();
+            }
+        }
+
+        return $text;
+    }
+
+    private function extractListItemText($element): string
+    {
+        $text = $element->getText();
+        $depth = method_exists($element, 'getDepth') ? $element->getDepth() : 0;
+        $prefix = str_repeat('  ', $depth).'- ';
+
+        return $prefix.$text;
+    }
+
+    private function extractTableText($table): string
+    {
+        $text = "\n";
+        foreach ($table->getRows() as $row) {
+            $cells = [];
+            foreach ($row->getCells() as $cell) {
+                $cellText = '';
+                foreach ($cell->getElements() as $cellElement) {
+                    $cellText .= $this->extractDocxElement($cellElement);
+                }
+                $cells[] = trim($cellText);
+            }
+            $text .= '| '.implode(' | ', $cells)." |\n";
+        }
+
+        return $text."\n";
     }
 }

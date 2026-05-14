@@ -36,4 +36,18 @@ class ChatMessage extends Model
     {
         return $this->belongsTo(ChatSession::class, 'session_id');
     }
+
+    public function update(array $attributes = [], array $options = []): bool
+    {
+        throw new \RuntimeException('Chat messages are immutable and cannot be modified.');
+    }
+
+    protected static function boot(): void
+    {
+        parent::boot();
+
+        static::updating(function (): never {
+            throw new \RuntimeException('Chat messages are immutable and cannot be modified.');
+        });
+    }
 }
