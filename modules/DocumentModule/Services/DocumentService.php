@@ -64,7 +64,7 @@ class DocumentService
         $this->batchSize = $batchSize;
     }
 
-    public function upload(UploadedFile $file, ?string $title = null, ?string $userId = null): Document
+    public function upload(UploadedFile $file, ?string $title = null, ?string $userId = null, ?string $embeddingModel = null): Document
     {
         $this->validateFile($file);
         $hash = hash_file('sha256', $file->getPathname());
@@ -88,6 +88,31 @@ class DocumentService
             'file_hash' => $hash,
             'status' => 'pending',
             'user_id' => $userId,
+            'embedding_model' => $embeddingModel ?? config('rag.embedding.model', 'text-embedding-3-small'),
+        ]);
+
+        ProcessDocumentJob::dispatch($document->id);
+
+        return $document->fresh();
+    }
+
+    public function retryDocument(string $id, ?string $userId = null): Document
+    {
+        $query = Document::where('id', $id);
+
+        if ($userId !== null) {
+            $query->where('user_id', $userId);
+        }
+
+        $document = $query->firstOrFail();
+
+        if ($document->status !== 'failed') {
+            throw new \RuntimeException('Only failed documents can be retried.');
+        }
+
+        $document->update([
+            'status' => 'pending',
+            'error_message' => null,
         ]);
 
         ProcessDocumentJob::dispatch($document->id);

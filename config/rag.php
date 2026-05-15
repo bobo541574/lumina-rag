@@ -13,7 +13,7 @@ return [
         'provider' => env('RAG_EMBEDDING_PROVIDER', 'openai'),
         'api_key' => env('OPENAI_API_KEY'),
         'base_url' => env('RAG_EMBEDDING_BASE_URL', 'http://localhost:11434'),
-        'model' => env('RAG_EMBEDDING_MODEL', 'text-embedding-ada-002'),
+        'model' => env('RAG_EMBEDDING_MODEL', 'text-embedding-3-small'),
         'dimensions' => (int) env('RAG_EMBEDDING_DIMENSIONS', 1536),
         'batch_size' => (int) env('RAG_EMBEDDING_BATCH_SIZE', 100),
         'cache_ttl' => (int) env('RAG_EMBEDDING_CACHE_TTL', 86400),
@@ -51,8 +51,21 @@ return [
     |--------------------------------------------------------------------------
     */
     'search' => [
+        'mode' => env('RAG_SEARCH_MODE', 'hybrid'),
         'top_k' => (int) env('RAG_SEARCH_TOP_K', 5),
-        'similarity_threshold' => (float) env('RAG_SEARCH_SIMILARITY_THRESHOLD', 0.50),
+        'similarity_threshold' => (float) env('RAG_SEARCH_SIMILARITY_THRESHOLD', 0.65),
+        'hybrid' => [
+            'vector_weight' => (float) env('RAG_SEARCH_HYBRID_VECTOR_WEIGHT', 0.7),
+            'fts_weight' => (float) env('RAG_SEARCH_HYBRID_FTS_WEIGHT', 0.3),
+        ],
+        'query_expansion' => [
+            'enabled' => (bool) env('RAG_QUERY_EXPANSION_ENABLED', false),
+            'num_queries' => (int) env('RAG_QUERY_EXPANSION_NUM_QUERIES', 3),
+        ],
+        'mmr' => [
+            'enabled' => (bool) env('RAG_SEARCH_MMR_ENABLED', true),
+            'lambda' => (float) env('RAG_SEARCH_MMR_LAMBDA', 0.7),
+        ],
     ],
 
     /*

@@ -34,11 +34,11 @@ export const useDocumentStore = defineStore('document', () => {
     }
   }
 
-  async function uploadDocument(file: File, title?: string) {
+  async function uploadDocument(file: File, title?: string, embeddingModel?: string) {
     isUploading.value = true
     error.value = null
     try {
-      const response = await documentService.upload(file, title)
+      const response = await documentService.upload(file, title, embeddingModel)
       documents.value.unshift(response.data)
       return response.data
     } catch (e: any) {
@@ -46,6 +46,22 @@ export const useDocumentStore = defineStore('document', () => {
       throw e
     } finally {
       isUploading.value = false
+    }
+  }
+
+  async function retryDocument(id: string) {
+    isLoading.value = true
+    error.value = null
+    try {
+      const response = await documentService.retry(id)
+      const idx = documents.value.findIndex(d => d.id === id)
+      if (idx !== -1) {
+        documents.value[idx] = response.data
+      }
+    } catch (e: any) {
+      error.value = e.response?.data?.message ?? 'Retry failed'
+    } finally {
+      isLoading.value = false
     }
   }
 
@@ -71,6 +87,7 @@ export const useDocumentStore = defineStore('document', () => {
     fetchDocuments,
     fetchDocument,
     uploadDocument,
+    retryDocument,
     deleteDocument,
     clearError,
   }

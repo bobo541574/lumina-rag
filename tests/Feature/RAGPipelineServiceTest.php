@@ -23,7 +23,7 @@ test('test_ask_returns_refusal_when_no_chunks_found', function (): void {
     $embedder->shouldReceive('embed')->andReturn([0.1, 0.2]);
 
     $vectorStore = mock(VectorStoreInterface::class);
-    $vectorStore->shouldReceive('search')->andReturn([]);
+    $vectorStore->shouldReceive('searchHybrid')->andReturn([]);
 
     $llm = mock(LLMServiceInterface::class);
 
@@ -40,7 +40,7 @@ test('test_ask_returns_answer_with_sources', function (): void {
 
     $chunks = [
         (object) [
-            'id' => 'chunk_1',
+            'chunk_id' => 'chunk_1',
             'document_id' => 'doc_1',
             'document_title' => 'Test Doc',
             'content' => 'Test content',
@@ -51,7 +51,7 @@ test('test_ask_returns_answer_with_sources', function (): void {
     ];
 
     $vectorStore = mock(VectorStoreInterface::class);
-    $vectorStore->shouldReceive('search')->andReturn($chunks);
+    $vectorStore->shouldReceive('searchHybrid')->andReturn($chunks);
 
     $response = mock(LLMResponseInterface::class);
     $response->shouldReceive('getContent')->andReturn('This is the answer.');

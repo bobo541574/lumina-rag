@@ -58,22 +58,16 @@ class OpenAIEmbeddingProvider implements EmbeddingProviderInterface
      *
      * @throws \RuntimeException On API failure or empty response
      */
-    public function embed(string $text): array
+    public function embed(string $text, ?string $model = null): array
     {
-        $results = $this->callApi([$text]);
+        $results = $this->callApi([$text], $model);
 
         return $results[0] ?? throw new \RuntimeException('Embedding API returned empty result');
     }
 
-    /**
-     * Embed multiple texts in a single batched API call.
-     *
-     * @param  array  $texts  Array of text strings
-     * @return array Array of float vectors in input order
-     */
-    public function embedBatch(array $texts): array
+    public function embedBatch(array $texts, ?string $model = null): array
     {
-        return $this->callApi($texts);
+        return $this->callApi($texts, $model);
     }
 
     /**
@@ -102,34 +96,26 @@ class OpenAIEmbeddingProvider implements EmbeddingProviderInterface
      * @param  array  $texts  Texts to embed
      * @return array Array of embedding vectors
      */
-    private function callApi(array $texts): array
+    private function callApi(array $texts, ?string $model = null): array
     {
         $chunks = array_chunk($texts, $this->batchSize);
         $allVectors = [];
         foreach ($chunks as $batch) {
-            $response = $this->sendRequest($batch);
+            $response = $this->sendRequest($batch, $model);
             $allVectors = array_merge($allVectors, $response);
         }
 
         return $allVectors;
     }
 
-    /**
-     * Execute the HTTP request to the OpenAI Embeddings API.
-     *
-     * @param  array  $batch  Batch of texts to embed
-     * @return array Array of embedding vectors
-     *
-     * @throws \RuntimeException On HTTP or JSON parse errors
-     */
-    private function sendRequest(array $batch): array
+    private function sendRequest(array $batch, ?string $model = null): array
     {
         $maxAttempts = 3;
         $backoff = [1_000_000, 5_000_000, 25_000_000];
 
         $url = 'https://api.openai.com/v1/embeddings';
         $payload = [
-            'model' => $this->model,
+            'model' => $model ?? $this->model,
             'input' => $batch,
         ];
 

@@ -10,6 +10,8 @@ interface VectorStoreInterface
 
     public function search(array $queryVector, int $topK = 5, array $filters = []): array;
 
+    public function searchHybrid(string $queryText, array $queryVector, int $topK = 5, array $filters = []): array;
+
     public function delete(array $ids): void;
 
     public function deleteByDocumentId(string $documentId): void;

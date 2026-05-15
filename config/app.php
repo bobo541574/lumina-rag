@@ -5,6 +5,7 @@ use Modules\ChatModule\Providers\ChatModuleServiceProvider;
 use Modules\DocumentModule\Providers\DocumentModuleServiceProvider;
 use Modules\EmbeddingModule\Providers\EmbeddingModuleServiceProvider;
 use Modules\LLMModule\Providers\LLMModuleServiceProvider;
+use Modules\SettingsModule\Providers\SettingsModuleServiceProvider;
 use Modules\UserModule\Providers\UserModuleServiceProvider;
 use Modules\VectorStoreModule\Providers\VectorStoreModuleServiceProvider;
 
@@ -139,6 +140,7 @@ return [
         EmbeddingModuleServiceProvider::class,
         VectorStoreModuleServiceProvider::class,
         LLMModuleServiceProvider::class,
+        SettingsModuleServiceProvider::class,
         DocumentModuleServiceProvider::class,
         ChatModuleServiceProvider::class,
     ])->toArray(),

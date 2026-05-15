@@ -6,9 +6,9 @@ namespace Modules\EmbeddingModule\Contracts;
 
 interface EmbeddingProviderInterface
 {
-    public function embed(string $text): array;
+    public function embed(string $text, ?string $model = null): array;
 
-    public function embedBatch(array $texts): array;
+    public function embedBatch(array $texts, ?string $model = null): array;
 
     public function getDimensions(): int;
 

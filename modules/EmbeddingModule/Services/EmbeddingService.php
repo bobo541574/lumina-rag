@@ -45,12 +45,13 @@ class EmbeddingService implements EmbeddingServiceInterface
      * @param  string  $text  Input text
      * @return array Float vector
      */
-    public function embed(string $text): array
+    public function embed(string $text, ?string $model = null): array
     {
+        $modelName = $model ?? $this->provider->getModelName();
         $hash = md5($text);
-        $cacheKey = "embedding:{$this->provider->getModelName()}:{$hash}";
+        $cacheKey = "embedding:{$modelName}:{$hash}";
 
-        return $this->cache->remember($cacheKey, $this->cacheTtl, fn (): array => $this->provider->embed($text));
+        return $this->cache->remember($cacheKey, $this->cacheTtl, fn (): array => $this->provider->embed($text, $model));
     }
 
     /**
@@ -60,15 +61,16 @@ class EmbeddingService implements EmbeddingServiceInterface
      * @param  array  $texts  Array of text strings
      * @return array Array of float vectors in original order
      */
-    public function embedBatch(array $texts): array
+    public function embedBatch(array $texts, ?string $model = null): array
     {
+        $modelName = $model ?? $this->provider->getModelName();
         $hashes = array_map(md5(...), $texts);
         $results = [];
         $uncached = [];
         $uncachedIndices = [];
 
         foreach ($texts as $i => $text) {
-            $cacheKey = "embedding:{$this->provider->getModelName()}:{$hashes[$i]}";
+            $cacheKey = "embedding:{$modelName}:{$hashes[$i]}";
             $cached = $this->cache->get($cacheKey);
             if ($cached !== null) {
                 $results[$i] = $cached;
@@ -79,11 +81,11 @@ class EmbeddingService implements EmbeddingServiceInterface
         }
 
         if ($uncached !== []) {
-            $newVectors = $this->provider->embedBatch(array_values($uncached));
+            $newVectors = $this->provider->embedBatch(array_values($uncached), $model);
             $vecIndex = 0;
             foreach ($uncachedIndices as $i) {
                 $vector = $newVectors[$vecIndex];
-                $cacheKey = "embedding:{$this->provider->getModelName()}:{$hashes[$i]}";
+                $cacheKey = "embedding:{$modelName}:{$hashes[$i]}";
                 $this->cache->put($cacheKey, $vector, $this->cacheTtl);
                 $results[$i] = $vector;
                 $vecIndex++;

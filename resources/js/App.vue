@@ -6,6 +6,7 @@
         <nav class="flex items-center gap-6">
           <router-link to="/" class="text-sm text-gray-600 hover:text-gray-900">Chat</router-link>
           <router-link to="/documents" class="text-sm text-gray-600 hover:text-gray-900">Documents</router-link>
+          <router-link to="/settings" class="text-sm text-gray-600 hover:text-gray-900">Settings</router-link>
           <span class="text-sm text-gray-400 mx-2">|</span>
           <span class="text-sm text-gray-500">{{ auth.user?.name }}</span>
           <button @click="handleLogout" class="text-sm text-red-600 hover:text-red-700">Sign out</button>

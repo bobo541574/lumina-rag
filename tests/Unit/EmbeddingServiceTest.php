@@ -9,7 +9,7 @@ use Modules\EmbeddingModule\Services\EmbeddingService;
 test('test_embed_returns_vector_from_provider', function (): void {
     $provider = mock(EmbeddingProviderInterface::class);
     $provider->shouldReceive('getModelName')->andReturn('test-model');
-    $provider->shouldReceive('embed')->with('hello')->andReturn([0.1, 0.2, 0.3]);
+    $provider->shouldReceive('embed')->with('hello', null)->andReturn([0.1, 0.2, 0.3]);
 
     $cache = mock(CacheRepository::class);
     $cache->shouldReceive('remember')->andReturnUsing(fn ($key, $ttl, $callback) => $callback());
@@ -23,7 +23,7 @@ test('test_embed_returns_vector_from_provider', function (): void {
 test('test_embedBatch_returns_all_vectors_in_order', function (): void {
     $provider = mock(EmbeddingProviderInterface::class);
     $provider->shouldReceive('getModelName')->andReturn('test-model');
-    $provider->shouldReceive('embedBatch')->with(['a', 'b', 'c'])->andReturn([[0.1], [0.2], [0.3]]);
+    $provider->shouldReceive('embedBatch')->with(['a', 'b', 'c'], null)->andReturn([[0.1], [0.2], [0.3]]);
 
     $cache = mock(CacheRepository::class);
     $cache->shouldReceive('get')->times(3)->andReturn(null);

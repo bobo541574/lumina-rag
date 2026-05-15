@@ -144,7 +144,25 @@ class ProcessDocumentJob implements ShouldQueue
 
         DB::transaction(function () use ($records): void {
             foreach (array_chunk($records, 500) as $batch) {
-                DocumentChunk::insert($batch);
+                $columns = implode(', ', array_keys($batch[0]));
+                $values = [];
+                $bindings = [];
+
+                foreach ($batch as $row) {
+                    $placeholders = [];
+                    foreach ($row as $col => $val) {
+                        if ($col === 'tsv_content') {
+                            $placeholders[] = "to_tsvector('simple', ?)";
+                        } else {
+                            $placeholders[] = '?';
+                        }
+                        $bindings[] = $val;
+                    }
+                    $values[] = '('.implode(', ', $placeholders).')';
+                }
+
+                $sql = "INSERT INTO document_chunks ({$columns}) VALUES ".implode(', ', $values);
+                DB::statement($sql, $bindings);
             }
         });
 
@@ -161,13 +179,13 @@ class ProcessDocumentJob implements ShouldQueue
         VectorStoreInterface $vectorStore,
     ): void {
         $batchSize = (int) config('rag.embedding.batch_size', 100);
-        $modelName = (string) config('rag.embedding.model', 'text-embedding-ada-002');
+        $modelName = $document->embedding_model ?? (string) config('rag.embedding.model', 'text-embedding-3-small');
 
         $texts = array_map(fn (DocumentChunk $c): string => $c->content, $chunks);
         $textBatches = array_chunk($texts, $batchSize);
 
         foreach ($textBatches as $batchIndex => $batch) {
-            $vectors = $embedder->embedBatch($batch);
+            $vectors = $embedder->embedBatch($batch, $modelName);
             $offset = $batchIndex * $batchSize;
 
             $allVectors = [];

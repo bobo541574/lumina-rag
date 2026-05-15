@@ -22,6 +22,17 @@
           Browse files
         </button>
         <p class="text-xs text-gray-400 mt-2">PDF, DOCX, TXT, CSV, MD — Max 50MB</p>
+
+        <div class="mt-4 pt-4 border-t border-gray-200">
+          <div class="flex items-center justify-center gap-2 mb-2">
+            <label class="text-sm text-gray-600">Embedding Model</label>
+          </div>
+          <select v-model="selectedModel"
+            class="text-sm border border-gray-300 rounded-lg px-3 py-1.5 focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+          >
+            <option v-for="m in modelOptions" :key="m.value" :value="m.value">{{ m.label }}</option>
+          </select>
+        </div>
       </div>
       <div v-else class="flex items-center justify-center gap-2">
         <div class="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
@@ -34,14 +45,37 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useDocumentStore } from '../stores/documentStore'
+import { useSettingsStore } from '../stores/settingsStore'
 
 const store = useDocumentStore()
+const settingsStore = useSettingsStore()
 const fileInput = ref<HTMLInputElement | null>(null)
 const isDragging = ref(false)
 const isUploading = ref(false)
 const error = ref<string | null>(null)
+const selectedModel = ref('')
+const defaultModelLabel = ref('')
+
+const availableModels = computed(() => {
+  const raw = settingsStore.getSettingValue('RAG_EMBEDDING_AVAILABLE_MODELS')
+  if (Array.isArray(raw)) return raw
+  return []
+})
+
+const defaultModel = computed(() => {
+  return settingsStore.getSettingValue('RAG_EMBEDDING_MODEL') ?? ''
+})
+
+const modelOptions = computed(() => {
+  const def = defaultModel.value
+  const list = availableModels.value.length > 0 ? availableModels.value : ['text-embedding-3-small', 'text-embedding-3-large', 'text-embedding-ada-002']
+  return [
+    { value: '', label: `From settings (${def || 'default'})` },
+    ...list.map((m: string) => ({ value: m, label: m })),
+  ]
+})
 
 async function handleFile(file: File) {
   const allowedTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain', 'text/csv', 'text/markdown']
@@ -59,13 +93,17 @@ async function handleFile(file: File) {
   error.value = null
   isUploading.value = true
   try {
-    await store.uploadDocument(file)
+    await store.uploadDocument(file, undefined, selectedModel.value || undefined)
   } catch {
     error.value = store.error
   } finally {
     isUploading.value = false
   }
 }
+
+onMounted(() => {
+  settingsStore.fetch()
+})
 
 function handleDrop(event: DragEvent) {
   isDragging.value = false

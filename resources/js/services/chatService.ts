@@ -22,6 +22,7 @@ export const chatService = {
     question: string,
     sessionId: string | undefined,
     callbacks: StreamingCallbacks,
+    documentFilter?: Record<string, unknown>,
   ): AbortController {
     const controller = new AbortController()
     const token = localStorage.getItem('lumina_token')
@@ -33,7 +34,12 @@ export const chatService = {
         'Accept': 'text/event-stream',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ question, session_id: sessionId, stream: true }),
+      body: JSON.stringify({
+        question,
+        session_id: sessionId,
+        stream: true,
+        ...(documentFilter ? { document_filter: documentFilter } : {}),
+      }),
       signal: controller.signal,
     }).then(async (response) => {
       if (!response.ok) {

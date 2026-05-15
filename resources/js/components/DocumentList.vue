@@ -11,6 +11,7 @@
           <th class="text-left px-4 py-3 font-medium text-gray-600">Status</th>
           <th class="text-left px-4 py-3 font-medium text-gray-600">Size</th>
           <th class="text-left px-4 py-3 font-medium text-gray-600">Chunks</th>
+          <th class="text-left px-4 py-3 font-medium text-gray-600">Model</th>
           <th class="text-left px-4 py-3 font-medium text-gray-600">Date</th>
           <th class="text-right px-4 py-3 font-medium text-gray-600">Actions</th>
         </tr>
@@ -25,8 +26,16 @@
           </td>
           <td class="px-4 py-3 text-gray-600">{{ formatSize(doc.file_size) }}</td>
           <td class="px-4 py-3 text-gray-600">{{ doc.chunks_count }}</td>
+          <td class="px-4 py-3">
+            <span v-if="doc.embedding_model" class="inline-flex px-2 py-0.5 text-xs font-mono bg-gray-100 text-gray-700 rounded">
+              {{ modelLabel(doc.embedding_model) }}
+            </span>
+          </td>
           <td class="px-4 py-3 text-gray-600">{{ formatDate(doc.created_at) }}</td>
-          <td class="px-4 py-3 text-right">
+          <td class="px-4 py-3 text-right space-x-2">
+            <button v-if="doc.status === 'failed'" @click="$emit('retry', doc.id)" class="text-amber-600 hover:text-amber-700 text-xs font-medium">
+              Retry
+            </button>
             <button @click="$emit('delete', doc.id)" class="text-red-600 hover:text-red-700 text-xs font-medium">
               Delete
             </button>
@@ -45,6 +54,7 @@ defineProps<{
 }>()
 
 defineEmits<{
+  retry: [id: string]
   delete: [id: string]
 }>()
 
@@ -62,6 +72,15 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function modelLabel(model: string): string {
+  const map: Record<string, string> = {
+    'text-embedding-3-small': '3-small',
+    'text-embedding-3-large': '3-large',
+    'text-embedding-ada-002': 'ada-002',
+  }
+  return map[model] ?? model
 }
 
 function formatDate(date: string): string {

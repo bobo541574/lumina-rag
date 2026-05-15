@@ -33,7 +33,9 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  async function sendMessage(question: string) {
+  const documentFilter = ref<Record<string, unknown> | null>(null)
+
+  async function sendMessage(question: string, filter?: Record<string, unknown>) {
     if (!question.trim()) return
 
     const userMessage: ChatMessage = {
@@ -95,6 +97,7 @@ export const useChatStore = defineStore('chat', () => {
           isLoading.value = false
         },
       },
+      filter ?? documentFilter.value ?? undefined,
     )
   }
 
@@ -164,6 +167,10 @@ export const useChatStore = defineStore('chat', () => {
     error.value = null
   }
 
+  function setDocumentFilter(filter: Record<string, unknown> | null) {
+    documentFilter.value = filter
+  }
+
   return {
     sessions,
     currentSession,
@@ -172,6 +179,7 @@ export const useChatStore = defineStore('chat', () => {
     isStreaming,
     error,
     currentSessionId,
+    documentFilter,
     fetchSessions,
     fetchSession,
     sendMessage,
@@ -180,5 +188,6 @@ export const useChatStore = defineStore('chat', () => {
     startNewChat,
     abortStream,
     clearError,
+    setDocumentFilter,
   }
 })

@@ -15,6 +15,9 @@ class UploadDocumentRequest extends FormRequest
 
     public function rules(): array
     {
+        $availableModels = config('rag.embedding.available_models', []);
+        $modelsString = is_array($availableModels) ? implode(',', $availableModels) : (string) $availableModels;
+
         return [
             'file' => [
                 'required',
@@ -27,15 +30,24 @@ class UploadDocumentRequest extends FormRequest
                 'string',
                 'max:255',
             ],
+            'embedding_model' => [
+                'nullable',
+                'string',
+                'in:'.$modelsString,
+            ],
         ];
     }
 
     public function messages(): array
     {
+        $availableModels = config('rag.embedding.available_models', []);
+        $modelsList = is_array($availableModels) ? implode(', ', $availableModels) : (string) $availableModels;
+
         return [
             'file.required' => 'A document file is required.',
             'file.mimes' => 'File must be one of: PDF, DOCX, TXT, CSV, MD.',
             'file.max' => 'File size must not exceed 50MB.',
+            'embedding_model.in' => 'Embedding model must be one of: '.$modelsList.'.',
         ];
     }
 }

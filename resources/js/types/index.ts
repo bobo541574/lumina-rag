@@ -40,6 +40,7 @@ export interface Document {
   mime_type: string
   status: 'pending' | 'processing' | 'completed' | 'failed'
   chunks_count: number
+  embedding_model?: string
   error_message?: string
   processed_at?: string
   created_at: string

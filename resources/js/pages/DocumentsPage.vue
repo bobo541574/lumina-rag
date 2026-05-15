@@ -2,7 +2,7 @@
   <div>
     <h2 class="text-lg font-semibold text-gray-900 mb-4">Documents</h2>
     <DocumentUpload />
-    <DocumentList :documents="documents" @delete="handleDelete" />
+    <DocumentList :documents="documents" @retry="handleRetry" @delete="handleDelete" />
   </div>
 </template>
 
@@ -19,6 +19,10 @@ const { documents } = storeToRefs(store)
 onMounted(() => {
   store.fetchDocuments()
 })
+
+async function handleRetry(id: string) {
+  await store.retryDocument(id)
+}
 
 async function handleDelete(id: string) {
   await store.deleteDocument(id)

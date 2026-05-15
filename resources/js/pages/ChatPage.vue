@@ -11,6 +11,7 @@
           :sessions="sessions"
           :activeId="currentSessionId"
           @select="selectSession"
+          @delete="deleteSession"
         />
       </div>
     </div>
@@ -36,6 +37,10 @@ onMounted(() => {
 
 async function selectSession(id: string) {
   await store.fetchSession(id)
+}
+
+async function deleteSession(id: string) {
+  store.deleteSession(id)
 }
 
 function startNewChat() {

@@ -30,7 +30,7 @@ class OllamaLLMProvider implements LLMProviderInterface
         $temperature = (float) ($options['temperature'] ?? 0.3);
 
         $payload = [
-            'model' => $this->model,
+            'model' => $options['model'] ?? $this->model,
             'messages' => [
                 ['role' => 'system', 'content' => $systemPrompt],
                 ['role' => 'user', 'content' => $userPrompt],

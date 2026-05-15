@@ -32,16 +32,16 @@ class OllamaEmbeddingProvider implements EmbeddingProviderInterface
         $this->batchSize = $batchSize;
     }
 
-    public function embed(string $text): array
+    public function embed(string $text, ?string $model = null): array
     {
-        $results = $this->callApi([$text]);
+        $results = $this->callApi([$text], $model);
 
         return $results[0] ?? throw new \RuntimeException('Ollama embedding API returned empty result');
     }
 
-    public function embedBatch(array $texts): array
+    public function embedBatch(array $texts, ?string $model = null): array
     {
-        return $this->callApi($texts);
+        return $this->callApi($texts, $model);
     }
 
     public function getDimensions(): int
@@ -54,27 +54,27 @@ class OllamaEmbeddingProvider implements EmbeddingProviderInterface
         return $this->model;
     }
 
-    private function callApi(array $texts): array
+    private function callApi(array $texts, ?string $model = null): array
     {
         $chunks = array_chunk($texts, $this->batchSize);
         $allVectors = [];
 
         foreach ($chunks as $batch) {
-            $response = $this->sendRequest($batch);
+            $response = $this->sendRequest($batch, $model);
             $allVectors = array_merge($allVectors, $response);
         }
 
         return $allVectors;
     }
 
-    private function sendRequest(array $batch): array
+    private function sendRequest(array $batch, ?string $model = null): array
     {
         $maxAttempts = 3;
         $backoff = [1_000_000, 5_000_000, 25_000_000];
 
         $url = $this->baseUrl.'/api/embed';
         $payload = [
-            'model' => $this->model,
+            'model' => $model ?? $this->model,
             'input' => $batch,
         ];
 

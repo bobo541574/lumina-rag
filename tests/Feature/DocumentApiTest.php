@@ -7,7 +7,7 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Hash;
 use Modules\DocumentModule\Models\Document;
 
-function createAuthenticatedUser(): array
+function createDocumentTestUser(): array
 {
     $user = User::create([
         'name' => 'Doc Test User',
@@ -23,7 +23,7 @@ function createAuthenticatedUser(): array
 }
 
 test('test_document_upload_rejects_invalid_file_type', function (): void {
-    $auth = createAuthenticatedUser();
+    $auth = createDocumentTestUser();
     $file = UploadedFile::fake()->create('test.exe', 100);
 
     $response = $this->withHeaders($auth['headers'])
@@ -35,7 +35,7 @@ test('test_document_upload_rejects_invalid_file_type', function (): void {
 });
 
 test('test_document_upload_rejects_oversized_file', function (): void {
-    $auth = createAuthenticatedUser();
+    $auth = createDocumentTestUser();
     $file = UploadedFile::fake()->create('test.pdf', 51201);
 
     $response = $this->withHeaders($auth['headers'])
@@ -47,7 +47,7 @@ test('test_document_upload_rejects_oversized_file', function (): void {
 });
 
 test('test_document_list_returns_paginated_results', function (): void {
-    $auth = createAuthenticatedUser();
+    $auth = createDocumentTestUser();
 
     Document::create([
         'title' => 'Test Document',
@@ -71,7 +71,7 @@ test('test_document_list_returns_paginated_results', function (): void {
 });
 
 test('test_document_show_returns_document', function (): void {
-    $auth = createAuthenticatedUser();
+    $auth = createDocumentTestUser();
 
     $doc = Document::create([
         'title' => 'Test Document',
@@ -92,7 +92,7 @@ test('test_document_show_returns_document', function (): void {
 });
 
 test('test_document_delete_removes_document', function (): void {
-    $auth = createAuthenticatedUser();
+    $auth = createDocumentTestUser();
 
     $doc = Document::create([
         'title' => 'Test Document',

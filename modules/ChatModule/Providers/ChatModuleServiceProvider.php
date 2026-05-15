@@ -24,6 +24,11 @@ class ChatModuleServiceProvider extends ServiceProvider
             similarityThreshold: (float) config('rag.search.similarity_threshold', 0.65),
             maxQuestionLength: (int) config('rag.chat.max_question_length', 1000),
             maxMessagesPerSession: (int) config('rag.chat.max_messages_per_session', 100),
+            searchMode: (string) config('rag.search.mode', 'hybrid'),
+            queryExpansionEnabled: (bool) config('rag.search.query_expansion.enabled', false),
+            numExpansionQueries: (int) config('rag.search.query_expansion.num_queries', 3),
+            mmrEnabled: (bool) config('rag.search.mmr.enabled', true),
+            mmrLambda: (float) config('rag.search.mmr.lambda', 0.7),
         ));
     }
 

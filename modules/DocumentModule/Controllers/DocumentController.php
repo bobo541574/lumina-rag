@@ -28,6 +28,7 @@ class DocumentController extends Controller
                 $request->file('file'),
                 $request->input('title'),
                 $user?->id,
+                $request->input('embedding_model'),
             );
 
             return response()->json([
@@ -100,6 +101,30 @@ class DocumentController extends Controller
                 'processed_at' => $document->processed_at,
             ],
         ]);
+    }
+
+    public function retry(Request $request, string $id): JsonResponse
+    {
+        try {
+            $user = $request->input('authenticated_user');
+            $document = $this->documentService->retryDocument($id, $user?->id);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Document retry initiated.',
+                'data' => $document->toArray(),
+            ]);
+        } catch (\RuntimeException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 400);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Document not found.',
+            ], 404);
+        }
     }
 
     public function destroy(Request $request, string $id): JsonResponse

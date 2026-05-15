@@ -23,6 +23,9 @@ return [
         'vector_store' => [
             'enabled' => true,
         ],
+        'settings' => [
+            'enabled' => true,
+        ],
     ],
 
 ];

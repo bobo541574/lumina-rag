@@ -36,6 +36,7 @@
             "Modules\\EmbeddingModule\\": "modules/EmbeddingModule/",
             "Modules\\LLMModule\\": "modules/LLMModule/",
             "Modules\\UserModule\\": "modules/UserModule/",
+            "Modules\\SettingsModule\\": "modules/SettingsModule/",
             "Modules\\VectorStoreModule\\": "modules/VectorStoreModule/"
         }
     },

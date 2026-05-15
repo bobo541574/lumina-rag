@@ -25,6 +25,11 @@ class VectorStoreService implements VectorStoreInterface
         return $this->driver->search($queryVector, $topK, $filters);
     }
 
+    public function searchHybrid(string $queryText, array $queryVector, int $topK = 5, array $filters = []): array
+    {
+        return $this->driver->searchHybrid($queryText, $queryVector, $topK, $filters);
+    }
+
     public function delete(array $ids): void
     {
         $this->driver->delete($ids);

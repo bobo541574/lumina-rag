@@ -1,4 +1,4 @@
-import { get, del, upload } from './api'
+import { get, post, del, upload } from './api'
 import type { Document } from '../types'
 
 export const documentService = {
@@ -14,11 +14,16 @@ export const documentService = {
     return get<{ id: string; status: string; chunks_count: number }>(`/documents/${id}/status`)
   },
 
-  async upload(file: File, title?: string) {
+  async upload(file: File, title?: string, embeddingModel?: string) {
     const formData = new FormData()
     formData.append('file', file)
     if (title) formData.append('title', title)
+    if (embeddingModel) formData.append('embedding_model', embeddingModel)
     return upload<Document>('/documents', formData)
+  },
+
+  async retry(id: string) {
+    return post<Document>(`/documents/${id}/retry`)
   },
 
   async delete(id: string) {
