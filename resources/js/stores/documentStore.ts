@@ -34,11 +34,11 @@ export const useDocumentStore = defineStore('document', () => {
     }
   }
 
-  async function uploadDocument(file: File, title?: string, embeddingModel?: string) {
+  async function uploadDocument(file: File, title?: string, embeddingModelId?: string) {
     isUploading.value = true
     error.value = null
     try {
-      const response = await documentService.upload(file, title, embeddingModel)
+      const response = await documentService.upload(file, title, embeddingModelId)
       documents.value.unshift(response.data)
       return response.data
     } catch (e: any) {
@@ -65,6 +65,23 @@ export const useDocumentStore = defineStore('document', () => {
     }
   }
 
+  async function updateDocument(id: string, data: { title?: string; description?: string }) {
+    try {
+      const response = await documentService.update(id, data)
+      const idx = documents.value.findIndex(d => d.id === id)
+      if (idx !== -1) {
+        documents.value[idx] = { ...documents.value[idx], ...response.data }
+      }
+      if (currentDocument.value?.id === id) {
+        currentDocument.value = { ...currentDocument.value, ...response.data }
+      }
+      return response.data
+    } catch (e: any) {
+      error.value = e.response?.data?.message ?? 'Update failed'
+      throw e
+    }
+  }
+
   async function deleteDocument(id: string) {
     try {
       await documentService.delete(id)
@@ -87,6 +104,7 @@ export const useDocumentStore = defineStore('document', () => {
     fetchDocuments,
     fetchDocument,
     uploadDocument,
+    updateDocument,
     retryDocument,
     deleteDocument,
     clearError,

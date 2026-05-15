@@ -1,179 +1,279 @@
 # Business Logic & Domain Rules
 
-## System Purpose
-Intelligent document Q&A system using RAG (Retrieval-Augmented Generation). Users upload documents and can ask natural language questions. The system retrieves relevant document sections and generates accurate, sourced answers.
+System purpose — intelligent document Q&A using **Retrieval-Augmented Generation (RAG)**. Users upload documents, ask natural-language questions, and receive sourced answers grounded in the document corpus.
+
+> Rules in this document are derived from the current source code in `modules/`. When code and this document disagree, the code wins — open a PR to update this file.
+
+---
 
 ## Document Processing Domain
 
-### Upload Validation Rules
-- **Allowed Formats**: PDF, DOCX, TXT, CSV, Markdown
-- **Maximum File Size**: 10MB per document
-- **Duplicate Detection**: SHA-256 file hash comparison before processing
-- **File Integrity**: Verify file is readable and not corrupted
-- **Content Check**: Document must contain extractable text (not image-only PDF)
+### Upload validation rules
 
-### Text Extraction Rules
-- **PDF**: Extract text stream, maintain paragraph structure where possible
-- **DOCX**: Extract with heading hierarchy (H1-H6) as structure hints
-- **TXT/CSV**: Direct read with UTF-8 encoding detection, fallback to auto-detect
-- **Markdown**: Strip markup, preserve link text, maintain section structure
-- **Empty Documents**: Reject with clear error message
+Enforced in [UploadDocumentRequest.php](modules/DocumentModule/Requests/UploadDocumentRequest.php).
 
-### Chunking Strategy
-- **Algorithm**: Recursive Character Text Splitter
-- **Chunk Size**: 1000 characters (configurable)
-- **Chunk Overlap**: 200 characters (configurable)
-- **Separator Priority**: Paragraph breaks → Line breaks → Sentence endings → Commas → Spaces → Character
-- **Chunk Metadata**: Each chunk records original position, page number (if PDF), and sequence
+- **Allowed formats**: PDF, DOCX, TXT, CSV, Markdown (extension-based check).
+- **Maximum file size**: **50 MB** (51 200 KB — `max:51200` in the FormRequest).
+- **Required field**: `file`.
+- **Optional fields**:
+  - `title` — overrides the filename-derived title (max 255 chars).
+  - `embedding_model` — free-form embedding model name override.
+  - `embedding_model_id` — ULID of an `ai_models` row of `type = embedding`. Validated with `exists:ai_models,id`.
+- **Duplicate detection**: SHA-256 file hash matched against `documents.file_hash` (unique index). On match → HTTP 409 with the existing document body.
+- **File integrity**: file must be readable; non-extractable PDFs (image-only) flagged as `failed` with `error_message`.
 
-**Overlap Rationale**: 200-character overlap prevents critical information from being split across chunk boundaries. A sentence spanning position 950-1050 appears in both chunks 1 and 2.
+### Text extraction
 
-### Embedding Generation
-- **Model**: OpenAI text-embedding-ada-002 (1536 dimensions)
-- **Batch Size**: 100 texts per API call (cost optimization)
-- **Caching**: MD5 hash-based cache, 24-hour TTL
-- **Retry Strategy**: 3 attempts with exponential backoff (1s, 5s, 25s)
-- **Error Fallback**: If embedding fails, mark chunk as "failed", document as partial
+| Format | Extractor | Notes |
+|--------|-----------|-------|
+| PDF | `smalot/pdfparser` | Preserves page boundaries; sets `page_number` on each chunk. |
+| DOCX | `phpoffice/phpword` | Linearizes structure; heading hierarchy not currently preserved. |
+| TXT, CSV, Markdown | direct file read | UTF-8 with auto-detect fallback. |
+
+Empty extraction result → document marked `failed`, `error_message` populated.
+
+### Chunking strategy
+
+Implemented in [TextChunkingService.php](modules/DocumentModule/Services/TextChunkingService.php).
+
+- **Algorithm**: Recursive Character Text Splitter.
+- **Chunk size**: 1 000 characters (`config('rag.chunking.chunk_size')`).
+- **Overlap**: 200 characters (`config('rag.chunking.overlap')`).
+- **Separator priority**: paragraph break (`\n\n`) → line break (`\n`) → sentence end (`.`) → comma → space → character.
+- **Per-chunk metadata stored**: `chunk_index`, `page_number` (PDF only), `char_start`, `char_end`. Unique index on `(document_id, chunk_index)`.
+
+### Embedding generation
+
+Implemented in [EmbeddingService.php](modules/EmbeddingModule/Services/EmbeddingService.php).
+
+- **Default model**: `text-embedding-3-small` (1 536 dims) via `config('rag.embedding.model')`. Override per-upload via `embedding_model_id`.
+- **Provider**: OpenAI (default) or Ollama. Both implemented behind `EmbeddingProviderInterface`.
+- **Batch size**: 100 texts per provider call (`config('rag.embedding.batch_size')`).
+- **Cache**: MD5 hash of `(model + text)` → vector, TTL 24 h (`config('rag.embedding.cache_ttl')`).
+- **Job retries**: `ProcessDocumentJob` has `tries = 3` with exponential backoff (Laravel default).
+- **Failure handling**: on terminal failure, document status → `failed`, `error_message` populated, vectors are not partially persisted (job is transactional per chunk batch).
+- **Manual retry**: `POST /api/documents/{id}/retry` re-dispatches `ProcessDocumentJob`. Permitted only for `status = failed` documents.
+
+### Document status lifecycle
+
+```
+pending  ──(job picked up)──→ processing ──(success)──→ completed
+                                          ──(failure ×3)─→ failed ──(retry)──→ pending
+```
+
+`status` column on `documents`. The frontend [DocumentList.vue](resources/js/components/DocumentList.vue) renders status as a colored badge (`warning` / `brand` / `success` / `danger`) and shows a Retry icon-button only on `failed` rows.
+
+### Document update + delete
+
+- **Update** (`PUT /api/documents/{id}`): only `title` and `description` (Trix HTML) are mutable. Rich-text description is rendered with `v-html` in the list view — server-side sanitization is the responsibility of `DocumentResource` (track if not yet implemented).
+- **Delete** (`DELETE /api/documents/{id}`): soft-delete on `documents`, cascading delete on `document_chunks`, `vector_embeddings` (metadata), and the row in the matching `ve_{dim}` shard table — via service code (no DB-level FK cascade).
+- **Bulk delete**: no dedicated endpoint — frontend issues parallel `DELETE` calls via `Promise.allSettled` and reports per-item success/failure via toast.
+
+---
 
 ## Question-Answer Domain
 
-### RAG Pipeline Logic
-1. **Question Embedding**: Convert question to vector using same embedding model
-2. **Vector Search**: 
-   - Search all document chunks for top 5 most similar
-   - Use cosine distance (<=>) operator via pgvector
-   - Filter by similarity threshold (default: 0.65)
-3. **Threshold Handling**:
-   - Top result < 0.65 → Respond "I cannot answer this question based on the available documents."
-   - 1-2 results > 0.65 → Provide answer with low confidence note
-   - 3-5 results > 0.65 → Provide full answer with citations
-4. **Context Assembly**:
-   - Sort chunks by similarity score descending
-   - Concatenate with source labels
-   - Truncate if exceeds 4000 tokens
-5. **Prompt Construction**: Inject context into system prompt template
-6. **LLM Completion**: Generate answer with temperature 0.3 (factual focus)
-7. **Response Packaging**: Return answer + source citations
+### RAG pipeline
 
-### Source Citation Rules
-- Every answer MUST include source citations
-- Citation format: Document title + position reference
-- If answer draws from multiple documents, cite each
-- Chunk similarity score included in citation metadata
-- In streaming mode, sources sent as final event
+Orchestrated in [RAGPipelineService.php](modules/ChatModule/Services/RAGPipelineService.php).
 
-### Answer Quality Rules
-- **No Hallucination**: Model instructed to ONLY use provided context
-- **Uncertainty Expression**: If context is ambiguous, acknowledge uncertainty
-- **Language Consistency**: Answer in same language as question
-- **Outdated Warning**: If document is > 1 year old, add "This document is X months old" note
+1. **Validation**:
+   - Empty question → `InvalidArgumentException`.
+   - Question > `config('rag.chat.max_question_length')` (1 000 chars) → truncated.
+2. **Question embedding**: same model the matching documents were embedded with (per-document override falls back to default).
+3. **Vector search**: top-K (default 5) chunks via cosine distance. Filtered by `similarity_threshold` (default 0.65).
+4. **Search modes** (`config('rag.search.mode')`):
+   - `vector` — pure cosine similarity.
+   - `fts` — full-text search (PostgreSQL `tsvector`).
+   - `hybrid` (default) — weighted combination: `0.7 × vector + 0.3 × fts`.
+5. **MMR re-ranking** (`config('rag.search.mmr.enabled')`, default `true`): Maximal Marginal Relevance to reduce redundancy among top-K results. Tuned by `lambda` (default 0.7).
+6. **Query expansion** (`config('rag.search.query_expansion.enabled')`, default `false`): generates additional query variants via the LLM, runs each, merges results.
+7. **Threshold handling**:
+   - Top result score < threshold → return `"I cannot answer this question based on the available documents."` — no LLM call made.
+   - One or more chunks above threshold → continue.
+8. **Context assembly**: chunks sorted by score desc, concatenated with source labels, truncated to `config('rag.llm.max_context_tokens')` (4 000 tokens default).
+9. **LLM completion**: provider per `config('rag.llm.provider')` (`openai` or `ollama`). Temperature 0.3 default.
+10. **Streaming**: when the chat request includes `stream: true`, the controller emits `text/event-stream` with token deltas and a final `sources` event. Frontend uses `EventSource` and updates the message bubble incrementally; the **Stop** button calls `store.abortStream()`.
+11. **Persistence**: user message + assistant message saved to `chat_messages`; `sources[]` stored as jsonb on the assistant message.
+
+### Source citation format
+
+Returned on every answer (and on the final SSE event in streaming mode):
+
+```json
+{
+  "document_id": "01HX...",
+  "document_title": "Q3 Financial Report",
+  "chunk_index": 12,
+  "page_number": 7,
+  "similarity_score": 0.89,
+  "excerpt": "…relevant snippet…"
+}
+```
+
+### Filters (chat request)
+
+Optional fields on `POST /api/chat`:
+
+| Field | Effect |
+|-------|--------|
+| `document_ids[]` | Restrict search to specific documents |
+| `date_from`, `date_to` | Restrict to documents uploaded in date range |
+| `llm_model_id` | ULID of an `ai_models` row of `type = llm` to use for this query |
+
+The frontend ChatInterface filter chips bind these. Active filter count appears next to the "Search Filters" toggle button.
+
+---
 
 ## Chat Session Domain
 
-### Session Management
-- **Auto-Creation**: New session created on first message if no session ID provided
-- **Session Title**: First 50 characters of user's first question
-- **Message Limit**: Maximum 100 messages per session (user + assistant combined)
-- **Session Expiry**: Sessions inactive for 24 hours are archived
-- **Auto-Deletion**: Archived sessions deleted after 30 days
+### Session lifecycle
 
-### Message Structure
-- **User Message**: role=user, content=question text
-- **Assistant Message**: role=assistant, content=answer, sources=JSON array
-- **No Editing**: Messages are immutable (no update, only soft delete)
+- **Auto-created** on first message if no `session_id` provided.
+- **Title** — set from the **assistant's first response** (first 50 chars). Not from the user's question.
+- **Message limit**: `config('rag.chat.max_messages_per_session')` (100). 101st message → `RuntimeException("Session full")`.
+- **Archival**: `is_archived` boolean on `chat_sessions`. (No automatic archival job currently — flag is set manually.)
+- **Soft delete**: deleted sessions are inaccessible (404 on `GET /api/chat/sessions/{id}`); messages cascade-soft-delete via service code.
 
-### Streaming Rules
-- **Default**: Streaming enabled for all chat responses
-- **Fallback**: Non-streaming HTTP response if client doesn't support SSE
-- **Buffer Size**: Stream chunks of 10-20 tokens for smooth UI
-- **Connection Drop**: If SSE connection drops, message saved as partial
+### Message ownership
+
+- **User scoping**: `chat_sessions.user_id` is set from the authenticated user. Cross-user access returns 404 (not 403, to avoid existence enumeration).
+- **Immutability**: messages are not editable — only soft-deletable (handled at the session level only).
+
+### Streaming caveats
+
+- Default behavior is non-streaming. Streaming is opt-in via `stream: true` in the request body.
+- If the SSE connection drops mid-stream, the partial assistant message is **persisted as-is**.
+- The `Stop` button (visible only while streaming) calls `AbortController.abort()` on the EventSource — backend sees a closed connection and stops generating.
+
+---
 
 ## Authentication Domain
 
-### Registration Rules
-- Name, email, and password (min 8 chars) required
-- Email must be unique across all users
-- Password hashed with Bcrypt before storage
-- Returns user profile + 80-char random API token
+Implemented in [AuthService.php](modules/UserModule/Services/AuthService.php).
 
-### Login Rules
-- Valid email + password combination required
-- Invalid credentials return generic "Invalid email or password" message (no enumeration)
-- Each login generates a new API token, invalidating the previous one
-- Token must be sent as `Authorization: Bearer <token>` header
+### Registration
 
-### Token Security
-- Tokens are 80-character hex strings (`bin2hex(random_bytes(40))`)
-- Tokens stored in `users.api_token` column (unique, nullable)
-- Logout sets token to null
-- No token expiry (session persists until logout)
+- Required: `name`, `email`, `password` (min 8 chars).
+- `email` is unique across `users`.
+- `password` is bcrypt-hashed before storage.
+- Returns `{ user, token }` — token is an 80-char hex string (`bin2hex(random_bytes(40))`).
 
-## Module Interaction Rules
+### Login
 
-### ChatModule → EmbeddingModule
-- ChatModule requests embedding for user's question
-- EmbeddingModule handles provider selection and caching
-- ChatModule never calls OpenAI API directly
+- Required: `email`, `password`.
+- **Throttle**: 5 attempts per 60 seconds (`throttle:5,60` middleware).
+- Invalid credentials → generic `"Invalid email or password"` (no enumeration).
+- **Each successful login generates a new token**, invalidating the previous one.
 
-### ChatModule → VectorStoreModule
-- ChatModule requests top-K chunks using embedded question
-- VectorStoreModule handles pgvector query optimization
-- ChatModule receives only chunks + scores, not raw vectors
+### Token semantics
 
-### ChatModule → LLMModule
-- ChatModule sends assembled prompt + context
-- LLMModule handles provider selection and streaming
-- ChatModule receives either stream or complete response
+- Stored on `users.api_token` (unique, nullable).
+- Sent as `Authorization: Bearer <token>` header.
+- No expiry — the token is valid until logout (which sets it to `null`) or replaced by a fresh login.
 
-### DocumentModule → EmbeddingModule
-- DocumentModule sends batch of chunk texts
-- EmbeddingModule returns batch of vectors
-- DocumentModule never stores vectors (that's VectorStoreModule's job)
+### Per-field server validation errors
 
-### DocumentModule → VectorStoreModule
-- DocumentModule sends vectors + metadata for storage
-- VectorStoreModule handles pgvector INSERT + index maintenance
-- DocumentModule updates chunk records with vector IDs
+Both `/register` and `/login` return Laravel's standard `errors: { field: [messages] }` shape on 422. The frontend ([RegisterPage.vue](resources/js/pages/RegisterPage.vue)) renders **the first message per field beneath the relevant input** (with `aria-invalid` + `aria-describedby`), not as a single banner.
+
+---
+
+## Settings & AI Model Registry
+
+### Runtime settings
+
+Implemented in `SettingsModule`. The `settings` table stores key/value/type/group/label tuples that **override `config('rag.*')`** at runtime. This means an admin can change RAG behavior without redeploying.
+
+- The frontend [SettingsPage.vue](resources/js/pages/SettingsPage.vue) groups settings by `group` and renders type-appropriate inputs (text / number / select / checkbox / json textarea).
+- Bulk save via `PUT /api/settings/bulk`.
+- Per-field "dirty" indicator + reset button for unsaved edits.
+
+### AI model registry
+
+The `ai_models` table is a registry of available embedding + LLM endpoints. Each row encapsulates a complete provider configuration: provider type, model name, API key, base URL, dimensions/timeout/etc.
+
+- Multiple models can be registered. `is_active` marks the default for that type.
+- **Per-document embedding selection**: on upload, user picks an `embedding_model_id` (or accepts the default).
+- **Per-query LLM selection**: on chat, user picks an `llm_model_id` (or accepts the default).
+- **Documents stay linked to the model that embedded them** (`embedding_model_id` foreign key). Deleting a model from the registry **does not** remove the embeddings — existing documents continue to work.
+
+### Frontend split
+
+The AI model UI is now split across two routes (changed in recent refactor):
+
+- `/settings/ai-models` — list view ([AiModelsPage.vue](resources/js/pages/AiModelsPage.vue))
+- `/settings/ai-models/new` and `/settings/ai-models/:id/edit` — form ([AiModelManager.vue](resources/js/pages/AiModelManager.vue))
+
+The form pre-fills all fields from the existing model on edit **except the API key**, which is left blank with a placeholder ("leave blank to keep existing"). Empty submissions during edit omit `api_key` from the payload.
+
+---
 
 ## Edge Cases & Error Handling
 
-### Document Processing Edge Cases
-- **Large File**: 100MB PDF → Reject (exceeds 10MB limit)
-- **Image-Only PDF**: Text extraction returns empty → Fail with message
-- **Single Document, 1000 Chunks**: Process in 10 batches (100/batch) through queue
-- **Embedding API Down**: Job fails, retries 3 times, then marks document as failed
-- **Duplicate Upload**: Detect by hash → Return existing document ID with message
+### Document processing
 
-### Query Edge Cases
-- **Empty Question**: Return validation error
-- **Question > 1000 chars**: Truncate to 1000 chars before embedding
-- **No Documents in System**: Return "No documents have been uploaded yet."
-- **All Chunks Below Threshold**: Return "No relevant information found."
-- **Contradictory Chunks**: Acknowledge in answer: "Documents contain conflicting information..."
+| Case | Behavior |
+|------|----------|
+| File > 50 MB | Rejected at upload (422) — no DB row created |
+| Image-only PDF | Extraction returns empty → status `failed`, error_message set |
+| Single document, 1 000 chunks | Processed in batches of 100 via the queue |
+| Embedding API down | Job retries 3× with backoff, then marks document `failed` |
+| Duplicate upload | 409 with the existing document body |
 
-### Session Edge Cases
-- **Deleted Session**: Return 404 on session retrieval
-- **Expired Session**: Auto-create new session on next message
-- **100-Message Limit**: Return error on 101st message: "Session full, start new chat"
-- **Concurrent Messages**: Lock session to prevent race conditions
+### Query
 
+| Case | Behavior |
+|------|----------|
+| Empty question | 422 validation error |
+| Question > 1 000 chars | Truncated server-side (frontend also enforces `maxlength=1000` + char counter) |
+| No documents in system | LLM still called with empty context — answer typically says it lacks information |
+| All chunks below threshold | `"I cannot answer this question based on the available documents."` (no LLM call) |
+| Filter excludes all docs | Same as above |
 
-## Queue Monitoring
+### Sessions
 
-Document processing jobs use the `database` queue driver by default. Start the worker with `php artisan queue:work`. Monitoring is via `php artisan queue:table` logs or queue job inspection.
+| Case | Behavior |
+|------|----------|
+| Missing `session_id` on chat | New session auto-created |
+| Soft-deleted session referenced | 404 on subsequent reads |
+| 101st message in a session | 422 with "Session full, start a new chat" |
+| Session belongs to another user | 404 (not 403) |
 
-## Monitoring & Observability
+---
 
-### Key Metrics
-- Document processing time (upload → completed)
-- Embedding API latency and error rate
-- Vector search query time (pgvector performance)
-- LLM response time
-- Chat session activity
+## Observability
 
-### Logging Standards
-- **INFO**: Document upload, processing start/complete, chat session created
-- **WARNING**: Retry attempts, threshold misses, long processing times
-- **ERROR**: API failures, extraction failures, database errors
-- **CRITICAL**: Data loss, system unavailable
-```
+### Logging
+
+- Channel: configurable via `config('rag.logging.channel')` (default `rag`).
+- Level: `config('rag.logging.level')` (default `info`).
+- Structured JSON-friendly fields on every CRUD operation: actor (user_id), entity, entity_id, action, result.
+
+### Key events logged
+
+| Event | Level |
+|-------|-------|
+| Document uploaded / processed / failed | INFO / WARNING / ERROR |
+| Chat session created / message saved | INFO |
+| Embedding cache hit / miss | DEBUG (when `level=debug`) |
+| OpenAI / Ollama API call latency | INFO |
+| Vector search query duration | INFO |
+
+### Metrics worth watching
+
+- Document processing time (upload → completed).
+- Embedding API error rate.
+- pgvector search query time (p50/p95).
+- LLM latency.
+- Chat session activity per user.
+
+---
+
+## What's intentionally not in this document
+
+- Coding standards → see [PROJECT_RULES.md](PROJECT_RULES.md).
+- Module structure / file layout → see [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md).
+- Routes → see [PROJECT_ROUTES.md](PROJECT_ROUTES.md).
+- Setup → see [SETUP_GUIDE.md](SETUP_GUIDE.md).
+- Database schema → see [docs/DATABASE_SCHEMA.md](docs/DATABASE_SCHEMA.md).
+- Deployment → see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).

@@ -9,16 +9,23 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
+    private function getPgsqlVectorDims(): array
+    {
+        return [384, 768, 1024, 1536, 3072];
+    }
+
     public function up(): void
     {
         Schema::create('vector_embeddings', function (Blueprint $table): void {
             $table->ulid('id')->primary();
             $table->ulid('chunk_id');
+            $table->integer('dimensions');
             $table->string('model_name', 100);
             $table->string('content_hash', 32);
             $table->timestampTz('created_at')->useCurrent();
 
             $table->index('chunk_id', 'idx_vector_embeddings_chunk_id');
+            $table->index('dimensions', 'idx_vector_embeddings_dims');
         });
 
         $driver = Schema::getConnection()->getDriverName();
@@ -43,21 +50,36 @@ return new class extends Migration
             return;
         }
 
-        $dimensions = (int) config('rag.embedding.dimensions', 1536);
+        $lists = (int) config('rag.vector_store.index_lists', 100);
 
-        Schema::table('vector_embeddings', function (Blueprint $table) use ($dimensions): void {
-            $table->vector('embedding', $dimensions)->nullable()->after('chunk_id');
-        });
+        foreach ($this->getPgsqlVectorDims() as $dim) {
+            $tableName = "ve_{$dim}";
 
-        try {
-            DB::statement('CREATE INDEX IF NOT EXISTS idx_vector_embeddings_ivfflat ON vector_embeddings USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)');
-        } catch (Throwable) {
-            // non-blocking — index can be created manually once sufficient data exists
+            Schema::create($tableName, function (Blueprint $table) use ($dim, $tableName): void {
+                $table->ulid('id')->primary();
+                $table->ulid('chunk_id');
+                $table->vector('embedding', $dim);
+                $table->string('model_name', 100);
+                $table->string('content_hash', 32);
+                $table->timestampTz('created_at')->useCurrent();
+
+                $table->index('chunk_id', "idx_{$tableName}_chunk_id");
+            });
+
+            if ($dim <= 2000) {
+                DB::statement(
+                    "CREATE INDEX IF NOT EXISTS idx_{$tableName}_ivfflat ON {$tableName} USING ivfflat (embedding vector_cosine_ops) WITH (lists = {$lists})"
+                );
+            }
         }
     }
 
     public function down(): void
     {
+        foreach ($this->getPgsqlVectorDims() as $dim) {
+            Schema::dropIfExists("ve_{$dim}");
+        }
+
         Schema::dropIfExists('vector_embeddings');
     }
 };

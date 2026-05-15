@@ -35,7 +35,7 @@ export const useChatStore = defineStore('chat', () => {
 
   const documentFilter = ref<Record<string, unknown> | null>(null)
 
-  async function sendMessage(question: string, filter?: Record<string, unknown>) {
+  async function sendMessage(question: string, filter?: Record<string, unknown>, llmModelId?: string) {
     if (!question.trim()) return
 
     const userMessage: ChatMessage = {
@@ -98,6 +98,7 @@ export const useChatStore = defineStore('chat', () => {
         },
       },
       filter ?? documentFilter.value ?? undefined,
+      llmModelId,
     )
   }
 
@@ -111,7 +112,7 @@ export const useChatStore = defineStore('chat', () => {
     messages.value = messages.value.filter(m => !m.id.startsWith('stream-'))
   }
 
-  async function sendMessageNonStreaming(question: string) {
+  async function sendMessageNonStreaming(question: string, llmModelId?: string) {
     if (!question.trim()) return
 
     const userMessage: ChatMessage = {
@@ -125,7 +126,7 @@ export const useChatStore = defineStore('chat', () => {
     error.value = null
 
     try {
-      const response = await chatService.ask(question, currentSessionId.value ?? undefined)
+      const response = await chatService.ask(question, currentSessionId.value ?? undefined, undefined, llmModelId)
       currentSession.value = {
         id: response.data.session_id,
         title: '',

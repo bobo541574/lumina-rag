@@ -13,12 +13,16 @@ class PgvectorDriver implements VectorStoreInterface
 {
     private DatabaseManager $db;
 
-    private string $table;
+    private const DIM_TABLES = [384, 768, 1024, 1536, 3072];
+
+    private const DIM_MAX = 3072;
+
+    private bool $isSqlite;
 
     public function __construct(DatabaseManager $db)
     {
         $this->db = $db;
-        $this->table = 'vector_embeddings';
+        $this->isSqlite = $db->getDriverName() === 'sqlite';
     }
 
     public function upsert(array $vectors, array $metadata, string|array $chunkId, string $namespace): array
@@ -27,34 +31,51 @@ class PgvectorDriver implements VectorStoreInterface
         $now = now()->toDateTimeString();
         $ids = [];
 
-        $values = [];
-        $bindings = [];
-
         foreach ($vectors as $i => $vector) {
             $meta = isset($metadata[$i]) ? $metadata[$i] : $metadata;
             $id = (string) Str::ulid();
             $ids[] = $id;
+            $dim = count($vector);
+            $cid = $chunkIds[$i] ?? $chunkIds[0];
+            $modelName = $meta['model_name'] ?? 'unknown';
+            $contentHash = $meta['content_hash'] ?? md5((string) $i);
 
-            $values[] = '(?, ?, ?::vector, ?, ?, ?::timestamptz)';
-            $bindings[] = $id;
-            $bindings[] = $chunkIds[$i] ?? $chunkIds[0];
-            $bindings[] = '['.implode(',', $vector).']';
-            $bindings[] = $meta['model_name'] ?? 'text-embedding-ada-002';
-            $bindings[] = $meta['content_hash'] ?? md5((string) $i);
-            $bindings[] = $now;
+            if ($this->isSqlite) {
+                $this->db->statement(
+                    'INSERT INTO vector_embeddings (id, chunk_id, embedding, dimensions, model_name, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                    [$id, $cid, json_encode($vector), $dim, $modelName, $contentHash, $now]
+                );
+
+                continue;
+            }
+
+            $this->db->statement(
+                'INSERT INTO vector_embeddings (id, chunk_id, dimensions, model_name, content_hash, created_at) VALUES (?, ?, ?, ?, ?, ?::timestamptz)',
+                [$id, $cid, $dim, $modelName, $contentHash, $now]
+            );
+
+            $dimTable = $this->resolveDimTable($dim);
+            $vectorLiteral = '['.implode(',', $vector).']';
+
+            $this->db->statement(
+                "INSERT INTO {$dimTable} (id, chunk_id, embedding, model_name, content_hash, created_at) VALUES (?, ?, ?::vector, ?, ?, ?::timestamptz)",
+                [$id, $cid, $vectorLiteral, $modelName, $contentHash, $now]
+            );
         }
-
-        $sql = "INSERT INTO {$this->table} (id, chunk_id, embedding, model_name, content_hash, created_at) VALUES ".implode(', ', $values);
-        $this->db->statement($sql, $bindings);
 
         return $ids;
     }
 
     public function searchHybrid(string $queryText, array $queryVector, int $topK = 5, array $filters = []): array
     {
+        if ($this->isSqlite) {
+            return $this->searchSqlite($queryVector, $topK, $filters, $queryText);
+        }
+
+        $dimTable = $this->resolveDimTable(count($queryVector));
         $vectorLiteral = '['.implode(',', $queryVector).']';
 
-        $vectorQuery = $this->db->table($this->table, 've')
+        $vectorQuery = $this->db->table($dimTable, 've')
             ->select(
                 've.id',
                 've.chunk_id',
@@ -73,10 +94,10 @@ class PgvectorDriver implements VectorStoreInterface
             ->orderByRaw('ve.embedding <=> ?::vector', [$vectorLiteral])
             ->limit($topK * 3);
 
-        $tsQuery = $this->db->table($this->table, 've')
+        $tsQuery = $this->db->table('document_chunks as dc')
             ->select(
-                've.id',
-                've.chunk_id',
+                'dc.id',
+                'dc.id as chunk_id',
                 'dc.content',
                 'd.id as document_id',
                 'd.title as document_title',
@@ -86,29 +107,14 @@ class PgvectorDriver implements VectorStoreInterface
             )
             ->selectRaw('0.0 as similarity_score')
             ->selectRaw('ts_rank(dc.tsv_content, plainto_tsquery(\'simple\', ?)) as fts_score', [$queryText])
-            ->join('document_chunks as dc', 'dc.id', '=', 've.chunk_id')
             ->join('documents as d', 'd.id', '=', 'dc.document_id')
             ->whereNull('d.deleted_at')
             ->whereRaw('dc.tsv_content @@ plainto_tsquery(\'simple\', ?)', [$queryText])
             ->orderByRaw('ts_rank(dc.tsv_content, plainto_tsquery(\'simple\', ?)) desc', [$queryText])
             ->limit($topK * 3);
 
-        if (isset($filters['document_ids'])) {
-            $vectorQuery->whereIn('d.id', (array) $filters['document_ids']);
-            $tsQuery->whereIn('d.id', (array) $filters['document_ids']);
-        }
-        if (isset($filters['date_from'])) {
-            $vectorQuery->where('d.created_at', '>=', $filters['date_from']);
-            $tsQuery->where('d.created_at', '>=', $filters['date_from']);
-        }
-        if (isset($filters['date_to'])) {
-            $vectorQuery->where('d.created_at', '<=', $filters['date_to']);
-            $tsQuery->where('d.created_at', '<=', $filters['date_to']);
-        }
-        if (isset($filters['model_name'])) {
-            $vectorQuery->where('ve.model_name', $filters['model_name']);
-            $tsQuery->where('ve.model_name', $filters['model_name']);
-        }
+        $vectorQuery = $this->applyFiltersVector($vectorQuery, $filters, 've');
+        $tsQuery = $this->applyFiltersFts($tsQuery, $filters);
 
         $threshold = (float) ($filters['similarity_threshold'] ?? 0.65);
 
@@ -119,9 +125,180 @@ class PgvectorDriver implements VectorStoreInterface
             array_filter($vectorResults, fn (object $row): bool => $row->similarity_score >= $threshold)
         );
 
-        $fused = $this->fuseResults($vectorResults, $ftsResults, $topK);
+        return $this->fuseResults($vectorResults, $ftsResults, $topK);
+    }
 
-        return $fused;
+    public function search(array $queryVector, int $topK = 5, array $filters = []): array
+    {
+        if ($this->isSqlite) {
+            return $this->searchSqlite($queryVector, $topK, $filters);
+        }
+
+        $dimTable = $this->resolveDimTable(count($queryVector));
+        $vectorLiteral = '['.implode(',', $queryVector).']';
+
+        $query = $this->db->table($dimTable, 've')
+            ->select(
+                've.id',
+                've.chunk_id',
+                'dc.content',
+                'd.id as document_id',
+                'd.title as document_title',
+                'dc.chunk_index',
+                'dc.page_number',
+                'd.created_at as document_created_at',
+            )
+            ->selectRaw('1 - (ve.embedding <=> ?::vector) as similarity_score', [$vectorLiteral])
+            ->join('document_chunks as dc', 'dc.id', '=', 've.chunk_id')
+            ->join('documents as d', 'd.id', '=', 'dc.document_id')
+            ->whereNull('d.deleted_at')
+            ->orderByRaw('ve.embedding <=> ?::vector', [$vectorLiteral])
+            ->limit($topK);
+
+        $query = $this->applyFiltersVector($query, $filters, 've');
+
+        $threshold = (float) ($filters['similarity_threshold'] ?? 0.65);
+        $results = $query->get()->toArray();
+
+        return array_values(
+            array_filter($results, fn (object $row): bool => $row->similarity_score >= $threshold)
+        );
+    }
+
+    private function searchSqlite(array $queryVector, int $topK, array $filters, ?string $queryText = null): array
+    {
+        $threshold = (float) ($filters['similarity_threshold'] ?? 0.65);
+
+        $query = $this->db->table('vector_embeddings as ve')
+            ->select(
+                've.id',
+                've.chunk_id',
+                'dc.content',
+                'd.id as document_id',
+                'd.title as document_title',
+                'dc.chunk_index',
+                'dc.page_number',
+                'd.created_at as document_created_at',
+            )
+            ->join('document_chunks as dc', 'dc.id', '=', 've.chunk_id')
+            ->join('documents as d', 'd.id', '=', 'dc.document_id')
+            ->whereNull('d.deleted_at')
+            ->limit($topK);
+
+        $query = $this->applyFiltersVector($query, $filters, 've');
+
+        $results = $query->get()->toArray();
+        $results = array_map(function (object $row) use ($queryVector): object {
+            $embedding = $row->embedding ?? '[]';
+            $stored = is_string($embedding) ? json_decode($embedding, true) : (array) $embedding;
+            $row->similarity_score = $this->cosineSimilarity($queryVector, $stored);
+
+            return $row;
+        }, $results);
+
+        usort($results, fn (object $a, object $b): int => $b->similarity_score <=> $a->similarity_score);
+        $results = array_values(
+            array_filter($results, fn (object $row): bool => $row->similarity_score >= $threshold)
+        );
+
+        return $results;
+    }
+
+    public function delete(array $ids): void
+    {
+        if (! $this->isSqlite) {
+            foreach (self::DIM_TABLES as $dim) {
+                $this->db->table("ve_{$dim}")->whereIn('id', $ids)->delete();
+            }
+        }
+        VectorEmbedding::whereIn('id', $ids)->delete();
+    }
+
+    public function deleteByDocumentId(string $documentId): void
+    {
+        $chunkIds = $this->db->table('document_chunks')
+            ->where('document_id', $documentId)
+            ->pluck('id');
+
+        if ($chunkIds->isEmpty()) {
+            return;
+        }
+
+        if (! $this->isSqlite) {
+            foreach (self::DIM_TABLES as $dim) {
+                $this->db->table("ve_{$dim}")
+                    ->whereIn('chunk_id', $chunkIds)
+                    ->delete();
+            }
+        }
+
+        $this->db->table('vector_embeddings')
+            ->whereIn('chunk_id', $chunkIds)
+            ->delete();
+    }
+
+    public function getStats(): array
+    {
+        $count = VectorEmbedding::count();
+        $dimCounts = VectorEmbedding::selectRaw('dimensions, count(*) as count')
+            ->groupBy('dimensions')
+            ->pluck('count', 'dimensions')
+            ->toArray();
+        $modelCounts = VectorEmbedding::selectRaw('model_name, count(*) as count')
+            ->groupBy('model_name')
+            ->pluck('count', 'model_name')
+            ->toArray();
+
+        return [
+            'total_vectors' => $count,
+            'by_dimensions' => $dimCounts,
+            'by_model' => $modelCounts,
+        ];
+    }
+
+    private function resolveDimTable(int $dimensions): string
+    {
+        $nearest = self::DIM_TABLES[0];
+        foreach (self::DIM_TABLES as $dim) {
+            if (abs($dim - $dimensions) < abs($nearest - $dimensions)) {
+                $nearest = $dim;
+            }
+        }
+
+        return "ve_{$nearest}";
+    }
+
+    private function applyFiltersVector($query, array $filters, string $alias): mixed
+    {
+        if (isset($filters['document_ids'])) {
+            $query->whereIn('d.id', (array) $filters['document_ids']);
+        }
+        if (isset($filters['date_from'])) {
+            $query->where('d.created_at', '>=', $filters['date_from']);
+        }
+        if (isset($filters['date_to'])) {
+            $query->where('d.created_at', '<=', $filters['date_to']);
+        }
+        if (isset($filters['model_name'])) {
+            $query->where("{$alias}.model_name", $filters['model_name']);
+        }
+
+        return $query;
+    }
+
+    private function applyFiltersFts($query, array $filters): mixed
+    {
+        if (isset($filters['document_ids'])) {
+            $query->whereIn('d.id', (array) $filters['document_ids']);
+        }
+        if (isset($filters['date_from'])) {
+            $query->where('d.created_at', '>=', $filters['date_from']);
+        }
+        if (isset($filters['date_to'])) {
+            $query->where('d.created_at', '<=', $filters['date_to']);
+        }
+
+        return $query;
     }
 
     private function fuseResults(array $vectorResults, array $ftsResults, int $topK): array
@@ -161,77 +338,26 @@ class PgvectorDriver implements VectorStoreInterface
         return $results;
     }
 
-    public function search(array $queryVector, int $topK = 5, array $filters = []): array
+    private function cosineSimilarity(array $a, array $b): float
     {
-        $vectorLiteral = '['.implode(',', $queryVector).']';
+        $dot = 0.0;
+        $normA = 0.0;
+        $normB = 0.0;
+        $len = min(count($a), count($b));
 
-        $query = $this->db->table($this->table, 've')
-            ->select(
-                've.id',
-                've.chunk_id',
-                'dc.content',
-                'd.id as document_id',
-                'd.title as document_title',
-                'dc.chunk_index',
-                'dc.page_number',
-                'd.created_at as document_created_at',
-            )
-            ->selectRaw('1 - (ve.embedding <=> ?::vector) as similarity_score', [$vectorLiteral])
-            ->join('document_chunks as dc', 'dc.id', '=', 've.chunk_id')
-            ->join('documents as d', 'd.id', '=', 'dc.document_id')
-            ->whereNull('d.deleted_at')
-            ->orderByRaw('ve.embedding <=> ?::vector', [$vectorLiteral])
-            ->limit($topK);
-
-        if (isset($filters['document_ids'])) {
-            $query->whereIn('d.id', (array) $filters['document_ids']);
+        for ($i = 0; $i < $len; $i++) {
+            $dot += $a[$i] * $b[$i];
+            $normA += $a[$i] * $a[$i];
+            $normB += $b[$i] * $b[$i];
         }
 
-        if (isset($filters['date_from'])) {
-            $query->where('d.created_at', '>=', $filters['date_from']);
+        $normA = sqrt($normA);
+        $normB = sqrt($normB);
+
+        if ($normA === 0.0 || $normB === 0.0) {
+            return 0.0;
         }
 
-        if (isset($filters['date_to'])) {
-            $query->where('d.created_at', '<=', $filters['date_to']);
-        }
-
-        if (isset($filters['model_name'])) {
-            $query->where('ve.model_name', $filters['model_name']);
-        }
-
-        $threshold = (float) ($filters['similarity_threshold'] ?? 0.65);
-
-        $results = $query->get()->toArray();
-
-        return array_values(
-            array_filter($results, fn (object $row): bool => $row->similarity_score >= $threshold)
-        );
-    }
-
-    public function delete(array $ids): void
-    {
-        VectorEmbedding::whereIn('id', $ids)->delete();
-    }
-
-    public function deleteByDocumentId(string $documentId): void
-    {
-        $this->db->table($this->table, 've')
-            ->join('document_chunks as dc', 'dc.id', '=', 've.chunk_id')
-            ->where('dc.document_id', $documentId)
-            ->delete();
-    }
-
-    public function getStats(): array
-    {
-        $count = VectorEmbedding::count();
-        $modelCounts = VectorEmbedding::selectRaw('model_name, count(*) as count')
-            ->groupBy('model_name')
-            ->pluck('count', 'model_name')
-            ->toArray();
-
-        return [
-            'total_vectors' => $count,
-            'by_model' => $modelCounts,
-        ];
+        return $dot / ($normA * $normB);
     }
 }

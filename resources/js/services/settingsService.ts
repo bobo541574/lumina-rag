@@ -1,5 +1,5 @@
-import { get, put, del } from './api'
-import type { ApiResponse } from '../types'
+import { get, post, put, del } from './api'
+import type { ApiResponse, AiModel } from '../types'
 
 export interface SettingDefinition {
   label: string
@@ -37,5 +37,27 @@ export const settingsService = {
 
   async bulkUpdate(settings: Record<string, { value: string; type?: string }>) {
     return put<Record<string, { success: boolean }>>('/settings/bulk', { settings })
+  },
+
+  // AI Models
+  async getAiModels(type?: string) {
+    const params = type ? { type } : undefined
+    return get<AiModel[]>('/settings/ai-models', params)
+  },
+
+  async getAiModel(id: string) {
+    return get<AiModel>(`/settings/ai-models/${id}`)
+  },
+
+  async createAiModel(data: Partial<AiModel>) {
+    return post<AiModel>('/settings/ai-models', data)
+  },
+
+  async updateAiModel(id: string, data: Partial<AiModel>) {
+    return put<AiModel>(`/settings/ai-models/${id}`, data)
+  },
+
+  async deleteAiModel(id: string) {
+    return del(`/settings/ai-models/${id}`)
   },
 }

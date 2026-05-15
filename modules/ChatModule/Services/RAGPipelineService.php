@@ -6,12 +6,16 @@ namespace Modules\ChatModule\Services;
 
 use Carbon\Carbon;
 use Generator;
+use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Support\Facades\Log;
 use Modules\ChatModule\Contracts\RAGPipelineServiceInterface;
 use Modules\ChatModule\Models\ChatMessage;
 use Modules\ChatModule\Models\ChatSession;
 use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
+use Modules\EmbeddingModule\Services\ProviderFactory;
 use Modules\LLMModule\Contracts\LLMServiceInterface;
+use Modules\LLMModule\Services\LLMService;
+use Modules\SettingsModule\Models\AiModel;
 use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
 
 class RAGPipelineService implements RAGPipelineServiceInterface
@@ -42,10 +46,20 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
     private ?string $userId;
 
+    private ProviderFactory $providerFactory;
+
+    private CacheRepository $cache;
+
+    private ?AiModel $activeEmbeddingModel = null;
+
+    private ?AiModel $activeLlmModel = null;
+
     public function __construct(
         EmbeddingServiceInterface $embedder,
         VectorStoreInterface $vectorStore,
         LLMServiceInterface $llm,
+        ProviderFactory $providerFactory,
+        CacheRepository $cache,
         int $topK = 5,
         float $similarityThreshold = 0.65,
         int $maxQuestionLength = 1000,
@@ -56,10 +70,14 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         bool $mmrEnabled = true,
         float $mmrLambda = 0.7,
         ?string $userId = null,
+        ?string $activeEmbeddingModelId = null,
+        ?string $activeLlmModelId = null,
     ) {
         $this->embedder = $embedder;
         $this->vectorStore = $vectorStore;
         $this->llm = $llm;
+        $this->providerFactory = $providerFactory;
+        $this->cache = $cache;
         $this->topK = $topK;
         $this->similarityThreshold = $similarityThreshold;
         $this->maxQuestionLength = $maxQuestionLength;
@@ -70,6 +88,59 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $this->mmrEnabled = $mmrEnabled;
         $this->mmrLambda = $mmrLambda;
         $this->userId = $userId;
+
+        try {
+            if ($activeEmbeddingModelId !== null) {
+                $this->activeEmbeddingModel = AiModel::find($activeEmbeddingModelId);
+            }
+            if ($this->activeEmbeddingModel === null) {
+                $this->activeEmbeddingModel = AiModel::active()->embedding()->orderBy('sort_order')->first();
+            }
+
+            if ($activeLlmModelId !== null) {
+                $this->activeLlmModel = AiModel::find($activeLlmModelId);
+            }
+            if ($this->activeLlmModel === null) {
+                $this->activeLlmModel = AiModel::active()->llm()->orderBy('sort_order')->first();
+            }
+        } catch (\Throwable) {
+            // DB not available yet
+        }
+
+        // Override settings from active models
+        if ($this->activeEmbeddingModel !== null && $this->activeEmbeddingModel->settings !== null) {
+            $s = $this->activeEmbeddingModel->settings;
+            if (isset($s['top_k'])) {
+                $this->topK = (int) $s['top_k'];
+            }
+            if (isset($s['similarity_threshold'])) {
+                $this->similarityThreshold = (float) $s['similarity_threshold'];
+            }
+            if (isset($s['search_mode'])) {
+                $this->searchMode = (string) $s['search_mode'];
+            }
+            if (isset($s['query_expansion_enabled'])) {
+                $this->queryExpansionEnabled = (bool) $s['query_expansion_enabled'];
+            }
+            if (isset($s['num_expansion_queries'])) {
+                $this->numExpansionQueries = (int) $s['num_expansion_queries'];
+            }
+            if (isset($s['mmr_enabled'])) {
+                $this->mmrEnabled = (bool) $s['mmr_enabled'];
+            }
+            if (isset($s['mmr_lambda'])) {
+                $this->mmrLambda = (float) $s['mmr_lambda'];
+            }
+        }
+        if ($this->activeLlmModel !== null && $this->activeLlmModel->settings !== null) {
+            $s = $this->activeLlmModel->settings;
+            if (isset($s['max_question_length'])) {
+                $this->maxQuestionLength = (int) $s['max_question_length'];
+            }
+            if (isset($s['max_messages_per_session'])) {
+                $this->maxMessagesPerSession = (int) $s['max_messages_per_session'];
+            }
+        }
     }
 
     public function ask(string $question, array $options = []): array
@@ -92,7 +163,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             $minThreshold = min($this->similarityThreshold, 0.40);
             $filters = array_merge($autoFilters, $options['document_filter'] ?? []);
             $filters['similarity_threshold'] = $minThreshold;
-            $filters['model_name'] = config('rag.embedding.model', 'text-embedding-3-small');
+            $filters['model_name'] = $this->activeEmbeddingModel?->model ?? config('rag.embedding.model', 'text-embedding-3-small');
 
             $chunks = $this->searchMode === 'hybrid'
                 ? $this->vectorStore->searchHybrid($sq, $questionVector, $this->topK * 3, $filters)
@@ -131,7 +202,8 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $context = $this->reorderForLostInTheMiddle($chunks);
 
         $t0 = microtime(true);
-        $response = $this->llm->complete($systemPrompt, $question, $context, [
+        $llm = $this->resolveLLM($options);
+        $response = $llm->complete($systemPrompt, $question, $context, [
             'temperature' => 0.3,
         ]);
         $llmTime = (microtime(true) - $t0) * 1000;
@@ -184,7 +256,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             $minThreshold = min($this->similarityThreshold, 0.40);
             $filters = array_merge($autoFilters, $options['document_filter'] ?? []);
             $filters['similarity_threshold'] = $minThreshold;
-            $filters['model_name'] = config('rag.embedding.model', 'text-embedding-3-small');
+            $filters['model_name'] = $this->activeEmbeddingModel?->model ?? config('rag.embedding.model', 'text-embedding-3-small');
 
             $chunks = $this->searchMode === 'hybrid'
                 ? $this->vectorStore->searchHybrid($sq, $questionVector, $this->topK * 3, $filters)
@@ -228,7 +300,8 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         $fullContent = '';
         $t0 = microtime(true);
-        $stream = $this->llm->completeStream($systemPrompt, $question, $context, ['temperature' => 0.3]);
+        $llm = $this->resolveLLM($options);
+        $stream = $llm->completeStream($systemPrompt, $question, $context, ['temperature' => 0.3]);
 
         foreach ($stream as $chunk) {
             $fullContent .= $chunk;
@@ -603,6 +676,28 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         }
 
         return false;
+    }
+
+    private function resolveLLM(array $options): LLMServiceInterface
+    {
+        $modelId = $options['llm_model_id'] ?? null;
+
+        if ($modelId === null) {
+            return $this->llm;
+        }
+
+        $aiModel = AiModel::find($modelId);
+
+        if ($aiModel === null || ! $aiModel->is_active || $aiModel->type !== 'llm') {
+            return $this->llm;
+        }
+
+        $provider = $this->providerFactory->createLLMProvider($aiModel);
+
+        return new LLMService(
+            provider: $provider,
+            maxContextTokens: $aiModel->max_context_tokens ?? (int) config('rag.llm.max_context_tokens', 4000),
+        );
     }
 
     private function buildSources(array $chunks): array

@@ -2,18 +2,31 @@
 
 declare(strict_types=1);
 
+use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Modules\ChatModule\Services\RAGPipelineService;
 use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
+use Modules\EmbeddingModule\Services\ProviderFactory;
 use Modules\LLMModule\Contracts\LLMResponseInterface;
 use Modules\LLMModule\Contracts\LLMServiceInterface;
 use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
+
+function makePipeline(
+    EmbeddingServiceInterface $embedder,
+    VectorStoreInterface $vectorStore,
+    LLMServiceInterface $llm,
+): RAGPipelineService {
+    $providerFactory = mock(ProviderFactory::class);
+    $cache = mock(CacheRepository::class);
+
+    return new RAGPipelineService($embedder, $vectorStore, $llm, $providerFactory, $cache);
+}
 
 test('test_ask_with_empty_question_throws_exception', function (): void {
     $embedder = mock(EmbeddingServiceInterface::class);
     $vectorStore = mock(VectorStoreInterface::class);
     $llm = mock(LLMServiceInterface::class);
 
-    $service = new RAGPipelineService($embedder, $vectorStore, $llm);
+    $service = makePipeline($embedder, $vectorStore, $llm);
 
     expect(fn () => $service->ask(''))->toThrow(InvalidArgumentException::class);
 });
@@ -27,7 +40,7 @@ test('test_ask_returns_refusal_when_no_chunks_found', function (): void {
 
     $llm = mock(LLMServiceInterface::class);
 
-    $service = new RAGPipelineService($embedder, $vectorStore, $llm);
+    $service = makePipeline($embedder, $vectorStore, $llm);
     $result = $service->ask('test question');
 
     expect($result['message']['content'])->toStartWith('I cannot answer this question based on the available documents.');
@@ -62,7 +75,7 @@ test('test_ask_returns_answer_with_sources', function (): void {
     $llm = mock(LLMServiceInterface::class);
     $llm->shouldReceive('complete')->andReturn($response);
 
-    $service = new RAGPipelineService($embedder, $vectorStore, $llm);
+    $service = makePipeline($embedder, $vectorStore, $llm);
     $result = $service->ask('test question');
 
     expect($result['message']['content'])->toBe('This is the answer.');

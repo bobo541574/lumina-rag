@@ -15,9 +15,6 @@ class UploadDocumentRequest extends FormRequest
 
     public function rules(): array
     {
-        $availableModels = config('rag.embedding.available_models', []);
-        $modelsString = is_array($availableModels) ? implode(',', $availableModels) : (string) $availableModels;
-
         return [
             'file' => [
                 'required',
@@ -33,21 +30,25 @@ class UploadDocumentRequest extends FormRequest
             'embedding_model' => [
                 'nullable',
                 'string',
-                'in:'.$modelsString,
+                'max:255',
+            ],
+            'embedding_model_id' => [
+                'nullable',
+                'string',
+                'exists:ai_models,id',
             ],
         ];
     }
 
     public function messages(): array
     {
-        $availableModels = config('rag.embedding.available_models', []);
-        $modelsList = is_array($availableModels) ? implode(', ', $availableModels) : (string) $availableModels;
-
         return [
             'file.required' => 'A document file is required.',
-            'file.mimes' => 'File must be one of: PDF, DOCX, TXT, CSV, MD.',
+            'file.file' => 'The uploaded file is invalid.',
+            'file.mimes' => 'Only PDF, DOCX, TXT, CSV, and Markdown files are allowed.',
             'file.max' => 'File size must not exceed 50MB.',
-            'embedding_model.in' => 'Embedding model must be one of: '.$modelsList.'.',
+            'title.max' => 'Title must not exceed 255 characters.',
+            'embedding_model_id.exists' => 'The selected embedding model does not exist.',
         ];
     }
 }

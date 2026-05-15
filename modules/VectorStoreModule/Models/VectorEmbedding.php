@@ -17,7 +17,7 @@ class VectorEmbedding extends Model
 
     protected $fillable = [
         'chunk_id',
-        'embedding',
+        'dimensions',
         'model_name',
         'content_hash',
     ];
@@ -25,7 +25,7 @@ class VectorEmbedding extends Model
     protected function casts(): array
     {
         return [
-            'embedding' => 'array',
+            'dimensions' => 'integer',
             'created_at' => 'datetime',
         ];
     }

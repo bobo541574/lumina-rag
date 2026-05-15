@@ -1,70 +1,83 @@
 <template>
-  <div class="min-h-screen bg-gray-50 flex items-center justify-center px-4">
-    <div class="max-w-md w-full bg-white rounded-lg shadow-sm border border-gray-200 p-8">
-      <h1 class="text-2xl font-semibold text-gray-900 text-center mb-2">Lumina RAG</h1>
-      <p class="text-sm text-gray-500 text-center mb-8">Create your account</p>
+  <div class="min-h-screen bg-surface-50 flex items-center justify-center px-4">
+    <div class="max-w-md w-full bg-white rounded-card shadow-sm border border-surface-200 p-8">
+      <h1 class="text-2xl font-semibold text-surface-900 text-center mb-2">Lumina RAG</h1>
+      <p class="text-sm text-surface-500 text-center mb-8">Create your account</p>
 
-      <form @submit.prevent="handleRegister" class="space-y-4">
+      <form @submit.prevent="handleRegister" class="space-y-4" novalidate>
         <div>
-          <label for="name" class="block text-sm font-medium text-gray-700 mb-1">Name</label>
-          <input
+          <label for="name" class="block text-sm font-medium text-surface-700 mb-1">Name</label>
+          <AppInput
             id="name"
             v-model="name"
             type="text"
             required
             autocomplete="name"
-            class="w-full rounded-lg border border-gray-300 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             placeholder="Your name"
+            :aria-invalid="fieldErrors.name ? 'true' : undefined"
+            :aria-describedby="fieldErrors.name ? 'name-error' : undefined"
+            @update:modelValue="clearFieldError('name')"
           />
+          <p v-if="fieldErrors.name" id="name-error" class="mt-1 text-xs text-danger-600">
+            {{ fieldErrors.name }}
+          </p>
         </div>
 
         <div>
-          <label for="email" class="block text-sm font-medium text-gray-700 mb-1">Email</label>
-          <input
+          <label for="email" class="block text-sm font-medium text-surface-700 mb-1">Email</label>
+          <AppInput
             id="email"
             v-model="email"
             type="email"
             required
             autocomplete="email"
-            class="w-full rounded-lg border border-gray-300 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             placeholder="you@example.com"
+            :aria-invalid="fieldErrors.email ? 'true' : undefined"
+            :aria-describedby="fieldErrors.email ? 'email-error' : undefined"
+            @update:modelValue="clearFieldError('email')"
           />
+          <p v-if="fieldErrors.email" id="email-error" class="mt-1 text-xs text-danger-600">
+            {{ fieldErrors.email }}
+          </p>
         </div>
 
         <div>
-          <label for="password" class="block text-sm font-medium text-gray-700 mb-1">Password</label>
-          <input
+          <label for="password" class="block text-sm font-medium text-surface-700 mb-1">Password</label>
+          <AppInput
             id="password"
             v-model="password"
             type="password"
             required
             autocomplete="new-password"
             minlength="8"
-            class="w-full rounded-lg border border-gray-300 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             placeholder="At least 8 characters"
+            :aria-invalid="fieldErrors.password ? 'true' : undefined"
+            :aria-describedby="fieldErrors.password ? 'password-error' : undefined"
+            @update:modelValue="clearFieldError('password')"
           />
+          <p v-if="fieldErrors.password" id="password-error" class="mt-1 text-xs text-danger-600">
+            {{ fieldErrors.password }}
+          </p>
         </div>
 
-        <div v-if="error" class="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700">
-          {{ error }}
+        <div v-if="globalError" class="bg-danger-50 border border-danger-200 rounded-card px-4 py-3 text-sm text-danger-700">
+          {{ globalError }}
         </div>
 
-        <button
+        <AppButton
           type="submit"
-          :disabled="isLoading"
-          class="w-full bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+          variant="primary"
+          block
+          :loading="isLoading"
+          loading-label="Creating account…"
         >
-          <span v-if="isLoading" class="inline-flex items-center gap-2">
-            <span class="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
-            Creating account...
-          </span>
-          <span v-else>Create account</span>
-        </button>
+          Create account
+        </AppButton>
       </form>
 
-      <p class="text-sm text-gray-500 text-center mt-6">
+      <p class="text-sm text-surface-500 text-center mt-6">
         Already have an account?
-        <router-link to="/login" class="text-blue-600 hover:text-blue-700 font-medium">Sign in</router-link>
+        <router-link to="/login" class="text-brand-600 hover:text-brand-700 font-medium">Sign in</router-link>
       </p>
     </div>
   </div>
@@ -72,6 +85,8 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import AppInput from '../components/ui/AppInput.vue'
+import AppButton from '../components/ui/AppButton.vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/authStore'
 
@@ -82,23 +97,42 @@ const name = ref('')
 const email = ref('')
 const password = ref('')
 const isLoading = ref(false)
-const error = ref<string | null>(null)
+const globalError = ref<string | null>(null)
+const fieldErrors = ref<Record<string, string>>({})
+
+function clearFieldError(field: string) {
+  if (fieldErrors.value[field]) {
+    delete fieldErrors.value[field]
+  }
+}
+
+function applyServerErrors(errors: Record<string, string[] | string>) {
+  const next: Record<string, string> = {}
+  for (const [field, messages] of Object.entries(errors)) {
+    next[field] = Array.isArray(messages) ? messages[0] : messages
+  }
+  fieldErrors.value = next
+}
 
 async function handleRegister() {
   if (!name.value.trim() || !email.value.trim() || !password.value) return
 
   isLoading.value = true
-  error.value = null
+  globalError.value = null
+  fieldErrors.value = {}
 
   try {
     await auth.register(name.value, email.value, password.value)
     router.push('/')
   } catch (e: any) {
-    const msg = e.response?.data?.message ?? 'Registration failed'
-    if (e.response?.data?.errors) {
-      error.value = Object.values(e.response.data.errors).flat().join(', ')
+    const data = e?.response?.data
+    if (data?.errors && typeof data.errors === 'object') {
+      applyServerErrors(data.errors)
+      if (data.message && Object.keys(data.errors).length === 0) {
+        globalError.value = data.message
+      }
     } else {
-      error.value = msg
+      globalError.value = data?.message ?? 'Registration failed'
     }
   } finally {
     isLoading.value = false

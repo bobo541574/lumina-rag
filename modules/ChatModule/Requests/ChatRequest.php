@@ -50,6 +50,11 @@ class ChatRequest extends FormRequest
                 'nullable',
                 'date',
             ],
+            'llm_model_id' => [
+                'nullable',
+                'string',
+                'exists:ai_models,id',
+            ],
         ];
     }
 

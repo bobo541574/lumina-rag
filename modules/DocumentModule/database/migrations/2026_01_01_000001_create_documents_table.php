@@ -20,6 +20,7 @@ return new class extends Migration
             $table->integer('page_count')->nullable();
             $table->string('mime_type', 100);
             $table->string('file_hash', 64)->unique();
+            $table->text('description')->nullable();
             $table->string('status', 20)->default('pending');
             $table->integer('chunks_count')->default(0);
             $table->text('error_message')->nullable();

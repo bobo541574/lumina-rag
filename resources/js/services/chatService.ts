@@ -9,12 +9,13 @@ export type StreamingCallbacks = {
 }
 
 export const chatService = {
-  async ask(question: string, sessionId?: string, documentFilter?: Record<string, unknown>) {
+  async ask(question: string, sessionId?: string, documentFilter?: Record<string, unknown>, llmModelId?: string) {
     return post<{ session_id: string; message: ChatMessage }>('/chat', {
       question,
       session_id: sessionId,
       stream: false,
       document_filter: documentFilter,
+      ...(llmModelId ? { llm_model_id: llmModelId } : {}),
     })
   },
 
@@ -23,6 +24,7 @@ export const chatService = {
     sessionId: string | undefined,
     callbacks: StreamingCallbacks,
     documentFilter?: Record<string, unknown>,
+    llmModelId?: string,
   ): AbortController {
     const controller = new AbortController()
     const token = localStorage.getItem('lumina_token')
@@ -39,6 +41,7 @@ export const chatService = {
         session_id: sessionId,
         stream: true,
         ...(documentFilter ? { document_filter: documentFilter } : {}),
+        ...(llmModelId ? { llm_model_id: llmModelId } : {}),
       }),
       signal: controller.signal,
     }).then(async (response) => {

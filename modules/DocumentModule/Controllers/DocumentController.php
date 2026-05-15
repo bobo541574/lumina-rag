@@ -29,6 +29,7 @@ class DocumentController extends Controller
                 $request->input('title'),
                 $user?->id,
                 $request->input('embedding_model'),
+                $request->input('embedding_model_id'),
             );
 
             return response()->json([
@@ -124,6 +125,29 @@ class DocumentController extends Controller
                 'success' => false,
                 'message' => 'Document not found.',
             ], 404);
+        }
+    }
+
+    public function update(Request $request, string $id): JsonResponse
+    {
+        try {
+            $user = $request->input('authenticated_user');
+            $document = $this->documentService->updateDocument(
+                $id,
+                $request->only(['title', 'description']),
+                $user?->id,
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Document updated successfully.',
+                'data' => $document->toArray(),
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 500);
         }
     }
 

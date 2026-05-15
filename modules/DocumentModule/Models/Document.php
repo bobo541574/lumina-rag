@@ -8,8 +8,10 @@ use Database\Factories\DocumentFactory;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Modules\SettingsModule\Models\AiModel;
 
 class Document extends Model
 {
@@ -21,12 +23,15 @@ class Document extends Model
     protected $fillable = [
         'user_id',
         'title',
+        'description',
         'original_filename',
         'file_path',
         'file_size',
         'page_count',
         'mime_type',
         'file_hash',
+        'embedding_model',
+        'embedding_model_id',
         'status',
         'chunks_count',
         'error_message',
@@ -39,6 +44,7 @@ class Document extends Model
             'file_size' => 'integer',
             'page_count' => 'integer',
             'chunks_count' => 'integer',
+            'description' => 'string',
             'processed_at' => 'datetime',
             'deleted_at' => 'datetime',
         ];
@@ -47,5 +53,10 @@ class Document extends Model
     public function chunks(): HasMany
     {
         return $this->hasMany(DocumentChunk::class, 'document_id');
+    }
+
+    public function embeddingModel(): BelongsTo
+    {
+        return $this->belongsTo(AiModel::class, 'embedding_model_id');
     }
 }

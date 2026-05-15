@@ -1,14 +1,55 @@
 <template>
   <div class="mb-6">
     <div
-      @drop.prevent="handleDrop"
-      @dragover.prevent="isDragging = true"
-      @dragleave.prevent="isDragging = false"
       :class="[
-        'border-2 border-dashed rounded-lg p-8 text-center transition-colors',
-        isDragging ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:border-gray-400'
+        'border-2 border-dashed rounded-card transition-colors',
+        isDragging ? 'border-brand-500 bg-brand-50' : 'border-surface-300 hover:border-surface-400',
       ]"
     >
+      <div
+        v-if="!isUploading"
+        role="button"
+        tabindex="0"
+        aria-label="Upload document — click to browse or drag and drop a file"
+        class="p-8 text-center cursor-pointer rounded-t-card focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2"
+        @click="openFilePicker"
+        @keydown.enter.prevent="openFilePicker"
+        @keydown.space.prevent="openFilePicker"
+        @drop.prevent="handleDrop"
+        @dragover.prevent="setDragging(true)"
+        @dragleave.prevent="setDragging(false)"
+      >
+        <svg class="w-10 h-10 mx-auto text-surface-400 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M12 4v12m0-12l-4 4m4-4l4 4" />
+        </svg>
+        <p class="text-surface-600 mb-2">Drag & drop a document here, or</p>
+        <AppButton variant="primary" size="md" @click.stop="openFilePicker">
+          Browse files
+        </AppButton>
+        <p class="text-xs text-surface-400 mt-2">PDF, DOCX, TXT, CSV, MD — Max 50MB</p>
+      </div>
+
+      <div v-else class="p-8 flex items-center justify-center gap-2" role="status" aria-live="polite">
+        <AppSpinner size="md" />
+        <span class="text-surface-600">Uploading…</span>
+      </div>
+
+      <div class="px-6 py-4 border-t border-surface-200 bg-white rounded-b-card">
+        <label class="text-sm text-surface-600 font-medium">Embedding Model</label>
+        <div class="mt-1 flex items-center gap-2">
+          <AppSelect v-model="selectedModelId">
+            <option value="">Default (auto-select)</option>
+            <option v-for="m in embeddingModels" :key="m.id" :value="m.id">{{ m.name }}</option>
+          </AppSelect>
+          <span v-if="selectedModelId && selectedModel" class="text-xs text-surface-500">
+            ({{ selectedModel.provider }} / {{ selectedModel.model }}{{ selectedModel.dimensions ? `, ${selectedModel.dimensions}d` : '' }})
+          </span>
+        </div>
+        <div v-if="selectedModelId && selectedModel?.description" class="mt-2 text-xs text-surface-500 bg-surface-50 border border-surface-200 rounded-card px-3 py-2">
+          {{ selectedModel.description }}
+        </div>
+      </div>
+
       <input
         ref="fileInput"
         type="file"
@@ -16,72 +57,58 @@
         class="hidden"
         @change="handleFileSelect"
       />
-      <div v-if="!isUploading">
-        <p class="text-gray-600 mb-2">Drag & drop a document here, or</p>
-        <button @click="fileInput?.click()" class="text-blue-600 font-medium hover:text-blue-700">
-          Browse files
-        </button>
-        <p class="text-xs text-gray-400 mt-2">PDF, DOCX, TXT, CSV, MD — Max 50MB</p>
-
-        <div class="mt-4 pt-4 border-t border-gray-200">
-          <div class="flex items-center justify-center gap-2 mb-2">
-            <label class="text-sm text-gray-600">Embedding Model</label>
-          </div>
-          <select v-model="selectedModel"
-            class="text-sm border border-gray-300 rounded-lg px-3 py-1.5 focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
-          >
-            <option v-for="m in modelOptions" :key="m.value" :value="m.value">{{ m.label }}</option>
-          </select>
-        </div>
-      </div>
-      <div v-else class="flex items-center justify-center gap-2">
-        <div class="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-        <span class="text-gray-600">Uploading...</span>
-      </div>
     </div>
 
-    <div v-if="error" class="mt-2 text-sm text-red-600">{{ error }}</div>
+    <div v-if="error" class="mt-2 text-sm text-danger-600" role="alert">{{ error }}</div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import AppSelect from './ui/AppSelect.vue'
+import AppButton from './ui/AppButton.vue'
+import AppSpinner from './ui/AppSpinner.vue'
 import { useDocumentStore } from '../stores/documentStore'
-import { useSettingsStore } from '../stores/settingsStore'
+import { useToast } from '../composables/useToast'
+import { settingsService } from '../services/settingsService'
+import type { AiModel } from '../types'
+
+const emit = defineEmits<{
+  uploaded: []
+}>()
 
 const store = useDocumentStore()
-const settingsStore = useSettingsStore()
+const toast = useToast()
 const fileInput = ref<HTMLInputElement | null>(null)
 const isDragging = ref(false)
 const isUploading = ref(false)
 const error = ref<string | null>(null)
-const selectedModel = ref('')
-const defaultModelLabel = ref('')
+const selectedModelId = ref('')
+const embeddingModels = ref<AiModel[]>([])
+const selectedModel = computed(() => embeddingModels.value.find(m => m.id === selectedModelId.value))
 
-const availableModels = computed(() => {
-  const raw = settingsStore.getSettingValue('RAG_EMBEDDING_AVAILABLE_MODELS')
-  if (Array.isArray(raw)) return raw
-  return []
-})
+const allowedTypes = [
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'text/plain',
+  'text/csv',
+  'text/markdown',
+]
+const allowedExt = /\.(pdf|docx|txt|csv|md)$/i
+const maxSize = 50 * 1024 * 1024
 
-const defaultModel = computed(() => {
-  return settingsStore.getSettingValue('RAG_EMBEDDING_MODEL') ?? ''
-})
+function openFilePicker() {
+  if (isUploading.value) return
+  fileInput.value?.click()
+}
 
-const modelOptions = computed(() => {
-  const def = defaultModel.value
-  const list = availableModels.value.length > 0 ? availableModels.value : ['text-embedding-3-small', 'text-embedding-3-large', 'text-embedding-ada-002']
-  return [
-    { value: '', label: `From settings (${def || 'default'})` },
-    ...list.map((m: string) => ({ value: m, label: m })),
-  ]
-})
+function setDragging(value: boolean) {
+  if (isUploading.value) return
+  isDragging.value = value
+}
 
 async function handleFile(file: File) {
-  const allowedTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain', 'text/csv', 'text/markdown']
-  const maxSize = 50 * 1024 * 1024
-
-  if (!allowedTypes.includes(file.type) && !file.name.match(/\.(pdf|docx|txt|csv|md)$/i)) {
+  if (!allowedTypes.includes(file.type) && !file.name.match(allowedExt)) {
     error.value = 'File type not supported. Allowed: PDF, DOCX, TXT, CSV, MD'
     return
   }
@@ -93,16 +120,25 @@ async function handleFile(file: File) {
   error.value = null
   isUploading.value = true
   try {
-    await store.uploadDocument(file, undefined, selectedModel.value || undefined)
+    await store.uploadDocument(file, undefined, selectedModelId.value || undefined)
+    toast.success(`"${file.name}" uploaded — processing started`)
+    emit('uploaded')
   } catch {
     error.value = store.error
+    if (store.error) toast.error(store.error)
   } finally {
     isUploading.value = false
+    isDragging.value = false
   }
 }
 
-onMounted(() => {
-  settingsStore.fetch()
+onMounted(async () => {
+  try {
+    const res = await settingsService.getAiModels('embedding')
+    embeddingModels.value = res.data ?? []
+  } catch {
+    // fall back to default (empty) selection
+  }
 })
 
 function handleDrop(event: DragEvent) {

@@ -1,47 +1,89 @@
 <template>
   <div class="space-y-1">
-    <div v-if="sessions.length === 0" class="text-sm text-gray-500 text-center py-8">
-      No chat sessions yet
+    <!-- Skeleton (initial fetch) -->
+    <div v-if="loading && sessions.length === 0" aria-busy="true" aria-label="Loading chat sessions" class="space-y-2 px-2 py-2">
+      <div v-for="i in 5" :key="i" class="space-y-1.5">
+        <div class="h-3 bg-surface-200 rounded animate-pulse" :style="{ width: `${60 + ((i * 7) % 30)}%` }" />
+        <div class="h-2 w-16 bg-surface-100 rounded animate-pulse" />
+      </div>
     </div>
+
+    <AppEmptyState
+      v-else-if="sessions.length === 0"
+      icon="chat"
+      title="No chat sessions yet"
+      description="Start a new chat to see it here."
+    />
     <div
       v-for="session in sessions"
       :key="session.id"
       :class="[
-        'group flex items-center rounded-lg transition-colors',
-        activeId === session.id ? 'bg-blue-50' : 'hover:bg-gray-100'
+        'group flex items-stretch rounded-lg transition-colors relative',
+        activeId === session.id ? 'bg-brand-50' : 'hover:bg-surface-100',
       ]"
     >
-      <button @click="$emit('select', session.id)" class="flex-1 text-left px-3 py-2 min-w-0">
-        <p :class="['truncate text-sm', activeId === session.id ? 'text-blue-700 font-medium' : 'text-gray-700']">{{ session.title }}</p>
-        <p class="text-xs text-gray-400 mt-1">{{ formatDate(session.last_activity_at) }}</p>
-      </button>
-      <button
-        @click.stop="$emit('delete', session.id)"
-        class="opacity-0 group-hover:opacity-100 p-1.5 mr-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 transition-all"
-        title="Delete session"
+      <!-- Active session left accent bar -->
+      <span
+        v-if="activeId === session.id"
+        class="absolute left-0 top-1.5 bottom-1.5 w-1 rounded-r-full bg-brand-600"
+        aria-hidden="true"
+      />
+      <AppButton
+        align="left"
+        block
+        variant="ghost"
+        :class="[
+          'flex-1 min-w-0 hover:!bg-transparent !rounded-r-none',
+          activeId === session.id && '!text-brand-700',
+        ]"
+        @click="$emit('select', session.id)"
       >
-        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <span class="flex-1 min-w-0">
+          <span :class="['block truncate text-sm', activeId === session.id ? 'font-medium' : '']">
+            {{ session.title }}
+          </span>
+          <span class="block text-xs text-surface-400 mt-1" :title="absoluteTime(session.last_activity_at)">
+            {{ formatRelativeTime(session.last_activity_at) }}
+          </span>
+        </span>
+      </AppButton>
+      <AppButton
+        variant="danger-ghost"
+        size="sm"
+        aria-label="Delete session"
+        :class="[
+          'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 mr-1 self-center !rounded-lg',
+        ]"
+        @click.stop="$emit('delete', session.id)"
+      >
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
         </svg>
-      </button>
+      </AppButton>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
+import AppButton from './ui/AppButton.vue'
+import AppEmptyState from './ui/AppEmptyState.vue'
+import { formatRelativeTime, formatAbsoluteTime } from '../utils/dates'
 import type { ChatSession } from '../types'
 
-defineProps<{
+withDefaults(defineProps<{
   sessions: ChatSession[]
   activeId: string | null
-}>()
+  loading?: boolean
+}>(), {
+  loading: false,
+})
 
 defineEmits<{
   select: [id: string]
   delete: [id: string]
 }>()
 
-function formatDate(date: string): string {
-  return new Date(date).toLocaleDateString()
+function absoluteTime(date: string): string {
+  return formatAbsoluteTime(date)
 }
 </script>

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Modules\DocumentModule\Jobs;
 
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
@@ -16,6 +17,9 @@ use Modules\DocumentModule\Contracts\TextExtractionServiceInterface;
 use Modules\DocumentModule\Models\Document;
 use Modules\DocumentModule\Models\DocumentChunk;
 use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
+use Modules\EmbeddingModule\Services\EmbeddingService;
+use Modules\EmbeddingModule\Services\ProviderFactory;
+use Modules\SettingsModule\Models\AiModel;
 use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
 
 class ProcessDocumentJob implements ShouldQueue
@@ -40,6 +44,8 @@ class ProcessDocumentJob implements ShouldQueue
         TextChunkingServiceInterface $chunker,
         EmbeddingServiceInterface $embedder,
         VectorStoreInterface $vectorStore,
+        ProviderFactory $providerFactory,
+        CacheRepository $cache,
     ): void {
         $document = Document::findOrFail($this->documentId);
         $document->update(['status' => 'processing']);
@@ -49,7 +55,9 @@ class ProcessDocumentJob implements ShouldQueue
 
             $text = $this->extractText($document, $extractor);
             $chunks = $this->saveChunks($document, $text, $chunker);
-            $this->generateEmbeddings($document, $chunks, $embedder, $vectorStore);
+
+            $embedderToUse = $this->resolveEmbedder($document, $providerFactory, $cache, $embedder);
+            $this->generateEmbeddings($document, $chunks, $embedderToUse, $vectorStore);
 
             $document->update([
                 'status' => 'completed',
@@ -64,6 +72,30 @@ class ProcessDocumentJob implements ShouldQueue
 
             throw $e;
         }
+    }
+
+    private function resolveEmbedder(
+        Document $document,
+        ProviderFactory $providerFactory,
+        CacheRepository $cache,
+        EmbeddingServiceInterface $defaultEmbedder,
+    ): EmbeddingServiceInterface {
+        $modelId = $document->embedding_model_id;
+
+        if ($modelId === null) {
+            return $defaultEmbedder;
+        }
+
+        $aiModel = AiModel::find($modelId);
+
+        if ($aiModel === null || ! $aiModel->is_active) {
+            return $defaultEmbedder;
+        }
+
+        $provider = $providerFactory->createEmbeddingProvider($aiModel);
+        $cacheTtl = $aiModel->cache_ttl ?? (int) config('rag.embedding.cache_ttl', 86400);
+
+        return new EmbeddingService($provider, $cache, $cacheTtl);
     }
 
     public function failed(\Throwable $e): void

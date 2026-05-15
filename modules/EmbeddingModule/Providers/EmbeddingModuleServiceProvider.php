@@ -11,6 +11,7 @@ use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
 use Modules\EmbeddingModule\Services\EmbeddingService;
 use Modules\EmbeddingModule\Services\OllamaEmbeddingProvider;
 use Modules\EmbeddingModule\Services\OpenAIEmbeddingProvider;
+use Modules\EmbeddingModule\Services\ProviderFactory;
 
 class EmbeddingModuleServiceProvider extends ServiceProvider
 {
@@ -42,6 +43,8 @@ class EmbeddingModuleServiceProvider extends ServiceProvider
             cache: $app->make(CacheRepository::class),
             cacheTtl: (int) config('rag.embedding.cache_ttl', 86400),
         ));
+
+        $this->app->singleton(ProviderFactory::class);
     }
 
     public function boot(): void

@@ -1,187 +1,280 @@
-# Database Schema (PostgreSQL + pgvector)
+# Database Schema
 
-## Entity Relationship Overview
+PostgreSQL 16 + pgvector. All primary keys are **ULIDs** (26-char Crockford base32). **No DB-level foreign-key constraints** — referential integrity is enforced in service code (intentional design choice; see [PROJECT_RULES.md](../PROJECT_RULES.md)). All timestamp columns use `TIMESTAMPTZ`.
+
+> **Source of truth**: the migrations under `modules/{Module}/database/migrations/` and `database/migrations/`. This document is regenerated when those change.
+
+---
+
+## Entity overview
+
 ```
-users ──< chat_sessions
-users ──< documents
-chat_sessions ──< chat_messages
-documents ──< document_chunks ──< vector_embeddings
+users ──< chat_sessions ──< chat_messages
+users ──< documents     ──< document_chunks ──< vector_embeddings (metadata)
+                                              ╲
+                                               ╲── ve_384 / ve_768 / ve_1024 / ve_1536 / ve_3072
+                                                   (one row per chunk, in the matching-dimension table)
+
+settings   (standalone — runtime overrides for config/rag.*)
+ai_models  (standalone — registry of embedding + LLM endpoints)
 ```
+
+Auxiliary Laravel tables: `users`, `password_reset_tokens`, `sessions` (HTTP session storage), `cache`, `cache_locks`, `jobs`, `failed_jobs`.
+
+---
 
 ## Tables
 
-### chat_sessions
-Stores chat conversation sessions.
+### `users`
+
+`database/migrations/0001_01_01_000000_create_users_table.php`
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
-| id | ULID | PK | Primary key |
-| user_id | ULID | NULLABLE | Optional user ownership (no FK constraint, handled in code) |
-| title | VARCHAR(255) | NULLABLE | Auto-generated from first question |
-| status | VARCHAR(20) | DEFAULT 'active' | active, archived, deleted |
-| message_count | INTEGER | DEFAULT 0 | Cached count for performance |
-| created_at | TIMESTAMPTZ | NOT NULL, DEFAULT NOW() | |
-| updated_at | TIMESTAMPTZ | NOT NULL, DEFAULT NOW() | |
-| deleted_at | TIMESTAMPTZ | NULLABLE | Soft delete |
+| `id` | ULID | PK | |
+| `name` | string | not null | Display name |
+| `email` | string | unique, not null | Login identifier |
+| `email_verified_at` | timestamp | nullable | Laravel default; not currently exercised |
+| `password` | string | not null | bcrypt hash |
+| `remember_token` | string | nullable | Laravel default |
+| `api_token` | string(80) | unique, nullable | 80-char hex token for API auth (`bin2hex(random_bytes(40))`) |
+| `created_at`, `updated_at` | timestamp | not null | |
 
-**Indexes**:
-- `idx_chat_sessions_user_id` on user_id
-- `idx_chat_sessions_status` on status  
-- `idx_chat_sessions_created_at` on created_at (for archival queries)
+---
 
-### chat_messages
-Individual messages within a chat session.
+### `chat_sessions`
+
+`modules/ChatModule/database/migrations/2026_01_01_000001_create_chat_sessions_table.php`
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
-| id | ULID | PK | Primary key |
-| session_id | ULID | NOT NULL | Parent session (no FK constraint, handled in code) |
-| role | VARCHAR(20) | NOT NULL, CHECK (role IN ('user', 'assistant')) | Message role |
-| content | TEXT | NOT NULL | Message text content |
-| sources | JSONB | NULLABLE | Array of source citations |
-| embedding_id | ULID | NULLABLE | Reference to question embedding (no FK constraint, handled in code) |
-| token_count | INTEGER | NULLABLE | Token usage (for analytics) |
-| created_at | TIMESTAMPTZ | NOT NULL, DEFAULT NOW() | |
+| `id` | ULID | PK | |
+| `title` | varchar(255) | default `'New Chat'` | Auto-set from assistant's first reply (first 50 chars) |
+| `user_id` | ULID | nullable | Owning user (no FK; enforced in service) |
+| `is_archived` | boolean | default `false` | Soft archive flag — not the same as soft delete |
+| `message_count` | integer | default `0` | Cached count for performance |
+| `last_activity_at` | timestamptz | not null | Updated on every new message |
+| `created_at`, `updated_at` | timestamptz | default `NOW()` | |
+| `deleted_at` | timestamptz | nullable | Soft delete |
 
 **Indexes**:
-- `idx_chat_messages_session_id` on chat_session_id
-- `idx_chat_messages_created_at` on created_at
-- `idx_chat_messages_sources` GIN index on sources JSONB column
+- `idx_chat_sessions_activity` on `last_activity_at`
+- `idx_chat_sessions_archived` on `is_archived`
 
-### documents
-Uploaded document metadata.
+---
+
+### `chat_messages`
+
+`modules/ChatModule/database/migrations/2026_01_01_000002_create_chat_messages_table.php`
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
-| id | ULID | PK | Primary key |
-| user_id | ULID | NULLABLE | Optional user ownership (no FK constraint, handled in code) |
-| title | VARCHAR(255) | NOT NULL | Document title/filename |
-| file_path | VARCHAR(1000) | NOT NULL | Storage path |
-| mime_type | VARCHAR(100) | NOT NULL | e.g., application/pdf |
-| file_size | BIGINT | NOT NULL | Size in bytes |
-| file_hash | VARCHAR(64) | NOT NULL | SHA-256 hash for dedup |
-| page_count | INTEGER | NULLABLE | Pages (for PDFs) |
-| status | VARCHAR(20) | NOT NULL, DEFAULT 'pending' | pending, processing, completed, failed |
-| error_message | TEXT | NULLABLE | Error details if failed |
-| chunks_count | INTEGER | DEFAULT 0 | Total chunks created |
-| processed_at | TIMESTAMPTZ | NULLABLE | When processing completed |
-| created_at | TIMESTAMPTZ | NOT NULL, DEFAULT NOW() | |
-| updated_at | TIMESTAMPTZ | NOT NULL, DEFAULT NOW() | |
-| deleted_at | TIMESTAMPTZ | NULLABLE | Soft delete |
+| `id` | ULID | PK | |
+| `session_id` | ULID | not null | → `chat_sessions.id` (no FK) |
+| `role` | varchar(20) | not null | `user` or `assistant` |
+| `content` | longtext | not null | Message body (assistant body may be partial if SSE dropped) |
+| `token_count` | integer | nullable | Tokens in the response (assistant only) |
+| `sources` | jsonb | nullable | Array of `{document_id, document_title, chunk_index, page_number, similarity_score, excerpt}` (assistant only) |
+| `created_at`, `updated_at` | timestamptz | default `NOW()` | |
+| `deleted_at` | timestamptz | nullable | Soft delete |
 
 **Indexes**:
-- `uq_documents_file_hash` UNIQUE on file_hash (deduplication)
-- `idx_documents_user_id` on user_id
-- `idx_documents_status` on status
-- `idx_documents_created_at` on created_at
+- `idx_chat_messages_session_id` on `session_id`
+- `idx_chat_messages_session_created` on `(session_id, created_at)` — for thread retrieval
 
-### document_chunks
-Text chunks extracted from documents.
+---
+
+### `documents`
+
+`modules/DocumentModule/database/migrations/2026_01_01_000001_create_documents_table.php` + later add-column migrations.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
-| id | ULID | PK | Primary key |
-| document_id | ULID | NOT NULL | Parent document (no FK constraint, handled in code) |
-| content | TEXT | NOT NULL | Chunk text content |
-| chunk_index | INTEGER | NOT NULL | Order within document |
-| char_start | INTEGER | NOT NULL | Start position in source |
-| char_end | INTEGER | NOT NULL | End position in source |
-| page_number | INTEGER | NULLABLE | Page number (PDF) |
-| token_count | INTEGER | NULLABLE | Estimated token count |
-| vector_id | ULID | NULLABLE | Reference to vector_embeddings (no FK constraint, handled in code) |
-| metadata | JSONB | NULLABLE | Additional metadata |
-| created_at | TIMESTAMPTZ | NOT NULL, DEFAULT NOW() | |
+| `id` | ULID | PK | |
+| `user_id` | ULID | nullable | Owning user (no FK; enforced in service) |
+| `title` | varchar(255) | not null | Editable; defaults to filename |
+| `original_filename` | varchar(255) | not null | As uploaded |
+| `file_path` | varchar(500) | not null | Storage path under `storage/app/` |
+| `file_size` | integer | not null | Bytes |
+| `page_count` | integer | nullable | PDF only |
+| `mime_type` | varchar(100) | not null | |
+| `file_hash` | varchar(64) | unique, not null | SHA-256 of file contents — duplicate detection |
+| `embedding_model` | varchar(100) | nullable | Free-form override (e.g. `text-embedding-3-large`) |
+| `embedding_model_id` | ULID | nullable | → `ai_models.id` of `type=embedding` (no FK) |
+| `description` | text | nullable | Trix-edited HTML — **sanitize server-side** (rendered with `v-html`) |
+| `status` | varchar(20) | default `'pending'` | `pending` / `processing` / `completed` / `failed` |
+| `chunks_count` | integer | default `0` | Cached chunk count |
+| `error_message` | text | nullable | Populated on `failed` |
+| `processed_at` | timestamptz | nullable | When status flipped to `completed` |
+| `created_at`, `updated_at` | timestamptz | default `NOW()` | |
+| `deleted_at` | timestamptz | nullable | Soft delete (cascades to chunks/embeddings via service) |
 
 **Indexes**:
-- `idx_document_chunks_document_id` on document_id
-- `uq_document_chunk_order` UNIQUE on (document_id, chunk_index)
-- `idx_document_chunks_vector_id` on vector_id
+- `idx_documents_status` on `status`
+- `idx_documents_file_hash` on `file_hash` (also unique)
 
-### vector_embeddings
-Vector representations stored via pgvector.
+---
+
+### `document_chunks`
+
+`modules/DocumentModule/database/migrations/2026_01_01_000002_create_document_chunks_table.php`
++ `2026_01_01_000003_add_fts_index_to_document_chunks.php` (Postgres-only)
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
-| id | ULID | PK | Primary key |
-| chunk_id | ULID | NOT NULL | Related chunk (no FK constraint, handled in code) |
-| embedding | vector(1536) | NOT NULL | OpenAI embedding vector |
-| model_name | VARCHAR(100) | NOT NULL | Embedding model identifier |
-| content_hash | VARCHAR(32) | NOT NULL | MD5 of chunk text (cache key) |
-| created_at | TIMESTAMPTZ | NOT NULL, DEFAULT NOW() | |
+| `id` | ULID | PK | |
+| `document_id` | ULID | not null | → `documents.id` (no FK) |
+| `content` | longtext | not null | Chunk text |
+| `chunk_index` | integer | not null | 0-based position within document |
+| `page_number` | integer | nullable | PDF only |
+| `char_start` | integer | not null | Offset within original text |
+| `char_end` | integer | not null | Offset within original text |
+| `token_count` | integer | nullable | Best-effort token count |
+| `metadata` | json | nullable | Free-form per-chunk metadata |
+| `tsv_content` | tsvector | nullable | **Postgres only** — generated from `content` for FTS |
+| `created_at` | timestamptz | default `NOW()` | (no `updated_at` — chunks are immutable) |
 
 **Indexes**:
-- `idx_vector_embeddings_chunk_id` on chunk_id
-- `idx_vector_embeddings_content_hash` on content_hash
-- `idx_vector_embeddings_ivfflat` IVFFlat index on embedding vector_l2_ops
+- `idx_document_chunks_document_id` on `document_id`
+- `idx_document_chunks_doc_chunk` on `(document_id, chunk_index)` — uniqueness enforced at app layer
+- `idx_chunks_tsv` GIN index on `tsv_content` — **Postgres only**, used by hybrid search
 
-**IVFFlat Index Configuration**:
-```sql
--- Create after significant data insertion (> 1000 rows)
-CREATE INDEX idx_vector_embeddings_ivfflat 
-ON vector_embeddings 
-USING ivfflat (embedding vector_cosine_ops) 
-WITH (lists = 100);
-```
+The `tsv_content` column and its GIN index are skipped on SQLite (test environment).
 
-### jobs (Laravel Queue)
-Standard Laravel queue jobs table for document processing. Jobs are processed by `php artisan queue:work`.
+---
 
-### failed_jobs
-Standard Laravel failed jobs table for debugging.
+### `vector_embeddings` (metadata) + `ve_{dim}` (per-dimension vectors)
 
-## Migration Order
-1. `users` (Laravel default — includes `api_token` column)
-2. `personal_access_tokens` (Laravel default — not used, exists by default)
-3. `chat_sessions`
-4. `chat_messages` (code-level relationship to chat_sessions)
-5. `documents`
-6. `document_chunks` (code-level relationship to documents)
-7. `vector_embeddings` (code-level relationship to document_chunks — includes `embedding` + IVFFlat index if pgvector available)
-8. `jobs` (Laravel default)
-9. `failed_jobs` (Laravel default)
+`modules/VectorStoreModule/database/migrations/2026_01_01_000001_create_vector_embeddings_table.php`
 
-## Seeders
+This is the most architecturally distinct table set in the system. Vectors live in **per-dimension shards**, not a single table.
 
-| Seeder | Data |
-|--------|------|
-| `UserModuleSeeder` | 2 users (admin + test) with API tokens |
-| `ChatModuleSeeder` | 2 sessions with 2 messages each |
-| `DocumentModuleSeeder` | 1 document with 3 chunks |
-| `VectorStoreModuleSeeder` | Embeddings for chunks (skips if pgvector unavailable) |
+#### `vector_embeddings` — metadata only
 
-Run via: `php artisan db:seed`
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `id` | ULID | PK | |
+| `chunk_id` | ULID | not null | → `document_chunks.id` (no FK) |
+| `embedding` | json | nullable | **SQLite only** — vectors stored here as JSON arrays |
+| `dimensions` | integer | not null | Selects which `ve_{dim}` table holds the actual vector |
+| `model_name` | varchar(100) | not null | Provider model that produced the embedding |
+| `content_hash` | varchar(32) | not null | MD5 of source text — for invalidation |
+| `created_at` | timestamptz | default `NOW()` | |
 
-## pgvector Configuration Notes
+**Indexes**:
+- `idx_vector_embeddings_chunk_id` on `chunk_id`
+- `idx_vector_embeddings_dims` on `dimensions`
 
-### Vector Dimension
-1536 dimensions matching OpenAI text-embedding-ada-002.
+#### `ve_384`, `ve_768`, `ve_1024`, `ve_1536`, `ve_3072` — actual vectors (Postgres only)
 
-### Similarity Operators
-- Cosine distance: `<=>` (used for similarity search)
-- L2 distance: `<->` (alternative)
-- Inner product: `<#>` (alternative)
+Created at migration time **only when the `vector` extension is installed** (skipped silently otherwise). Each shares the same shape:
 
-### Recommended Query Pattern
-```sql
-SELECT 
-    dc.id as chunk_id,
-    dc.content,
-    d.title as document_title,
-    1 - (ve.embedding <=> query_vector) as similarity
-FROM vector_embeddings ve
-JOIN document_chunks dc ON dc.id = ve.chunk_id
-JOIN documents d ON d.id = dc.document_id
-WHERE d.deleted_at IS NULL
-ORDER BY ve.embedding <=> query_vector
-LIMIT 5;
-```
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `id` | ULID | PK | |
+| `chunk_id` | ULID | not null | → `document_chunks.id` (no FK) |
+| `embedding` | `vector({dim})` | not null | The actual vector |
+| `model_name` | varchar(100) | not null | |
+| `content_hash` | varchar(32) | not null | |
+| `created_at` | timestamptz | default `NOW()` | |
 
-### Performance Considerations
-- IVFFlat index requires ~1000+ vectors before creating
-- REINDEX after major data changes
-- ANALYZE after bulk inserts
-- Consider partitioning by document_id for large-scale deployments
+**Indexes per `ve_{dim}` table**:
+- `idx_ve_{dim}_chunk_id` on `chunk_id`
+- `idx_ve_{dim}_ivfflat` IVFFlat index on `embedding` using `vector_cosine_ops` with `lists = config('rag.vector_store.index_lists')` (default 100)
+- IVFFlat index is **skipped for `ve_3072`** because IVFFlat in pgvector currently supports up to 2 000 dims — those vectors are searched with brute-force cosine.
 
-## Foreign Key Constraints
+#### Why per-dimension tables?
 
-**Note:** Foreign key constraints are not enforced at the database level. All relationships (e.g., between chat_sessions, chat_messages, documents, document_chunks, vector_embeddings) are managed at the application code level for flexibility and scalability.
+Different embedding models produce different vector dimensions: OpenAI `text-embedding-3-small` is 1 536, `text-embedding-3-large` is 3 072, Ollama `nomic-embed-text` is 768, etc. pgvector's `vector(N)` type fixes the dimension at column creation time, so a single mixed-dimension table is impossible.
+
+Routing: when storing or searching, the service consults `ai_models.collection` (or `ai_models.dimensions`) to determine which `ve_{dim}` table to hit. The metadata `vector_embeddings` row stays in sync.
+
+---
+
+### `settings`
+
+`modules/SettingsModule/database/migrations/2026_01_01_000001_create_settings_table.php`
+
+Runtime overrides for `config('rag.*')`. Edited via the Settings UI; consulted by the modules at runtime.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `id` | ULID | PK | |
+| `key` | varchar(100) | unique, not null | e.g. `embedding.model`, `search.top_k` |
+| `value` | text | nullable | Stored as text; coerced via `type` |
+| `type` | varchar(20) | default `'string'` | `string` / `int` / `float` / `bool` / `json` |
+| `label` | varchar(255) | nullable | Human-readable label for the UI |
+| `group` | varchar(50) | nullable | UI grouping (`embedding`, `llm`, `search`, …) |
+| `created_at`, `updated_at` | timestamptz | default `NOW()` | |
+
+---
+
+### `ai_models`
+
+`modules/SettingsModule/database/migrations/2026_01_01_000002_create_ai_models_table.php`
+
+Registry of available embedding + LLM endpoints. Each row is a complete provider configuration.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `id` | ULID | PK | |
+| `name` | varchar(255) | not null | Friendly name shown in UI |
+| `type` | varchar(20) | not null | `embedding` or `llm` |
+| `provider` | varchar(50) | not null | `openai` or `ollama` |
+| `model` | varchar(255) | not null | Provider's model identifier (e.g. `gpt-4o`) |
+| `api_key` | text | nullable | Required for OpenAI; optional for Ollama |
+| `base_url` | varchar(500) | nullable | Required for Ollama; optional for OpenAI proxy |
+| `collection` | varchar(100) | nullable | Maps to a specific `ve_{dim}` table; `null` → derived from `dimensions` |
+| `dimensions` | integer | nullable | Embedding only |
+| `batch_size` | integer | nullable | Embedding only |
+| `cache_ttl` | integer | nullable | Embedding only — cache TTL in seconds |
+| `temperature` | decimal(4,2) | nullable | LLM only |
+| `max_context_tokens` | integer | nullable | LLM only |
+| `timeout` | integer | default `30` | Request timeout in seconds |
+| `description` | text | nullable | Trix-edited HTML — **sanitize server-side** (rendered with `v-html`) |
+| `settings` | jsonb | nullable | Per-model overrides for search / chunking / chat config |
+| `is_active` | boolean | default `true` | When `false`, hidden from selection dropdowns |
+| `sort_order` | integer | default `0` | UI ordering |
+| `created_at`, `updated_at` | timestamptz | default `NOW()` | |
+
+**Indexes**:
+- `idx_ai_models_type` on `type`
+- `idx_ai_models_active` on `is_active`
+
+---
+
+## Auxiliary tables
+
+### `password_reset_tokens`
+Laravel default. Not exercised by the current auth flow but the migration is in place.
+
+### `sessions`
+Laravel HTTP session storage. Used when `SESSION_DRIVER=database`.
+
+### `cache`, `cache_locks`
+Laravel cache + atomic locks. Used when `CACHE_STORE=database`.
+
+### `jobs`, `failed_jobs`
+Laravel queue + failure log. Used when `QUEUE_CONNECTION=database`. `ProcessDocumentJob` lands here.
+
+---
+
+## Conventions
+
+- **Primary keys**: ULIDs always. Use `HasUlids` trait on Eloquent models, `->whereUlid('id')` in routes.
+- **Timestamps**: TIMESTAMPTZ, default `NOW()`. Avoid the timezone-naive `TIMESTAMP` type.
+- **Soft deletes**: TIMESTAMPTZ `deleted_at`. Cascade is application-level (services walk relationships and soft-delete children).
+- **Relationships**: Defined on Eloquent models (`hasMany`, `belongsTo`, …) but **never as DB-level foreign keys**. This permits per-module migration ordering and easier multi-tenant / shard splits later.
+- **JSON columns**: `jsonb` on Postgres for indexable / queryable JSON; plain `json` (text) for opaque blobs.
+- **Vector columns**: only on Postgres with the `vector` extension. Migrations are written to be idempotent and skip silently on SQLite (test) and on Postgres without the extension.
+
+---
+
+## Test environment caveats
+
+The Pest test suite uses SQLite `:memory:` (`phpunit.xml`). This means:
+
+- The `tsv_content` column and its GIN index don't exist in tests.
+- The `ve_{dim}` tables don't exist; vectors live in `vector_embeddings.embedding` as JSON.
+- IVFFlat indexes don't exist; similarity search falls back to whatever the SQLite-mode driver does.
+- Hybrid search results in tests will differ from production — keep this in mind when writing relevance-sensitive feature tests.

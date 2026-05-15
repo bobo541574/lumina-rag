@@ -35,6 +35,7 @@ class ChatController extends Controller
                     'session_id' => $request->input('session_id'),
                     'document_filter' => $request->input('document_filter', []),
                     'user_id' => $user?->id,
+                    'llm_model_id' => $request->input('llm_model_id'),
                 ],
             );
 
@@ -119,6 +120,7 @@ class ChatController extends Controller
                         'session_id' => $request->input('session_id'),
                         'document_filter' => $request->input('document_filter', []),
                         'user_id' => $user?->id,
+                        'llm_model_id' => $request->input('llm_model_id'),
                     ],
                 );
 

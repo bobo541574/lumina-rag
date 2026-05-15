@@ -51,14 +51,14 @@ class TextChunkingService implements TextChunkingServiceInterface
 
         foreach ($lines as $line) {
             if (preg_match(self::HEADING_PATTERN, $line)) {
-    if ($currentText !== '') {
-            $sections[] = [
-                'text' => rtrim($currentText, "\n"),
-                'heading' => $currentHeading,
-            ];
-            $currentText = '';
-        }
-        $currentHeading = trim(preg_replace('/^#+\s/', '', $line));
+                if ($currentText !== '') {
+                    $sections[] = [
+                        'text' => rtrim($currentText, "\n"),
+                        'heading' => $currentHeading,
+                    ];
+                    $currentText = '';
+                }
+                $currentHeading = trim(preg_replace('/^#+\s/', '', $line));
 
                 continue;
             }

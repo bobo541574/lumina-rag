@@ -12,6 +12,7 @@ use Modules\DocumentModule\Contracts\TextExtractionServiceInterface;
 use Modules\DocumentModule\Jobs\ProcessDocumentJob;
 use Modules\DocumentModule\Models\Document;
 use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
+use Modules\SettingsModule\Models\AiModel;
 use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
 
 class DocumentService
@@ -64,7 +65,7 @@ class DocumentService
         $this->batchSize = $batchSize;
     }
 
-    public function upload(UploadedFile $file, ?string $title = null, ?string $userId = null, ?string $embeddingModel = null): Document
+    public function upload(UploadedFile $file, ?string $title = null, ?string $userId = null, ?string $embeddingModel = null, ?string $embeddingModelId = null): Document
     {
         $this->validateFile($file);
         $hash = hash_file('sha256', $file->getPathname());
@@ -79,6 +80,20 @@ class DocumentService
             throw new \RuntimeException('Failed to store uploaded file');
         }
 
+        $modelName = $embeddingModel;
+        $modelId = $embeddingModelId;
+
+        if ($embeddingModelId !== null) {
+            $aiModel = AiModel::find($embeddingModelId);
+            if ($aiModel !== null && $aiModel->type === 'embedding') {
+                $modelName = $aiModel->model;
+            }
+        }
+
+        if ($modelName === null) {
+            $modelName = config('rag.embedding.model', 'text-embedding-3-small');
+        }
+
         $document = Document::create([
             'title' => $title ?? $file->getClientOriginalName(),
             'original_filename' => $file->getClientOriginalName(),
@@ -88,7 +103,8 @@ class DocumentService
             'file_hash' => $hash,
             'status' => 'pending',
             'user_id' => $userId,
-            'embedding_model' => $embeddingModel ?? config('rag.embedding.model', 'text-embedding-3-small'),
+            'embedding_model' => $modelName,
+            'embedding_model_id' => $modelId,
         ]);
 
         ProcessDocumentJob::dispatch($document->id);
@@ -133,6 +149,26 @@ class DocumentService
         $document->chunks()->delete();
         Storage::delete($document->file_path);
         $document->delete();
+    }
+
+    public function updateDocument(string $id, array $data, ?string $userId = null): Document
+    {
+        $query = Document::where('id', $id);
+
+        if ($userId !== null) {
+            $query->where('user_id', $userId);
+        }
+
+        $document = $query->firstOrFail();
+
+        $allowed = ['title', 'description'];
+        $updateData = array_intersect_key($data, array_flip($allowed));
+
+        if ($updateData !== []) {
+            $document->update($updateData);
+        }
+
+        return $document->fresh();
     }
 
     public function listDocuments(array $filters = [], ?string $userId = null): array

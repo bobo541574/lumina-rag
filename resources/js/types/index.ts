@@ -35,15 +35,40 @@ export interface ChatSession {
 export interface Document {
   id: string
   title: string
+  description?: string
   original_filename: string
   file_size: number
   mime_type: string
   status: 'pending' | 'processing' | 'completed' | 'failed'
   chunks_count: number
   embedding_model?: string
+  embedding_model_id?: string
   error_message?: string
   processed_at?: string
   created_at: string
+}
+
+export interface AiModel {
+  id: string
+  name: string
+  type: 'embedding' | 'llm'
+  provider: string
+  model: string
+  api_key?: string
+  base_url?: string
+  collection?: string
+  dimensions?: number
+  batch_size?: number
+  cache_ttl?: number
+  temperature?: number
+  max_context_tokens?: number
+  timeout?: number
+  description?: string
+  settings?: Record<string, unknown>
+  is_active: boolean
+  sort_order: number
+  created_at: string
+  updated_at: string
 }
 
 export interface ApiResponse<T> {

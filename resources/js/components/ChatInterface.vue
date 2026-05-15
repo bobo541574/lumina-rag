@@ -1,21 +1,26 @@
 <template>
   <div class="flex flex-col h-full">
-    <div class="border-b border-gray-200 bg-gray-50 px-4 py-2">
-      <button @click="showFilters = !showFilters" class="flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <!-- Filter bar -->
+    <div class="border-b border-surface-200 bg-surface-50 px-4 py-2">
+      <AppButton variant="ghost" size="sm" @click="showFilters = !showFilters">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
         </svg>
-        <span>Search Filters</span>
-        <span v-if="activeFilterCount > 0" class="bg-blue-600 text-white text-xs rounded-full px-1.5 py-0.5">{{ activeFilterCount }}</span>
-      </button>
+        Search Filters
+        <span v-if="activeFilterCount > 0" class="bg-brand-600 text-white text-xs rounded-full px-1.5 py-0.5">{{ activeFilterCount }}</span>
+      </AppButton>
 
       <div v-if="showFilters" class="mt-2 space-y-2">
         <div v-if="documents.length > 0">
-          <p class="text-xs font-medium text-gray-500 mb-1">Documents</p>
+          <p class="text-xs font-medium text-surface-500 mb-1">Documents</p>
           <div class="flex flex-wrap gap-2">
-            <label v-for="doc in documents" :key="doc.id"
-              class="flex items-center gap-1.5 text-xs px-2 py-1 rounded border cursor-pointer"
-              :class="selectedDocIds.includes(doc.id) ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'"
+            <label
+              v-for="doc in documents"
+              :key="doc.id"
+              class="filter-chip flex items-center gap-1.5 text-xs px-2 py-1 rounded border cursor-pointer transition-colors"
+              :class="selectedDocIds.includes(doc.id)
+                ? 'bg-brand-50 border-brand-300 text-brand-700'
+                : 'bg-white border-surface-200 text-surface-600 hover:border-surface-300'"
             >
               <input type="checkbox" :value="doc.id" v-model="selectedDocIds" class="sr-only" />
               {{ doc.title || doc.original_filename }}
@@ -23,99 +28,160 @@
           </div>
         </div>
 
-        <div class="flex gap-4">
+        <div class="flex flex-wrap gap-4">
           <div>
-            <label class="text-xs font-medium text-gray-500 block mb-1">From</label>
-            <input type="date" v-model="dateFrom" class="text-xs rounded border border-gray-300 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+            <label class="text-xs font-medium text-surface-500 block mb-1">From</label>
+            <AppInput type="date" v-model="dateFrom" class="text-xs" />
           </div>
           <div>
-            <label class="text-xs font-medium text-gray-500 block mb-1">To</label>
-            <input type="date" v-model="dateTo" class="text-xs rounded border border-gray-300 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+            <label class="text-xs font-medium text-surface-500 block mb-1">To</label>
+            <AppInput type="date" v-model="dateTo" class="text-xs" />
           </div>
           <div class="flex items-end">
-            <button @click="clearFilters" class="text-xs text-gray-500 hover:text-red-600 underline">Clear</button>
+            <AppButton variant="ghost" size="sm" @click="clearFilters">Clear</AppButton>
           </div>
         </div>
-        <div class="flex gap-4 mt-2 pt-2 border-t border-gray-100">
+
+        <div class="flex flex-wrap gap-4 mt-2 pt-2 border-t border-surface-100">
           <div>
-            <label class="text-xs font-medium text-gray-500 block mb-1">LLM Model</label>
-            <select v-model="selectedLlmModel"
-              class="text-xs rounded border border-gray-300 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            >
+            <label class="text-xs font-medium text-surface-500 block mb-1">LLM Model</label>
+            <AppSelect v-model="selectedLlmModel">
               <option v-for="m in llmModelOptions" :key="m.value" :value="m.value">{{ m.label }}</option>
-            </select>
+            </AppSelect>
           </div>
         </div>
       </div>
     </div>
 
+    <!-- Messages -->
     <div ref="messagesContainer" class="flex-1 overflow-y-auto space-y-4 p-4">
-      <div v-if="messages.length === 0 && !isLoading" class="text-center text-gray-500 py-12">
-        <p class="text-lg">Ask a question about your documents</p>
-      </div>
+      <AppEmptyState
+        v-if="messages.length === 0 && !isLoading"
+        icon="chat"
+        title="Ask a question about your documents"
+        description="Try “What does the contract say about termination?” or “Summarize the third quarter results.”"
+      />
 
-      <div v-for="msg in messages" :key="msg.id" :class="['flex', msg.role === 'user' ? 'justify-end' : 'justify-start']">
-        <div :class="['max-w-2xl rounded-lg px-4 py-3', msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-white border border-gray-200']">
+      <div
+        v-for="msg in messages"
+        :key="msg.id"
+        :class="['flex gap-2', msg.role === 'user' ? 'justify-end' : 'justify-start']"
+      >
+        <!-- Assistant avatar -->
+        <div
+          v-if="msg.role === 'assistant'"
+          class="w-7 h-7 flex-shrink-0 rounded-full bg-brand-100 text-brand-700 flex items-center justify-center text-xs font-semibold mt-0.5"
+          aria-hidden="true"
+        >L</div>
+
+        <div :class="['max-w-2xl rounded-card px-4 py-3', msg.role === 'user' ? 'bg-brand-600 text-white' : 'bg-white border border-surface-200']">
           <p class="text-sm whitespace-pre-wrap">{{ msg.content }}</p>
-          <div v-if="msg.sources && msg.sources.length > 0" class="mt-2 pt-2 border-t border-gray-200">
-            <p class="text-xs font-medium text-gray-500 mb-1">Sources:</p>
-            <div v-for="(source, idx) in msg.sources" :key="idx" class="text-xs text-gray-400 mb-1">
-              <span class="font-medium">{{ source.document_title }}</span>
-              <span v-if="source.page_number"> — p.{{ source.page_number }}</span>
-              <span> ({{ Math.round(source.similarity_score * 100) }}%)</span>
-            </div>
+
+          <div v-if="msg.sources && msg.sources.length > 0" class="mt-3 pt-2 border-t border-surface-200">
+            <p class="text-xs font-medium text-surface-600 mb-1">Sources</p>
+            <ul class="text-xs text-surface-600 space-y-0.5">
+              <li v-for="(source, idx) in msg.sources" :key="idx">
+                <span class="font-medium text-surface-700">{{ source.document_title }}</span>
+                <span v-if="source.page_number" class="text-surface-500"> — p.{{ source.page_number }}</span>
+                <span class="text-surface-500"> ({{ Math.round(source.similarity_score * 100) }}%)</span>
+              </li>
+            </ul>
           </div>
+
+          <p
+            v-if="msg.created_at"
+            :class="['text-[10px] mt-1.5 tabular-nums', msg.role === 'user' ? 'text-white/70 text-right' : 'text-surface-400']"
+          >
+            {{ formatRelativeTime(msg.created_at) }}
+          </p>
+        </div>
+
+        <!-- User avatar -->
+        <div
+          v-if="msg.role === 'user'"
+          class="w-7 h-7 flex-shrink-0 rounded-full bg-surface-200 text-surface-600 flex items-center justify-center text-xs font-semibold mt-0.5"
+          aria-hidden="true"
+        >U</div>
+      </div>
+
+      <!-- Streaming indicator: typing dots -->
+      <div v-if="isStreaming && messages.length > 0" class="flex justify-start gap-2">
+        <div
+          class="w-7 h-7 flex-shrink-0 rounded-full bg-brand-100 text-brand-700 flex items-center justify-center text-xs font-semibold mt-0.5"
+          aria-hidden="true"
+        >L</div>
+        <div class="bg-white border border-surface-200 rounded-card px-4 py-3 flex items-center gap-1" role="status" aria-label="Assistant is typing">
+          <span class="typing-dot bg-brand-600 rounded-full w-1.5 h-1.5 inline-block" />
+          <span class="typing-dot bg-brand-600 rounded-full w-1.5 h-1.5 inline-block" style="animation-delay: 150ms" />
+          <span class="typing-dot bg-brand-600 rounded-full w-1.5 h-1.5 inline-block" style="animation-delay: 300ms" />
         </div>
       </div>
 
-      <div v-if="isStreaming && messages.length > 0" class="flex justify-start">
-        <div class="bg-white border border-gray-200 rounded-lg px-4 py-3">
-          <span class="inline-block w-2 h-4 bg-blue-600 animate-pulse"></span>
-        </div>
-      </div>
-
-      <div v-if="error" class="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700">
-        {{ error }}
+      <div v-if="error" class="bg-danger-50 border border-danger-200 rounded-card px-4 py-3 text-sm text-danger-700 flex items-start justify-between gap-2" role="alert">
+        <span>{{ error }}</span>
+        <AppButton variant="ghost" size="sm" aria-label="Dismiss error" @click="store.clearError?.()">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </AppButton>
       </div>
     </div>
 
-    <div class="border-t border-gray-200 p-4 bg-white">
+    <!-- Input area -->
+    <div class="border-t border-surface-200 p-4 bg-white">
       <form @submit.prevent="handleSubmit" class="flex gap-2">
-        <input
+        <AppInput
           v-model="question"
           type="text"
           placeholder="Ask a question..."
-          class="flex-1 rounded-lg border border-gray-300 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          class="flex-1"
           :disabled="isLoading || isStreaming"
-          maxlength="1000"
+          :maxlength="MAX_QUESTION_LENGTH"
+          :aria-describedby="showCounter ? 'question-counter' : undefined"
         />
-        <button
+        <AppButton
           v-if="isStreaming"
           type="button"
+          variant="danger"
+          size="sm"
           @click="store.abortStream()"
-          class="bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-red-700"
         >
           Stop
-        </button>
-        <button
+        </AppButton>
+        <AppButton
           v-else
           type="submit"
+          variant="primary"
+          size="sm"
           :disabled="isLoading || !question.trim()"
-          class="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
         >
           Send
-        </button>
+        </AppButton>
       </form>
+      <p
+        v-if="showCounter"
+        id="question-counter"
+        :class="['mt-1 text-xs text-right tabular-nums', counterClass]"
+        :aria-live="question.length >= MAX_QUESTION_LENGTH ? 'polite' : 'off'"
+      >
+        {{ question.length }} / {{ MAX_QUESTION_LENGTH }}
+      </p>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick, watch } from 'vue'
+import AppInput from '../components/ui/AppInput.vue'
+import AppSelect from '../components/ui/AppSelect.vue'
+import AppButton from '../components/ui/AppButton.vue'
+import AppEmptyState from '../components/ui/AppEmptyState.vue'
 import { useChatStore } from '../stores/chatStore'
 import { useDocumentStore } from '../stores/documentStore'
 import { useSettingsStore } from '../stores/settingsStore'
+import { settingsService } from '../services/settingsService'
 import { storeToRefs } from 'pinia'
+import { formatRelativeTime } from '../utils/dates'
 
 const store = useChatStore()
 const docStore = useDocumentStore()
@@ -123,31 +189,27 @@ const settingsStore = useSettingsStore()
 const { messages, isLoading, isStreaming, error } = storeToRefs(store)
 const { documents } = storeToRefs(docStore)
 
+const MAX_QUESTION_LENGTH = 1000
+const COUNTER_REVEAL_THRESHOLD = 800
+const COUNTER_WARNING_THRESHOLD = 950
+
 const question = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
+const showCounter = computed(() => question.value.length >= COUNTER_REVEAL_THRESHOLD)
+const counterClass = computed(() => {
+  const len = question.value.length
+  if (len >= MAX_QUESTION_LENGTH) return 'text-danger-600 font-medium'
+  if (len >= COUNTER_WARNING_THRESHOLD) return 'text-warning-700'
+  return 'text-surface-400'
+})
 const showFilters = ref(false)
 const selectedDocIds = ref<string[]>([])
 const dateFrom = ref('')
 const dateTo = ref('')
 const selectedLlmModel = ref('')
+const llmModelsList = ref<{ id: string; name: string }[]>([])
 
-const llmModels = computed(() => {
-  const raw = settingsStore.getSettingValue('RAG_LLM_AVAILABLE_MODELS')
-  if (Array.isArray(raw)) return raw as string[]
-  return []
-})
-
-const defaultLlmModel = computed(() => {
-  return settingsStore.getSettingValue('RAG_LLM_MODEL') ?? ''
-})
-
-const llmModelOptions = computed(() => {
-  const def = defaultLlmModel.value
-  return [
-    { value: '', label: `From settings (${def || 'default'})` },
-    ...llmModels.value.map((m: string) => ({ value: m, label: m })),
-  ]
-})
+const llmModelOptions = computed(() => llmModelsList.value.map(m => ({ value: m.id, label: m.name })))
 
 const activeFilterCount = computed(() => {
   let count = 0
@@ -156,9 +218,15 @@ const activeFilterCount = computed(() => {
   return count
 })
 
-onMounted(() => {
+onMounted(async () => {
   docStore.fetchDocuments()
   settingsStore.fetch()
+  try {
+    const res = await settingsService.getAiModels('llm')
+    llmModelsList.value = (res.data ?? []).map((m: any) => ({ id: m.id, name: m.name }))
+  } catch {
+    // ignore
+  }
 })
 
 watch(messages, async () => {
@@ -195,6 +263,23 @@ async function handleSubmit() {
   question.value = ''
   const filter = buildFilter()
   store.setDocumentFilter(filter)
-  await store.sendMessage(q, filter ?? undefined)
+  await store.sendMessage(q, filter ?? undefined, selectedLlmModel.value || undefined)
 }
 </script>
+
+<style scoped>
+/* Filter chip: visible focus ring when the hidden checkbox is focused */
+.filter-chip:has(input:focus-visible) {
+  outline: 2px solid var(--color-brand-500);
+  outline-offset: 2px;
+}
+
+/* Typing-dots animation */
+@keyframes typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-3px); opacity: 1; }
+}
+.typing-dot {
+  animation: typing-bounce 900ms ease-in-out infinite;
+}
+</style>

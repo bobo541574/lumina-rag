@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Modules\SettingsModule\Database\Seeders;
 
 use Illuminate\Database\Seeder;
+use Modules\SettingsModule\Models\AiModel;
 use Modules\SettingsModule\Models\Setting;
 
 class SettingsModuleSeeder extends Seeder
@@ -50,6 +51,104 @@ class SettingsModuleSeeder extends Seeder
             Setting::firstOrCreate(
                 ['key' => $entry['key']],
                 $entry,
+            );
+        }
+
+        // Seed default AI models
+        $embeddingModels = [
+            [
+                'name' => 'OpenAI text-embedding-3-small',
+                'type' => 'embedding',
+                'provider' => 'openai',
+                'model' => 'text-embedding-3-small',
+                'dimensions' => 1536,
+                'batch_size' => 100,
+                'cache_ttl' => 86400,
+                'timeout' => 30,
+                'is_active' => true,
+                'sort_order' => 1,
+                'description' => 'Best price/quality balance. Fast and reliable with 1536d vectors. Requires OpenAI API key.',
+            ],
+            [
+                'name' => 'OpenAI text-embedding-3-large',
+                'type' => 'embedding',
+                'provider' => 'openai',
+                'model' => 'text-embedding-3-large',
+                'dimensions' => 3072,
+                'batch_size' => 100,
+                'cache_ttl' => 86400,
+                'timeout' => 30,
+                'is_active' => true,
+                'sort_order' => 2,
+                'description' => 'Highest accuracy (3072d) for nuanced search, but more expensive and slower than small.',
+            ],
+            [
+                'name' => 'Ollama nomic-embed-text',
+                'type' => 'embedding',
+                'provider' => 'ollama',
+                'model' => 'nomic-embed-text',
+                'base_url' => 'http://localhost:11434',
+                'dimensions' => 768,
+                'batch_size' => 100,
+                'cache_ttl' => 86400,
+                'timeout' => 30,
+                'is_active' => false,
+                'sort_order' => 3,
+                'description' => 'Free and local-only (768d). No API key needed but requires local Ollama server.',
+            ],
+        ];
+
+        $llmModels = [
+            [
+                'name' => 'OpenAI GPT-4o',
+                'type' => 'llm',
+                'provider' => 'openai',
+                'model' => 'gpt-4o',
+                'temperature' => 0.3,
+                'max_context_tokens' => 128000,
+                'timeout' => 60,
+                'is_active' => true,
+                'sort_order' => 1,
+                'description' => 'Best-in-class reasoning with 128K context. Strong at complex RAG but most expensive.',
+            ],
+            [
+                'name' => 'OpenAI GPT-4o-mini',
+                'type' => 'llm',
+                'provider' => 'openai',
+                'model' => 'gpt-4o-mini',
+                'temperature' => 0.3,
+                'max_context_tokens' => 128000,
+                'timeout' => 60,
+                'is_active' => true,
+                'sort_order' => 2,
+                'description' => 'Fast and cheap with 128K context. Great for Q&A but lower reasoning than GPT-4o.',
+            ],
+            [
+                'name' => 'Ollama Llama 3.2',
+                'type' => 'llm',
+                'provider' => 'ollama',
+                'model' => 'llama3.2',
+                'base_url' => 'http://localhost:11434',
+                'temperature' => 0.3,
+                'max_context_tokens' => 4096,
+                'timeout' => 120,
+                'is_active' => false,
+                'sort_order' => 3,
+                'description' => 'Free and local-only with 4K context. Good for offline dev but needs Ollama server.',
+            ],
+        ];
+
+        foreach ($embeddingModels as $model) {
+            AiModel::firstOrCreate(
+                ['type' => 'embedding', 'model' => $model['model']],
+                $model,
+            );
+        }
+
+        foreach ($llmModels as $model) {
+            AiModel::firstOrCreate(
+                ['type' => 'llm', 'model' => $model['model']],
+                $model,
             );
         }
     }

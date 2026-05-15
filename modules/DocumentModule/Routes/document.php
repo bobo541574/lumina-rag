@@ -11,5 +11,6 @@ Route::prefix('api/documents')->middleware('auth.token')->group(function (): voi
     Route::get('{id}', [DocumentController::class, 'show'])->whereUlid('id');
     Route::get('{id}/status', [DocumentController::class, 'status'])->whereUlid('id');
     Route::post('{id}/retry', [DocumentController::class, 'retry'])->whereUlid('id');
+    Route::put('{id}', [DocumentController::class, 'update'])->whereUlid('id');
     Route::delete('{id}', [DocumentController::class, 'destroy'])->whereUlid('id');
 });

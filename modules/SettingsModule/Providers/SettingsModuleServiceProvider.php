@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Modules\SettingsModule\Providers;
 
 use Illuminate\Support\ServiceProvider;
+use Modules\SettingsModule\Services\AiModelService;
 use Modules\SettingsModule\Services\SettingsService;
 
 class SettingsModuleServiceProvider extends ServiceProvider
@@ -12,6 +13,7 @@ class SettingsModuleServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->app->singleton(SettingsService::class);
+        $this->app->singleton(AiModelService::class);
     }
 
     public function boot(): void

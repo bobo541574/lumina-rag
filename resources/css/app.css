@@ -8,4 +8,56 @@
 @theme {
     --font-sans: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
         'Segoe UI Symbol', 'Noto Color Emoji';
+
+    /* Brand — primary action color (mapped to Tailwind blue) */
+    --color-brand-50:  #eff6ff;
+    --color-brand-100: #dbeafe;
+    --color-brand-200: #bfdbfe;
+    --color-brand-300: #93c5fd;
+    --color-brand-500: #3b82f6;
+    --color-brand-600: #2563eb;
+    --color-brand-700: #1d4ed8;
+    --color-brand-800: #1e40af;
+
+    /* Surface — neutral backgrounds & text (mapped to Tailwind gray) */
+    --color-surface-50:  #f9fafb;
+    --color-surface-100: #f3f4f6;
+    --color-surface-200: #e5e7eb;
+    --color-surface-300: #d1d5db;
+    --color-surface-400: #9ca3af;
+    --color-surface-500: #6b7280;
+    --color-surface-600: #4b5563;
+    --color-surface-700: #374151;
+    --color-surface-800: #1f2937;
+    --color-surface-900: #111827;
+
+    /* Status — semantic feedback colors */
+    --color-success-50:  #f0fdf4;
+    --color-success-100: #dcfce7;
+    --color-success-600: #16a34a;
+    --color-success-700: #15803d;
+    --color-success-800: #166534;
+
+    --color-warning-50:  #fefce8;
+    --color-warning-100: #fef9c3;
+    --color-warning-600: #ca8a04;
+    --color-warning-700: #a16207;
+    --color-warning-800: #854d0e;
+
+    --color-danger-50:   #fef2f2;
+    --color-danger-100:  #fee2e2;
+    --color-danger-200:  #fecaca;
+    --color-danger-600:  #dc2626;
+    --color-danger-700:  #b91c1c;
+    --color-danger-800:  #991b1b;
+
+    --color-info-50:     #eff6ff;
+    --color-info-100:    #dbeafe;
+    --color-info-600:    #2563eb;
+    --color-info-700:    #1d4ed8;
+    --color-info-800:    #1e40af;
+
+    /* Radii & shadows used by primitives */
+    --radius-card: 0.5rem;
+    --radius-pill: 9999px;
 }
