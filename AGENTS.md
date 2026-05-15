@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> `/init` — comprehensive project reference. **Trust code over docs** when they disagree.
+> Compact reference for AI agents working in this repo. **Trust code over config, config over docs** when they disagree.
 
 ---
 
@@ -8,52 +8,68 @@
 
 | Action | Command |
 |--------|---------|
-| Dev server | `composer run dev` — serves + queue + logs + Vite concurrently |
-| Tests | `composer run test` — runs `config:clear` then `artisan test` (Pest) |
+| Dev (server + queue + logs + Vite) | `composer run dev` |
+| All tests | `composer run test` (clears config, then `artisan test` via Pest) |
 | Single test | `php artisan test --filter=TestName` |
-| Formatter | `./vendor/bin/pint` |
+| Test suite | `php artisan test --testsuite=Unit` or `--testsuite=Feature` |
+| Formatter | `./vendor/bin/pint` (or `--dirty` for changed files) |
 | Frontend build | `npm run build` |
+| Frontend dev | `npm run dev` |
 | Setup from scratch | `composer run setup` |
-| Install npm | `npm install --ignore-scripts` (`.npmrc` has `ignore-scripts=true`) |
+| Install npm | `npm install --ignore-scripts` (`.npmrc` sets `ignore-scripts=true`) |
+| Queue worker | `php artisan queue:work` |
+| Seed data | `php artisan db:seed` |
 
 ---
 
-## Architecture
+## Stack
 
-### Stack
-| Layer | Technology |
-|-------|-----------|
-| Backend | Laravel 13 monolith, PHP 8.3+ |
-| Database | PostgreSQL 16 + pgvector 0.6+ |
-| Cache/Session | Redis |
-| LLM | OpenAI API (`gpt-4o`, `text-embedding-ada-002`) via raw curl |
-| Frontend | **Aspirational only** — `resources/js/app.js` is `//`. No Vue/Pinia/Inertia deps exist |
-| Queue | `QUEUE_CONNECTION=sync` in test, `database` default, `redis` in .env.example. **No Horizon package or config installed** |
+| Layer | Detail |
+|-------|--------|
+| Backend | Laravel 13 monolith, PHP 8.3+, strict types on every PHP file |
+| Database | PostgreSQL 16 + pgvector 0.6+ (vectors colocated) |
+| Cache/Session/Queue | Redis recommended; queue defaults to `database` in `.env` |
+| AI providers | ollama + openai — **raw curl**, no SDK. Implemented in `EmbeddingModule` / `LLMModule` |
+| Frontend | Vue 3 + Pinia + vue-router + Tailwind v4 + TypeScript, Vite 8 SPA |
+| Testing | Pest 4, SQLite `:memory:` test DB, `QUEUE_CONNECTION=sync` in tests |
 
-### Module layout
-5 PSR-4 modules mapped under `Modules\{Name}Module\` → `modules/{Name}Module/`.
+Config defaults are ollama-local (`nomic-embed-text:latest`, `qwen3.5:9b`). Override via `.env` — see `config/rag.php`.
+
+---
+
+## Modules
+
+7 PSR-4 modules under `Modules\{Name}Module\` → `modules/{Name}Module/`.
 
 ```
-ChatModule → EmbeddingModule + VectorStoreModule + LLMModule
-DocumentModule → EmbeddingModule + VectorStoreModule
+ChatModule       → EmbeddingModule + VectorStoreModule + LLMModule
+DocumentModule   → EmbeddingModule + VectorStoreModule
+SettingsModule   → standalone (AiModel registry only — no more `settings` table)
+UserModule       → standalone (token auth)
+EmbeddingModule, VectorStoreModule, LLMModule → leaf modules
 ```
 
-All registered manually in `config/app.php` providers array:
-```php
-'providers' => ServiceProvider::defaultProviders()->merge([
-    EmbeddingModuleServiceProvider::class,
-    VectorStoreModuleServiceProvider::class,
-    LLMModuleServiceProvider::class,
-    DocumentModuleServiceProvider::class,
-    ChatModuleServiceProvider::class,
-])->toArray(),
+All registered manually in `config/app.php` via `ServiceProvider::defaultProviders()->merge([...])`. No auto-discovery. `config/modules.php` has enabled flags but nothing reads them to disable modules.
+
+### Module structure
 ```
-No `config/modules.php` exists (despite docs referencing one).
+modules/{Name}Module/
+├── Controllers/     (validation + dispatch only)
+├── Services/        (business logic — only layer that touches Models)
+├── Contracts/       (interfaces bound in Providers/)
+├── Models/
+├── Requests/        (FormRequest validation)
+├── Routes/          (loaded by ServiceProvider)
+├── Providers/
+├── Jobs/            (DocumentModule only)
+├── Commands/        (ChatModule, DocumentModule only)
+└── Database/migrations + Seeders
+```
 
-### User / Auth
-`UserModule` manages user registration and API token authentication. `App\Models\User` uses ULID `id`. Auth is token-based (80-char random tokens, no Sanctum). Endpoints: `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`.
+Every module has its own `AGENTS.md` — may be stale, cross-reference with source.
 
-### Module service bindings
+### Service bindings
+
 | Module | Contract → Implementation |
 |--------|--------------------------|
 | ChatModule | `RAGPipelineServiceInterface` → `RAGPipelineService` |
@@ -61,261 +77,80 @@ No `config/modules.php` exists (despite docs referencing one).
 | EmbeddingModule | `EmbeddingProviderInterface` → `OpenAIEmbeddingProvider`, `EmbeddingServiceInterface` → `EmbeddingService` |
 | LLMModule | `LLMProviderInterface` → `OpenAILLMProvider`, `LLMServiceInterface` → `LLMService` |
 | UserModule | `AuthServiceInterface` → `AuthService` |
-| VectorStoreModule | `VectorStoreInterface` → `VectorStoreService` (wraps `PgvectorDriver`) |
-
-### Module structure (standard)
-```
-modules/{Name}Module/
-├── AGENTS.md
-├── Controllers/
-├── Services/
-├── Models/
-├── Requests/
-├── Routes/
-├── Contracts/
-└── Tests/
-```
-No `Vue/` directories exist in any module (aspirational).
-
----
-
-## Docs vs Code — Resolved Discrepancies
-
-These items were previously mismatched but have been aligned:
-
-| Docs say | Code now does | 
-|----------|---------------|
-| `config/modules.php` for module toggles | File exists with all 5 modules enabled by default |
-| No facades | `DocumentService` uses `Storage::` facade; `ChatController` uses `ResponseFacade` | 
-| Config injection via constructor | All services accept config via constructor injection |
-| `ProcessDocumentJob` via queue | `ProcessDocumentJob` exists in `modules/DocumentModule/Jobs/` |
-| `user_id` on sessions & documents | Added in the relevant create-table migrations |
-| `page_count` on documents | Added in `documents` create-table migration |
-| `token_count`, `metadata` on chunks | Added in `document_chunks` create-table migration |
-| `embedding` column + IVFFlat index on `vector_embeddings` | Added in vector_embeddings create-table migration (conditional on pgvector) |
-| `smalot/pdfparser`, `phpoffice/phpword` for text extraction | Both installed in `composer.json` |
-| Async document processing with batches | `ProcessDocumentJob` dispatched by `DocumentService::upload()` |
-| Session title from first question | Set from user's first question at `RAGPipelineService` |
-
-### Still Aspirational (not implemented)
-
-| Docs say | Actual code says |
-|----------|-----------------|
-| Vue frontend (Vue 3, Pinia, Inertia, TypeScript) | `resources/js/` files exist but frontend requires `npm install --ignore-scripts && npm run build` to function |
-| Horizon for queue monitoring | No Horizon package — use `php artisan queue:work` |
-| DB-level FK constraints | No FK constraints in migrations (app-level only) |
-| `POST /api/documents/{id}/retry` | Route does not exist |
-| `status` enum on sessions (`active`/`archived`/`deleted`) | Uses `is_archived` boolean + soft deletes |
-| Pinecone driver exists | Only `PgvectorDriver` implemented |
+| VectorStoreModule | `VectorStoreInterface` → `VectorStoreService` (wraps `PgvectorDriver` — only driver) |
+| SettingsModule | `AiModelService` (no Contract/) |
 
 ---
 
 ## Database
 
-### Migration schema (actual — not docs)
+All PKs are **ULIDs** (`HasUlids` trait, `->whereUlid()` route binding). **No DB-level FK constraints** — enforced in app code only.
+
 | Table | PK | Key columns |
 |-------|----|-------------|
-| `chat_sessions` | ULID | `title`, `is_archived` (bool), `last_activity_at`, soft deletes |
-| `chat_messages` | ULID | `session_id` (ULID), `role`, `content` (longText), `sources` (jsonb, nullable), soft deletes |
-| `documents` | ULID | `title`, `original_filename`, `file_path`, `file_size`, `mime_type`, `file_hash` (unique), `status`, `chunks_count`, soft deletes |
-| `document_chunks` | ULID | `document_id` (ULID), `content` (longText), `chunk_index`, `page_number` (nullable), `char_start`, `char_end` |
-| `vector_embeddings` | ULID | `chunk_id` (ULID), `embedding` (vector, dims from config), `model_name`, `content_hash` |
+| `chat_sessions` | ULID | `user_id`, `title`, `is_archived` (bool), `last_activity_at`, soft deletes |
+| `chat_messages` | ULID | `session_id`, `role`, `content` (longText), `sources` (jsonb), soft deletes |
+| `documents` | ULID | `user_id`, `title`, `file_hash` (unique), `status`, `chunks_count`, soft deletes |
+| `document_chunks` | ULID | `document_id`, `content`, `chunk_index`, `page_number`, `char_start`, `char_end`, unique `(document_id, chunk_index)` |
+| `vector_embeddings` | ULID | Metadata only: `chunk_id`, `dimensions`, `model_name`, `content_hash`. JSON `embedding` on SQLite fallback. |
+| `ve_{dims}` (shard tables) | — | `chunk_id`, `embedding` `vector(N)`, `model_name`, `content_hash`. IVFFlat `vector_cosine_ops` index on `embedding`. Created conditionally (pgvector required, skipped on SQLite). |
+| `ai_models` | ULID | Embedding/LLM model registry with per-model config (provider, credentials, dimensions, temperature, timeout, settings JSONB for pipeline overrides) |
 
-### Relationships (app-level, no DB FKs)
-```
-chat_sessions ──< chat_messages
-documents ──< document_chunks ──< vector_embeddings
-```
+The old `settings` key/value table was removed — `config/rag.php` is the single source of truth for global config. Per-model pipeline overrides live in `ai_models.settings` JSONB.
 
-### Indexes
-- IVFFlat on `vector_embeddings.embedding` using `vector_cosine_ops` with `lists = 100` (once `embedding` column exists)
-- Unique on `documents.file_hash` (deduplication)
-- Unique on `document_chunks (document_id, chunk_index)`
-
-### Test config (`phpunit.xml`)
-- `DB_CONNECTION=sqlite`, `DB_DATABASE=:memory:`, `QUEUE_CONNECTION=sync`, `CACHE_STORE=array`
-- `RefreshDatabase` trait commented out in `tests/Pest.php`
-
-### Seeders
-`database/seeders/DatabaseSeeder.php` calls all module-level seeders:
-
-| Module | Seeder | Creates |
-|--------|--------|---------|
-| UserModule | `UserModuleSeeder` | 2 users with API tokens |
-| ChatModule | `ChatModuleSeeder` | 2 sessions with messages |
-| DocumentModule | `DocumentModuleSeeder` | 1 document with 3 chunks |
-| VectorStoreModule | `VectorStoreModuleSeeder` | Embeddings for existing chunks (skips if pgvector unavailable) |
-
-Run via: `php artisan db:seed`
-
-### Docs vs actual schema differences (columns missing from migrations)
-- `chat_sessions`: missing `user_id`, `status` enum (replaced by `is_archived`), `message_count`, `last_activity_at` (exists)
-- `chat_messages`: missing `embedding_id`, `token_count`
-- `documents`: missing `user_id`, `page_count`, `error_message` (exists? need to check)
-- `document_chunks`: missing `token_count`, `vector_id`, `metadata`
-- `vector_embeddings`: `embedding` column dimension reads from `config('rag.embedding.dimensions')` at migration time (default 1536)
+Shard tables: `ve_384`, `ve_768`, `ve_1024`, `ve_1536`, `ve_3072`.
 
 ---
 
 ## API
 
-All routes under `api/` prefix, defined in `modules/{Module}/Routes/`.
+All routes under `api/`, auth via custom `auth.token` middleware (no Sanctum). Standard envelope: `{ success, message, data, errors }`. 80-char hex tokens (`bin2hex(random_bytes(40))`), stored on `users.api_token`.
 
-### Health
-```
-GET /api/health
-```
-
-### Auth (auth.php)
-```
-POST  api/auth/register → AuthController@register
-POST  api/auth/login    → AuthController@login
-POST  api/auth/logout   → AuthController@logout
-GET   api/auth/me       → AuthController@me
-```
-
-### Chat (chat.php)
-```
-POST   api/chat/              → ChatController@ask
-GET    api/chat/sessions      → ChatController@sessions
-GET    api/chat/sessions/{id} → ChatController@showSession   (whereUlid)
-DELETE api/chat/sessions/{id} → ChatController@destroySession (whereUlid)
-```
-
-### Documents (document.php)
-```
-GET    api/documents          → DocumentController@index
-POST   api/documents          → DocumentController@upload
-GET    api/documents/{id}     → DocumentController@show       (whereUlid)
-GET    api/documents/{id}/status → DocumentController@status  (whereUlid)
-DELETE api/documents/{id}     → DocumentController@destroy    (whereUlid)
-```
-No `POST .../retry` route exists.
-
-### Consistent response format
-```json
-{
-  "success": true|false,
-  "message": "...",
-  "data": { ... },
-  "errors": { ... }
-}
-```
+| Group | Endpoints |
+|-------|-----------|
+| Auth | `POST /api/auth/register \| /login \| /logout`, `GET /api/auth/me` |
+| Chat | `POST /api/chat`, `GET/DELETE /api/chat/sessions[/{id}]` |
+| Documents | `GET/POST /api/documents`, `GET /api/documents/{id} \| /status \| /retry`, `PUT/DELETE /api/documents/{id}` |
+| Settings (AiModels) | `CRUD /api/settings/ai-models[/{id}]` |
 
 ---
 
-## Config (`config/rag.php`)
+## Configuration
 
-| Key | Env | Default | Description |
-|-----|-----|---------|-------------|
-| `embedding.provider` | `RAG_EMBEDDING_PROVIDER` | `openai` | |
-| `embedding.api_key` | `OPENAI_API_KEY` | — | |
-| `embedding.model` | `RAG_EMBEDDING_MODEL` | `text-embedding-ada-002` | |
-| `embedding.dimensions` | `RAG_EMBEDDING_DIMENSIONS` | `1536` | |
-| `embedding.batch_size` | `RAG_EMBEDDING_BATCH_SIZE` | `100` | |
-| `embedding.cache_ttl` | `RAG_EMBEDDING_CACHE_TTL` | `86400` | 24h |
-| `embedding.timeout` | `RAG_EMBEDDING_TIMEOUT` | `30` | seconds |
-| `llm.provider` | `RAG_LLM_PROVIDER` | `openai` | |
-| `llm.api_key` | `OPENAI_API_KEY` | — | |
-| `llm.model` | `RAG_LLM_MODEL` | `gpt-4o` | |
-| `llm.temperature` | `RAG_LLM_TEMPERATURE` | `0.3` | |
-| `llm.max_context_tokens` | `RAG_LLM_MAX_CONTEXT_TOKENS` | `4000` | |
-| `llm.timeout` | `RAG_LLM_TIMEOUT` | `60` | seconds |
-| `vector_store.driver` | `RAG_VECTOR_DRIVER` | `pgsql` | |
-| `vector_store.index_lists` | `RAG_VECTOR_INDEX_LISTS` | `100` | IVFFlat lists |
-| `search.top_k` | `RAG_SEARCH_TOP_K` | `5` | |
-| `search.similarity_threshold` | `RAG_SEARCH_SIMILARITY_THRESHOLD` | `0.65` | |
-| `chunking.chunk_size` | `RAG_CHUNK_SIZE` | `1000` | chars |
-| `chunking.overlap` | `RAG_CHUNK_OVERLAP` | `200` | chars |
-| `chat.max_question_length` | `RAG_MAX_QUESTION_LENGTH` | `1000` | chars |
-| `chat.max_messages_per_session` | `RAG_MAX_MESSAGES_PER_SESSION` | `100` | |
+`config/rag.php` is the single source of truth — embedding/LLM provider, model, dimensions, batch size, cache TTL, timeouts, search top-K, similarity threshold, chunk size/overlap, chat limits, logging. All values read via `env()` with sensible defaults for local Ollama.
 
----
-
-## OpenAI API
-
-Both embedding and LLM use **raw curl** (no SDK).
-
-| Module | Endpoint | Model default |
-|--------|----------|---------------|
-| Embedding | `POST https://api.openai.com/v1/embeddings` | `text-embedding-ada-002` |
-| LLM | `POST https://api.openai.com/v1/chat/completions` | `gpt-4o` |
+Per-model overrides (search mode, top_K, MMR, query expansion, max_question_length) stored in `ai_models.settings` JSONB, consumed by `RAGPipelineService`.
 
 ---
 
 ## Business Rules (verified from code)
 
-### Question handling
-- Empty question → `InvalidArgumentException`
-- Question > 1000 chars → truncated to `max_question_length`
-- No chunks above threshold (0.65) → `"I cannot answer this question based on the available documents."`
-- No documents exist → returns answer from LLM with no context (verify exact behavior)
-
-### Session rules
-- 100-msg limit → `RuntimeException` with "Session full"
-- Deleted session → `RuntimeException` on access
-- Session title from **assistant response** first 50 chars, not the question
-- New session auto-created if no `session_id` provided
-
-### Upload rules
-- Max file size: 50MB
-- Formats: PDF, DOCX, TXT, CSV, Markdown
-- Duplicate (SHA-256 hash match) → 409 with existing document
-- **Processing runs synchronously** (no queue job — despite docs describing `ProcessDocumentJob`)
-
-### Sources format
-```json
-{
-  "document_id": "...",
-  "document_title": "...",
-  "chunk_index": 12,
-  "page_number": null,
-  "similarity_score": 0.89,
-  "excerpt": "..."
-}
-```
-
-### Chunking
-- Recursive Character Text Splitter
-- Separator priority: `\n\n` → `\n` → `.` → `,` → space → char
-- 1000 chars per chunk, 200 overlap
-- MD5 hash caching for embeddings (24h TTL)
+- **Question**: empty → `InvalidArgumentException`. >1000 chars → truncated. No chunks ≥0.65 threshold → *"I cannot answer..."* (no LLM call).
+- **Sessions**: auto-created if no `session_id`. Title from **first user question** (50 chars). Max 100 msgs → `RuntimeException`.
+- **Uploads**: max 50MB. Formats: PDF, DOCX, TXT, CSV, MD. SHA-256 dedup → 409. Processing is **async** via `ProcessDocumentJob` (dispatched by `DocumentService::upload()`).
+- **Chunking**: recursive char splitter, priority `\n\n` → `\n` → `.` → `,` → space → char, 1000/200 chars. MD5-hash cached embeddings (24h TTL).
+- **Auth**: tokens rotate on login, nulled on logout. Login throttled 5/60s.
+- **AiModel selection**: `RAGPipelineService` picks first active model by `sort_order` unless a specific model ID is provided in the request. `DocumentUpload` allows per-document embedding model override.
 
 ---
 
-## Coding Standards
+## Testing
 
-All PHP files must have `declare(strict_types=1)`. All PKs are ULIDs (`HasUlids` trait on models, `->whereUlid()` route binding). No DB-level FK constraints. Both facades and direct `config()` calls are used in practice.
-
-### Module isolation rules (from PROJECT_RULES.md — aspirational)
-- Modules communicate only through defined service contracts
-- No direct DB table access across modules
-- Each module can be enabled/disabled (but `config/modules.php` doesn't exist)
-
-### Testing standards (aims)
-- Services: 90%+ coverage, Controllers: 80%+
-- Mock external services
-- `test_{what}_{expectedOutcome}` naming
+- `tests/Pest.php` applies `RefreshDatabase` to **Feature** suite only.
+- `phpunit.xml`: `DB_CONNECTION=sqlite`, `DB_DATABASE=:memory:`, `QUEUE_CONNECTION=sync`, `CACHE_STORE=array`.
+- External API calls must be mocked (no network in tests).
+- Naming convention: `test_{what}_{expectedOutcome}`.
 
 ---
 
-## Environment
+## Conventions & Gotchas
 
-`.env.example` requires `OPENAI_API_KEY`. PostgreSQL 16 + pgvector + Redis required. Setup: `composer run setup`.
-
-### Queue
-- Default driver: `database` (PostgreSQL jobs table)
-- `.env.example` sets `QUEUE_CONNECTION=redis`
-- **No Horizon package** — use `php artisan queue:listen` or `php artisan queue:work`
-- Document processing is synchronous (`QUEUE_CONNECTION=sync` in test)
-
----
-
-## UserModule
-`UserModule` manages user registration and API token authentication. `App\Models\User` uses ULID `id`. Auth is token-based (80-char random tokens, no Sanctum). Endpoints: `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`.
-
----
-
-## Module-level docs (may be stale)
-
-Each module has `AGENTS.md` at `modules/{Name}Module/AGENTS.md`. They reference ULIDs, queue jobs, Pinecone drivers, and Vue components that may not match actual code. Always cross-reference with actual source.
+- `declare(strict_types=1)` on every PHP file.
+- ULID PKs everywhere. Route binding: `->whereUlid('id')`.
+- Only Services touch Models. Controllers validate + dispatch only.
+- Providers (EmbeddingModule/LLMModule) call OpenAI/Ollama via raw curl — keep behind `EmbeddingProviderInterface` / `LLMProviderInterface`.
+- Both facades (`Storage`, `Log`, `Response`) and constructor-injected config are used — don't refactor one to the other without reason.
+- New modules: create dir under `modules/`, add PSR-4 entry in `composer.json`, register `ServiceProvider` in `config/app.php`, run `composer dump-autoload`.
+- Horizon is installed (`laravel/horizon`) but the UI isn't wired — use `php artisan queue:work`.
+- Module-level `AGENTS.md` files may be stale — cross-reference with source code.
+- `PROJECT_RULES.md` describes aspirational coding standards (e.g. "no facades", "90% coverage") that the codebase does not fully enforce — treat as guidelines, not hard rules.

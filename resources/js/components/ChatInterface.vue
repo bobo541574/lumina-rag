@@ -178,14 +178,12 @@ import AppButton from '../components/ui/AppButton.vue'
 import AppEmptyState from '../components/ui/AppEmptyState.vue'
 import { useChatStore } from '../stores/chatStore'
 import { useDocumentStore } from '../stores/documentStore'
-import { useSettingsStore } from '../stores/settingsStore'
-import { settingsService } from '../services/settingsService'
+import { aiModelService } from '../services/aiModelService'
 import { storeToRefs } from 'pinia'
 import { formatRelativeTime } from '../utils/dates'
 
 const store = useChatStore()
 const docStore = useDocumentStore()
-const settingsStore = useSettingsStore()
 const { messages, isLoading, isStreaming, error } = storeToRefs(store)
 const { documents } = storeToRefs(docStore)
 
@@ -220,9 +218,8 @@ const activeFilterCount = computed(() => {
 
 onMounted(async () => {
   docStore.fetchDocuments()
-  settingsStore.fetch()
   try {
-    const res = await settingsService.getAiModels('llm')
+    const res = await aiModelService.getAll('llm')
     llmModelsList.value = (res.data ?? []).map((m: any) => ({ id: m.id, name: m.name }))
   } catch {
     // ignore

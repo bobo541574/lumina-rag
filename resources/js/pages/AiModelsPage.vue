@@ -37,7 +37,7 @@ import { useRouter } from 'vue-router'
 import AiModelList from '../components/AiModelList.vue'
 import AppButton from '../components/ui/AppButton.vue'
 import AppConfirm from '../components/ui/AppConfirm.vue'
-import { settingsService } from '../services/settingsService'
+import { aiModelService } from '../services/aiModelService'
 import { useToast } from '../composables/useToast'
 import type { AiModel } from '../types'
 
@@ -61,7 +61,7 @@ const confirmMessage = computed(() => {
 
 async function fetchModels() {
   try {
-    const res = await settingsService.getAiModels()
+    const res = await aiModelService.getAll()
     models.value = res.data ?? []
   } catch (e: any) {
     toast.error(e?.response?.data?.message ?? 'Failed to load models')
@@ -93,7 +93,7 @@ async function performDelete() {
   if (!pendingDeleteId.value) return
   isDeleting.value = true
   try {
-    await settingsService.deleteAiModel(pendingDeleteId.value)
+    await aiModelService.delete(pendingDeleteId.value)
     toast.success('Model deleted')
     confirmOpen.value = false
     pendingDeleteId.value = null

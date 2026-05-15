@@ -70,7 +70,7 @@ import AppButton from './ui/AppButton.vue'
 import AppSpinner from './ui/AppSpinner.vue'
 import { useDocumentStore } from '../stores/documentStore'
 import { useToast } from '../composables/useToast'
-import { settingsService } from '../services/settingsService'
+import { aiModelService } from '../services/aiModelService'
 import type { AiModel } from '../types'
 
 const emit = defineEmits<{
@@ -134,7 +134,7 @@ async function handleFile(file: File) {
 
 onMounted(async () => {
   try {
-    const res = await settingsService.getAiModels('embedding')
+    const res = await aiModelService.getAll('embedding')
     embeddingModels.value = res.data ?? []
   } catch {
     // fall back to default (empty) selection

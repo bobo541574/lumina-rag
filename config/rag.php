@@ -10,11 +10,11 @@ return [
     |--------------------------------------------------------------------------
     */
     'embedding' => [
-        'provider' => env('RAG_EMBEDDING_PROVIDER', 'openai'),
+        'provider' => env('RAG_EMBEDDING_PROVIDER', 'ollama'),
         'api_key' => env('OPENAI_API_KEY'),
         'base_url' => env('RAG_EMBEDDING_BASE_URL', 'http://localhost:11434'),
-        'model' => env('RAG_EMBEDDING_MODEL', 'text-embedding-3-small'),
-        'dimensions' => (int) env('RAG_EMBEDDING_DIMENSIONS', 1536),
+        'model' => env('RAG_EMBEDDING_MODEL', 'nomic-embed-text:latest'),
+        'dimensions' => (int) env('RAG_EMBEDDING_DIMENSIONS', 768),
         'batch_size' => (int) env('RAG_EMBEDDING_BATCH_SIZE', 100),
         'cache_ttl' => (int) env('RAG_EMBEDDING_CACHE_TTL', 86400),
         'timeout' => (int) env('RAG_EMBEDDING_TIMEOUT', 30),
@@ -26,13 +26,13 @@ return [
     |--------------------------------------------------------------------------
     */
     'llm' => [
-        'provider' => env('RAG_LLM_PROVIDER', 'openai'),
+        'provider' => env('RAG_LLM_PROVIDER', 'ollama'),
         'api_key' => env('OPENAI_API_KEY'),
         'base_url' => env('RAG_LLM_BASE_URL', 'http://localhost:11434'),
-        'model' => env('RAG_LLM_MODEL', 'gpt-4o'),
+        'model' => env('RAG_LLM_MODEL', 'qwen3.5:9b'),
         'temperature' => (float) env('RAG_LLM_TEMPERATURE', 0.3),
-        'max_context_tokens' => (int) env('RAG_LLM_MAX_CONTEXT_TOKENS', 4000),
-        'timeout' => (int) env('RAG_LLM_TIMEOUT', 60),
+        'max_context_tokens' => (int) env('RAG_LLM_MAX_CONTEXT_TOKENS', 32768),
+        'timeout' => (int) env('RAG_LLM_TIMEOUT', 120),
     ],
 
     /*

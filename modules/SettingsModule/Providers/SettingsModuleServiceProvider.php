@@ -6,13 +6,11 @@ namespace Modules\SettingsModule\Providers;
 
 use Illuminate\Support\ServiceProvider;
 use Modules\SettingsModule\Services\AiModelService;
-use Modules\SettingsModule\Services\SettingsService;
 
 class SettingsModuleServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
-        $this->app->singleton(SettingsService::class);
         $this->app->singleton(AiModelService::class);
     }
 
@@ -24,12 +22,5 @@ class SettingsModuleServiceProvider extends ServiceProvider
 
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
         $this->loadRoutesFrom(__DIR__.'/../Routes/settings.php');
-
-        $this->app->booted(function (): void {
-            try {
-                $this->app->make(SettingsService::class)->loadIntoConfig();
-            } catch (\Throwable) {
-            }
-        });
     }
 }

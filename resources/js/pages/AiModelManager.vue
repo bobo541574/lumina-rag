@@ -54,7 +54,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AiModelForm from '../components/AiModelForm.vue'
 import AppButton from '../components/ui/AppButton.vue'
-import { settingsService } from '../services/settingsService'
+import { aiModelService } from '../services/aiModelService'
 import { useToast } from '../composables/useToast'
 import type { AiModel } from '../types'
 
@@ -77,7 +77,7 @@ onMounted(async () => {
   const id = route.params.id as string
   isFetching.value = true
   try {
-    const res = await settingsService.getAiModel(id)
+    const res = await aiModelService.get(id)
     initialModel.value = res.data ?? null
     if (!initialModel.value) {
       fetchError.value = 'Model not found.'
@@ -95,10 +95,10 @@ async function handleSubmit(payload: Record<string, unknown>) {
   try {
     if (mode.value === 'edit') {
       const id = route.params.id as string
-      await settingsService.updateAiModel(id, payload as Partial<AiModel>)
+      await aiModelService.update(id, payload as Partial<AiModel>)
       toast.success('Model updated')
     } else {
-      await settingsService.createAiModel(payload as Partial<AiModel>)
+      await aiModelService.create(payload as Partial<AiModel>)
       toast.success('Model created')
     }
     router.push({ name: 'ai-models' })
