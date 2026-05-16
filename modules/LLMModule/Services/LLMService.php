@@ -37,6 +37,11 @@ class LLMService implements LLMServiceInterface
         return $this->provider->completeStream($systemPrompt, $assembledPrompt, $options);
     }
 
+    public function countTokens(string $text): int
+    {
+        return $this->provider->countTokens($text);
+    }
+
     private function assemblePrompt(string $userPrompt, array $context): string
     {
         $contextStr = $this->buildContextString($context);

@@ -73,7 +73,8 @@ class OllamaLLMProvider implements LLMProviderInterface
 
         $url = $this->baseUrl.'/api/chat';
 
-        $deltas = [];
+        $queue = [];
+        $lineBuffer = '';
 
         $ch = curl_init($url);
         curl_setopt_array($ch, [
@@ -84,18 +85,25 @@ class OllamaLLMProvider implements LLMProviderInterface
             CURLOPT_POSTFIELDS => json_encode($payload),
             CURLOPT_RETURNTRANSFER => false,
             CURLOPT_TIMEOUT => $this->timeout,
-            CURLOPT_WRITEFUNCTION => function ($ch, $data) use (&$deltas): int {
-                $lines = explode("\n", $data);
+            CURLOPT_WRITEFUNCTION => function ($ch, $data) use (&$queue, &$lineBuffer): int {
+                $lineBuffer .= $data;
+                $lines = explode("\n", $lineBuffer);
+                $lineBuffer = array_pop($lines);
+
                 foreach ($lines as $line) {
                     $line = trim($line);
                     if ($line === '') {
                         continue;
                     }
 
-                    $parsed = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
-                    $delta = $parsed['message']['content'] ?? '';
-                    if ($delta !== '') {
-                        $deltas[] = $delta;
+                    try {
+                        $parsed = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
+                        $delta = $parsed['message']['content'] ?? '';
+                        if ($delta !== '') {
+                            $queue[] = $delta;
+                        }
+                    } catch (\JsonException) {
+                        // skip malformed JSON
                     }
                 }
 
@@ -103,10 +111,31 @@ class OllamaLLMProvider implements LLMProviderInterface
             },
         ]);
 
-        curl_exec($ch);
-        curl_close($ch);
+        $mh = curl_multi_init();
+        curl_multi_add_handle($mh, $ch);
 
-        yield from $deltas;
+        $running = null;
+        do {
+            $status = curl_multi_exec($mh, $running);
+            if ($status !== CURLM_OK) {
+                break;
+            }
+
+            while ($queue !== []) {
+                yield array_shift($queue);
+            }
+
+            if ($running > 0 && $queue === []) {
+                usleep(5_000);
+            }
+        } while ($running > 0);
+
+        while ($queue !== []) {
+            yield array_shift($queue);
+        }
+
+        curl_multi_remove_handle($mh, $ch);
+        curl_multi_close($mh);
     }
 
     public function getModelName(): string

@@ -76,7 +76,8 @@ class OpenAILLMProvider implements LLMProviderInterface
 
         $url = 'https://api.openai.com/v1/chat/completions';
 
-        $deltas = [];
+        $queue = [];
+        $lineBuffer = '';
 
         $ch = curl_init($url);
         curl_setopt_array($ch, [
@@ -88,22 +89,26 @@ class OpenAILLMProvider implements LLMProviderInterface
             CURLOPT_POSTFIELDS => json_encode($payload),
             CURLOPT_RETURNTRANSFER => false,
             CURLOPT_TIMEOUT => $this->timeout,
-            CURLOPT_WRITEFUNCTION => function ($ch, $data) use (&$deltas): int {
-                $lines = explode("\n", $data);
+            CURLOPT_WRITEFUNCTION => function ($ch, $data) use (&$queue, &$lineBuffer): int {
+                $lineBuffer .= $data;
+                $lines = explode("\n", $lineBuffer);
+                $lineBuffer = array_pop($lines);
+
                 foreach ($lines as $line) {
                     $line = trim($line);
-                    if ($line === '') {
+                    if ($line === '' || $line === 'data: [DONE]') {
                         continue;
-                    }
-                    if ($line === 'data: [DONE]') {
-                        return strlen($data);
                     }
                     if (str_starts_with($line, 'data: ')) {
                         $json = substr($line, 6);
-                        $parsed = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
-                        $delta = $parsed['choices'][0]['delta']['content'] ?? '';
-                        if ($delta !== '') {
-                            $deltas[] = $delta;
+                        try {
+                            $parsed = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+                            $delta = $parsed['choices'][0]['delta']['content'] ?? '';
+                            if ($delta !== '') {
+                                $queue[] = $delta;
+                            }
+                        } catch (\JsonException) {
+                            // skip malformed JSON
                         }
                     }
                 }
@@ -112,10 +117,34 @@ class OpenAILLMProvider implements LLMProviderInterface
             },
         ]);
 
-        curl_exec($ch);
-        curl_close($ch);
+        $mh = curl_multi_init();
+        curl_multi_add_handle($mh, $ch);
 
-        yield from $deltas;
+        $running = null;
+        do {
+            $status = curl_multi_exec($mh, $running);
+            if ($status !== CURLM_OK) {
+                break;
+            }
+
+            // Yield any deltas accumulated during this iteration
+            while ($queue !== []) {
+                yield array_shift($queue);
+            }
+
+            // Brief pause only when waiting for more data
+            if ($running > 0 && $queue === []) {
+                usleep(5_000); // 5ms
+            }
+        } while ($running > 0);
+
+        // Drain any remaining deltas
+        while ($queue !== []) {
+            yield array_shift($queue);
+        }
+
+        curl_multi_remove_handle($mh, $ch);
+        curl_multi_close($mh);
     }
 
     public function getModelName(): string
