@@ -131,7 +131,7 @@ Auxiliary Laravel tables: `users`, `password_reset_tokens`, `sessions` (HTTP ses
 | `char_end` | integer | not null | Offset within original text |
 | `token_count` | integer | nullable | Best-effort token count |
 | `metadata` | json | nullable | Free-form per-chunk metadata |
-| `tsv_content` | tsvector | nullable | **Postgres only** — generated from `content` for FTS |
+| `tsv_content` | tsvector | nullable | **Postgres only** — generated from `content` for FTS. Auto-populated by `ProcessDocumentJob` on insert (migration does a one-time backfill using `simple` config; job uses `english` config). `ReportDemoSeeder` also populates it. |
 | `created_at` | timestamptz | default `NOW()` | (no `updated_at` — chunks are immutable) |
 
 **Indexes**:
