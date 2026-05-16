@@ -60,33 +60,47 @@ class AuthController extends Controller
 
     public function logout(Request $request): JsonResponse
     {
-        $token = $request->bearerToken();
+        try {
+            $token = $request->bearerToken();
 
-        if ($token !== null) {
-            $this->authService->logout($token);
+            if ($token !== null) {
+                $this->authService->logout($token);
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Logged out successfully.',
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Logout failed.',
+            ], 500);
         }
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Logged out successfully.',
-        ]);
     }
 
     public function me(Request $request): JsonResponse
     {
-        $token = $request->bearerToken();
-        $user = $token !== null ? $this->authService->getUserByToken($token) : null;
+        try {
+            $token = $request->bearerToken();
+            $user = $token !== null ? $this->authService->getUserByToken($token) : null;
 
-        if ($user === null) {
+            if ($user === null) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthenticated.',
+                ], 401);
+            }
+
+            return response()->json([
+                'success' => true,
+                'data' => $user,
+            ]);
+        } catch (\Throwable $e) {
             return response()->json([
                 'success' => false,
-                'message' => 'Unauthenticated.',
-            ], 401);
+                'message' => 'An error occurred.',
+            ], 500);
         }
-
-        return response()->json([
-            'success' => true,
-            'data' => $user,
-        ]);
     }
 }
