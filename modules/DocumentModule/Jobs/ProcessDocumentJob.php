@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\DocumentModule\Jobs;
 
+use App\Models\User;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -17,14 +18,12 @@ use Modules\DocumentModule\Contracts\TextExtractionServiceInterface;
 use Modules\DocumentModule\Models\Document;
 use Modules\DocumentModule\Models\DocumentChunk;
 use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
-use Modules\EmbeddingModule\Services\EmbeddingService;
 use Modules\EmbeddingModule\Services\ProviderFactory;
-use Modules\SettingsModule\Models\AiModel;
 use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
 
 class ProcessDocumentJob implements ShouldQueue
 {
-    use Dispatchable, InteractsWithQueue, Queueable;
+    use Dispatchable, InteractsWithQueue, Queueable, ResolvesEmbedder;
 
     public string $documentId;
 
@@ -56,7 +55,7 @@ class ProcessDocumentJob implements ShouldQueue
             $text = $this->extractText($document, $extractor);
             $chunks = $this->saveChunks($document, $text, $chunker);
 
-            $embedderToUse = $this->resolveEmbedder($document, $providerFactory, $cache, $embedder);
+            $embedderToUse = $this->resolveEmbedder($document, $embedder, $providerFactory, $cache);
             $this->generateEmbeddings($document, $chunks, $embedderToUse, $vectorStore);
 
             $document->update([
@@ -74,30 +73,6 @@ class ProcessDocumentJob implements ShouldQueue
         }
     }
 
-    private function resolveEmbedder(
-        Document $document,
-        ProviderFactory $providerFactory,
-        CacheRepository $cache,
-        EmbeddingServiceInterface $defaultEmbedder,
-    ): EmbeddingServiceInterface {
-        $modelId = $document->embedding_model_id;
-
-        if ($modelId === null) {
-            return $defaultEmbedder;
-        }
-
-        $aiModel = AiModel::find($modelId);
-
-        if ($aiModel === null || ! $aiModel->is_active) {
-            return $defaultEmbedder;
-        }
-
-        $provider = $providerFactory->createEmbeddingProvider($aiModel);
-        $cacheTtl = $aiModel->cache_ttl ?? (int) config('rag.embedding.cache_ttl', 86400);
-
-        return new EmbeddingService($provider, $cache, $cacheTtl);
-    }
-
     public function failed(\Throwable $e): void
     {
         $document = Document::find($this->documentId);
@@ -110,6 +85,8 @@ class ProcessDocumentJob implements ShouldQueue
             'status' => 'failed',
             'error_message' => $e->getMessage(),
         ]);
+
+        $document->chunks()->delete();
     }
 
     private function cleanupPreviousAttempt(Document $document, VectorStoreInterface $vectorStore): void
@@ -154,6 +131,20 @@ class ProcessDocumentJob implements ShouldQueue
             throw new \RuntimeException('Text chunking produced no chunks');
         }
 
+        // Build metadata header from document fields
+        $userName = 'Unknown';
+        try {
+            $user = User::find($document->user_id);
+            if ($user !== null) {
+                $userName = $user->name;
+            }
+        } catch (\Throwable) {
+            // ignore
+        }
+        $project = $document->project ?? 'General';
+        $reportDate = $document->report_date ?? $document->created_at?->format('Y-m-d') ?? now()->format('Y-m-d');
+        $metaHeader = "Report by: {$userName}\nProject: {$project}\nDate: {$reportDate}\n\n";
+
         $now = now();
         $records = [];
         $ids = [];
@@ -161,14 +152,15 @@ class ProcessDocumentJob implements ShouldQueue
         foreach ($rawChunks as $i => $chunkData) {
             $id = (string) Str::ulid();
             $ids[] = $id;
+            $prefixed = $metaHeader.$chunkData['content'];
             $records[] = [
                 'id' => $id,
                 'document_id' => $document->id,
-                'content' => $chunkData['content'],
+                'content' => $prefixed,
                 'chunk_index' => $i,
                 'char_start' => $chunkData['char_start'],
                 'char_end' => $chunkData['char_end'],
-                'token_count' => $this->estimateTokenCount($chunkData['content']),
+                'token_count' => $this->estimateTokenCount($prefixed),
                 'page_number' => $chunkData['page_number'] ?? null,
                 'created_at' => $now,
             ];
@@ -181,20 +173,24 @@ class ProcessDocumentJob implements ShouldQueue
                 $bindings = [];
 
                 foreach ($batch as $row) {
-                    $placeholders = [];
-                    foreach ($row as $col => $val) {
-                        if ($col === 'tsv_content') {
-                            $placeholders[] = "to_tsvector('simple', ?)";
-                        } else {
-                            $placeholders[] = '?';
-                        }
-                        $bindings[] = $val;
-                    }
+                    $placeholders = array_fill(0, count($row), '?');
+                    $bindings = array_merge($bindings, array_values($row));
                     $values[] = '('.implode(', ', $placeholders).')';
                 }
 
                 $sql = "INSERT INTO document_chunks ({$columns}) VALUES ".implode(', ', $values);
                 DB::statement($sql, $bindings);
+            }
+
+            if (DB::getDriverName() === 'pgsql') {
+                $ids = array_column($records, 'id');
+                foreach (array_chunk($ids, 500) as $idBatch) {
+                    $placeholders = implode(', ', array_fill(0, count($idBatch), '?'));
+                    DB::statement(
+                        "UPDATE document_chunks SET tsv_content = to_tsvector('english', content) WHERE id IN ({$placeholders}) AND tsv_content IS NULL",
+                        $idBatch,
+                    );
+                }
             }
         });
 
