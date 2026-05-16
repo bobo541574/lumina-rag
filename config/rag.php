@@ -30,7 +30,6 @@ return [
         'api_key' => env('OPENAI_API_KEY'),
         'base_url' => env('RAG_LLM_BASE_URL', 'http://localhost:11434'),
         'model' => env('RAG_LLM_MODEL', 'qwen3.5:9b'),
-        'temperature' => (float) env('RAG_LLM_TEMPERATURE', 0.3),
         'max_context_tokens' => (int) env('RAG_LLM_MAX_CONTEXT_TOKENS', 32768),
         'timeout' => (int) env('RAG_LLM_TIMEOUT', 120),
     ],
@@ -54,10 +53,6 @@ return [
         'mode' => env('RAG_SEARCH_MODE', 'hybrid'),
         'top_k' => (int) env('RAG_SEARCH_TOP_K', 5),
         'similarity_threshold' => (float) env('RAG_SEARCH_SIMILARITY_THRESHOLD', 0.65),
-        'hybrid' => [
-            'vector_weight' => (float) env('RAG_SEARCH_HYBRID_VECTOR_WEIGHT', 0.7),
-            'fts_weight' => (float) env('RAG_SEARCH_HYBRID_FTS_WEIGHT', 0.3),
-        ],
         'query_expansion' => [
             'enabled' => (bool) env('RAG_QUERY_EXPANSION_ENABLED', false),
             'num_queries' => (int) env('RAG_QUERY_EXPANSION_NUM_QUERIES', 3),
@@ -95,7 +90,6 @@ return [
     */
     'logging' => [
         'channel' => env('RAG_LOG_CHANNEL', 'rag'),
-        'level' => env('RAG_LOG_LEVEL', 'info'),
     ],
 
 ];
