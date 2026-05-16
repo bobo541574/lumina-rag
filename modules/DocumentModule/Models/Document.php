@@ -24,6 +24,8 @@ class Document extends Model
         'user_id',
         'title',
         'description',
+        'report_date',
+        'project',
         'original_filename',
         'file_path',
         'file_size',
@@ -45,6 +47,7 @@ class Document extends Model
             'page_count' => 'integer',
             'chunks_count' => 'integer',
             'description' => 'string',
+            'report_date' => 'date:Y-m-d',
             'processed_at' => 'datetime',
             'deleted_at' => 'datetime',
         ];

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\DocumentModule\Jobs;
 
+use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Foundation\Queue\Queueable;
@@ -11,12 +12,13 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Modules\DocumentModule\Models\Document;
 use Modules\DocumentModule\Models\DocumentChunk;
-use Modules\EmbeddingModule\Services\EmbeddingService;
-use Modules\VectorStoreModule\Services\VectorStoreService;
+use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
+use Modules\EmbeddingModule\Services\ProviderFactory;
+use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
 
 class ReEmbedDocumentJob implements ShouldQueue
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+    use Dispatchable, InteractsWithQueue, Queueable, ResolvesEmbedder, SerializesModels;
 
     public string $documentId;
 
@@ -33,8 +35,10 @@ class ReEmbedDocumentJob implements ShouldQueue
     }
 
     public function handle(
-        EmbeddingService $embedder,
-        VectorStoreService $vectorStore,
+        EmbeddingServiceInterface $defaultEmbedder,
+        VectorStoreInterface $vectorStore,
+        ProviderFactory $providerFactory,
+        CacheRepository $cache,
     ): void {
         $document = Document::findOrFail($this->documentId);
 
@@ -48,28 +52,43 @@ class ReEmbedDocumentJob implements ShouldQueue
             return;
         }
 
+        $embedder = $this->resolveEmbedder($document, $defaultEmbedder, $providerFactory, $cache);
+        $modelName = $this->resolveModelName($document);
+
         $texts = $chunks->pluck('content')->toArray();
         $batchSize = (int) config('rag.embedding.batch_size', 100);
         $batches = array_chunk($texts, $batchSize);
 
-        $modelName = config('rag.embedding.model', 'text-embedding-ada-002');
-
         foreach ($batches as $batchIndex => $batch) {
-            $vectors = $embedder->embedBatch($batch);
+            $vectors = $embedder->embedBatch($batch, $modelName);
             $offset = $batchIndex * $batchSize;
+
+            $batchVectors = [];
+            $batchChunkIds = [];
+            $batchMetadata = [];
 
             foreach ($vectors as $j => $vector) {
                 $chunk = $chunks[$offset + $j];
-                $vectorStore->upsert(
-                    vectors: [$vector],
-                    metadata: [
-                        'model_name' => $modelName,
-                        'content_hash' => md5($chunk->content),
-                    ],
-                    chunkId: $chunk->id,
-                    namespace: "document_{$document->id}",
-                );
+                $batchVectors[] = $vector;
+                $batchChunkIds[] = $chunk->id;
+                $batchMetadata[] = [
+                    'model_name' => $modelName,
+                    'content_hash' => md5($chunk->content),
+                ];
             }
+
+            $vectorStore->upsert(
+                vectors: $batchVectors,
+                metadata: $batchMetadata,
+                chunkId: $batchChunkIds,
+                namespace: "document_{$document->id}",
+            );
         }
+    }
+
+    private function resolveModelName(Document $document): string
+    {
+        return $document->embedding_model
+            ?? (string) config('rag.embedding.model', 'text-embedding-3-small');
     }
 }

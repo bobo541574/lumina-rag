@@ -7,6 +7,7 @@ namespace Modules\DocumentModule\Providers;
 use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Support\ServiceProvider;
 use Modules\DocumentModule\Commands\ReEmbedCommand;
+use Modules\DocumentModule\Contracts\DocumentServiceInterface;
 use Modules\DocumentModule\Contracts\TextChunkingServiceInterface;
 use Modules\DocumentModule\Contracts\TextExtractionServiceInterface;
 use Modules\DocumentModule\Services\DocumentService;
@@ -22,7 +23,7 @@ class DocumentModuleServiceProvider extends ServiceProvider
         $this->app->singleton(TextExtractionServiceInterface::class, TextExtractionService::class);
         $this->app->singleton(TextChunkingServiceInterface::class, TextChunkingService::class);
 
-        $this->app->singleton(DocumentService::class, fn ($app): DocumentService => new DocumentService(
+        $this->app->singleton(DocumentServiceInterface::class, fn ($app): DocumentService => new DocumentService(
             extractor: $app->make(TextExtractionServiceInterface::class),
             chunker: $app->make(TextChunkingServiceInterface::class),
             embedder: $app->make(EmbeddingServiceInterface::class),

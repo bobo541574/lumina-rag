@@ -37,6 +37,16 @@ class UploadDocumentRequest extends FormRequest
                 'string',
                 'exists:ai_models,id',
             ],
+            'report_date' => [
+                'nullable',
+                'date',
+                'before_or_equal:today',
+            ],
+            'project' => [
+                'nullable',
+                'string',
+                'max:255',
+            ],
         ];
     }
 

@@ -4,18 +4,19 @@ declare(strict_types=1);
 
 namespace Modules\DocumentModule\Controllers;
 
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
+use Modules\DocumentModule\Contracts\DocumentServiceInterface;
 use Modules\DocumentModule\Models\Document;
 use Modules\DocumentModule\Requests\UploadDocumentRequest;
-use Modules\DocumentModule\Services\DocumentService;
 
 class DocumentController extends Controller
 {
-    private DocumentService $documentService;
+    private DocumentServiceInterface $documentService;
 
-    public function __construct(DocumentService $documentService)
+    public function __construct(DocumentServiceInterface $documentService)
     {
         $this->documentService = $documentService;
     }
@@ -30,6 +31,8 @@ class DocumentController extends Controller
                 $user?->id,
                 $request->input('embedding_model'),
                 $request->input('embedding_model_id'),
+                $request->input('report_date'),
+                $request->input('project'),
             );
 
             return response()->json([
@@ -54,7 +57,7 @@ class DocumentController extends Controller
     {
         $user = $request->input('authenticated_user');
         $documents = $this->documentService->listDocuments(
-            $request->only(['status', 'per_page']),
+            $request->only(['status', 'per_page', 'page', 'search', 'sort_key', 'sort_dir']),
             $user?->id,
         );
 
@@ -66,42 +69,56 @@ class DocumentController extends Controller
 
     public function show(Request $request, string $id): JsonResponse
     {
-        $user = $request->input('authenticated_user');
-        $query = Document::withCount('chunks')->where('id', $id);
+        try {
+            $user = $request->input('authenticated_user');
+            $query = Document::withCount('chunks')->where('id', $id);
 
-        if ($user !== null) {
-            $query->where('user_id', $user->id);
+            if ($user !== null) {
+                $query->where('user_id', $user->id);
+            }
+
+            $document = $query->firstOrFail();
+
+            return response()->json([
+                'success' => true,
+                'data' => $document->toArray(),
+            ]);
+        } catch (ModelNotFoundException) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Document not found.',
+            ], 404);
         }
-
-        $document = $query->firstOrFail();
-
-        return response()->json([
-            'success' => true,
-            'data' => $document->toArray(),
-        ]);
     }
 
     public function status(Request $request, string $id): JsonResponse
     {
-        $user = $request->input('authenticated_user');
-        $query = Document::where('id', $id);
+        try {
+            $user = $request->input('authenticated_user');
+            $query = Document::where('id', $id);
 
-        if ($user !== null) {
-            $query->where('user_id', $user->id);
+            if ($user !== null) {
+                $query->where('user_id', $user->id);
+            }
+
+            $document = $query->firstOrFail();
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'id' => $document->id,
+                    'status' => $document->status,
+                    'chunks_count' => $document->chunks_count,
+                    'error_message' => $document->error_message,
+                    'processed_at' => $document->processed_at,
+                ],
+            ]);
+        } catch (ModelNotFoundException) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Document not found.',
+            ], 404);
         }
-
-        $document = $query->firstOrFail();
-
-        return response()->json([
-            'success' => true,
-            'data' => [
-                'id' => $document->id,
-                'status' => $document->status,
-                'chunks_count' => $document->chunks_count,
-                'error_message' => $document->error_message,
-                'processed_at' => $document->processed_at,
-            ],
-        ]);
     }
 
     public function retry(Request $request, string $id): JsonResponse
@@ -143,6 +160,11 @@ class DocumentController extends Controller
                 'message' => 'Document updated successfully.',
                 'data' => $document->toArray(),
             ]);
+        } catch (ModelNotFoundException) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Document not found.',
+            ], 404);
         } catch (\Throwable $e) {
             return response()->json([
                 'success' => false,
@@ -161,6 +183,11 @@ class DocumentController extends Controller
                 'success' => true,
                 'message' => 'Document deleted successfully.',
             ]);
+        } catch (ModelNotFoundException) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Document not found.',
+            ], 404);
         } catch (\Throwable $e) {
             return response()->json([
                 'success' => false,

@@ -7,6 +7,7 @@ namespace Modules\DocumentModule\Services;
 use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
+use Modules\DocumentModule\Contracts\DocumentServiceInterface;
 use Modules\DocumentModule\Contracts\TextChunkingServiceInterface;
 use Modules\DocumentModule\Contracts\TextExtractionServiceInterface;
 use Modules\DocumentModule\Jobs\ProcessDocumentJob;
@@ -15,7 +16,7 @@ use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
 use Modules\SettingsModule\Models\AiModel;
 use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
 
-class DocumentService
+class DocumentService implements DocumentServiceInterface
 {
     private TextExtractionServiceInterface $extractor;
 
@@ -65,7 +66,7 @@ class DocumentService
         $this->batchSize = $batchSize;
     }
 
-    public function upload(UploadedFile $file, ?string $title = null, ?string $userId = null, ?string $embeddingModel = null, ?string $embeddingModelId = null): Document
+    public function upload(UploadedFile $file, ?string $title = null, ?string $userId = null, ?string $embeddingModel = null, ?string $embeddingModelId = null, ?string $reportDate = null, ?string $project = null): Document
     {
         $this->validateFile($file);
         $hash = hash_file('sha256', $file->getPathname());
@@ -103,6 +104,8 @@ class DocumentService
             'file_hash' => $hash,
             'status' => 'pending',
             'user_id' => $userId,
+            'report_date' => $reportDate,
+            'project' => $project,
             'embedding_model' => $modelName,
             'embedding_model_id' => $modelId,
         ]);
@@ -180,11 +183,28 @@ class DocumentService
         if (isset($filters['status'])) {
             $query->where('status', $filters['status']);
         }
-        $perPage = (int) ($filters['per_page'] ?? 20);
+        if (isset($filters['search']) && $filters['search'] !== '') {
+            $search = '%'.str_replace('%', '\\%', $filters['search']).'%';
+            $query->where(function ($q) use ($search): void {
+                $q->where('title', 'ilike', $search)
+                    ->orWhere('original_filename', 'ilike', $search);
+            });
+        }
 
-        return $query->orderByDesc('created_at')
-            ->paginate($perPage)
-            ->toArray();
+        $sortKey = $filters['sort_key'] ?? 'created_at';
+        $sortDir = $filters['sort_dir'] ?? 'desc';
+        $allowedSortKeys = ['title', 'status', 'file_size', 'chunks_count', 'created_at'];
+
+        if (! in_array($sortKey, $allowedSortKeys, true)) {
+            $sortKey = 'created_at';
+        }
+        $sortDir = $sortDir === 'asc' ? 'asc' : 'desc';
+        $query->orderBy($sortKey, $sortDir);
+
+        $perPage = (int) ($filters['per_page'] ?? 20);
+        $page = (int) ($filters['page'] ?? 1);
+
+        return $query->paginate($perPage, ['*'], 'page', $page)->toArray();
     }
 
     private function validateFile(UploadedFile $file): void
