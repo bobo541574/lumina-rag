@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Modules\ChatModule\Controllers;
 
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
 use Modules\ChatModule\Contracts\RAGPipelineServiceInterface;
 use Modules\ChatModule\Requests\ChatRequest;
@@ -56,9 +57,9 @@ class ChatController extends Controller
         }
     }
 
-    public function sessions(): JsonResponse
+    public function sessions(Request $request): JsonResponse
     {
-        $user = request()->input('authenticated_user');
+        $user = $request->input('authenticated_user');
         $sessions = $this->pipeline->listSessions($user?->id);
 
         return response()->json([
@@ -67,10 +68,10 @@ class ChatController extends Controller
         ]);
     }
 
-    public function showSession(string $id): JsonResponse
+    public function showSession(Request $request, string $id): JsonResponse
     {
         try {
-            $user = request()->input('authenticated_user');
+            $user = $request->input('authenticated_user');
             $session = $this->pipeline->getSession($id, $user?->id);
 
             return response()->json([
@@ -85,10 +86,10 @@ class ChatController extends Controller
         }
     }
 
-    public function destroySession(string $id): JsonResponse
+    public function destroySession(Request $request, string $id): JsonResponse
     {
         try {
-            $user = request()->input('authenticated_user');
+            $user = $request->input('authenticated_user');
             $this->pipeline->deleteSession($id, $user?->id);
 
             return response()->json([
@@ -126,12 +127,16 @@ class ChatController extends Controller
 
                 foreach ($generator as $event) {
                     echo "data: {$event}\n\n";
-                    ob_flush();
+                    if (ob_get_level()) {
+                        ob_flush();
+                    }
                     flush();
                 }
             } catch (\Throwable $e) {
                 echo 'data: '.json_encode(['type' => 'error', 'message' => $e->getMessage()])."\n\n";
-                ob_flush();
+                if (ob_get_level()) {
+                    ob_flush();
+                }
                 flush();
             }
         }, 200, [
