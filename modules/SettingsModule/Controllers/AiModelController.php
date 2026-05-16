@@ -8,20 +8,20 @@ use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
-use Modules\SettingsModule\Services\AiModelService;
+use Modules\SettingsModule\Contracts\AiModelServiceInterface;
 
 class AiModelController extends Controller
 {
-    private AiModelService $modelService;
+    private AiModelServiceInterface $modelService;
 
-    public function __construct(AiModelService $modelService)
+    public function __construct(AiModelServiceInterface $modelService)
     {
         $this->modelService = $modelService;
     }
 
     public function index(Request $request): JsonResponse
     {
-        $type = $request->input('type'); // 'embedding' or 'llm' or null for all
+        $type = $request->input('type');
 
         return response()->json([
             'success' => true,
@@ -44,6 +44,11 @@ class AiModelController extends Controller
                 'message' => 'AI model created successfully.',
                 'data' => $model->toArray(),
             ], 201);
+        } catch (ModelNotFoundException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Referenced model not found.',
+            ], 404);
         } catch (\Throwable $e) {
             return response()->json([
                 'success' => false,
@@ -61,11 +66,16 @@ class AiModelController extends Controller
                 'success' => true,
                 'data' => $model->toArray(),
             ]);
-        } catch (\Throwable $e) {
+        } catch (ModelNotFoundException) {
             return response()->json([
                 'success' => false,
                 'message' => 'AI model not found.',
             ], 404);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 500);
         }
     }
 
@@ -76,7 +86,6 @@ class AiModelController extends Controller
             $type = $existing->type;
             $rules = $this->modelService->getValidationRules($type);
 
-            // Make fields optional for update
             foreach ($rules as $key => $rule) {
                 if (is_array($rule)) {
                     $rules[$key] = array_merge(['sometimes'], $rule);
@@ -91,13 +100,16 @@ class AiModelController extends Controller
                 'message' => 'AI model updated successfully.',
                 'data' => $model->toArray(),
             ]);
+        } catch (ModelNotFoundException) {
+            return response()->json([
+                'success' => false,
+                'message' => 'AI model not found.',
+            ], 404);
         } catch (\Throwable $e) {
-            $status = $e instanceof ModelNotFoundException ? 404 : 422;
-
             return response()->json([
                 'success' => false,
                 'message' => $e->getMessage(),
-            ], $status);
+            ], 422);
         }
     }
 
@@ -110,11 +122,16 @@ class AiModelController extends Controller
                 'success' => true,
                 'message' => 'AI model deleted successfully.',
             ]);
-        } catch (\Throwable $e) {
+        } catch (ModelNotFoundException) {
             return response()->json([
                 'success' => false,
                 'message' => 'AI model not found.',
             ], 404);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 500);
         }
     }
 }

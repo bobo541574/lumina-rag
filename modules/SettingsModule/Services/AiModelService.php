@@ -4,9 +4,10 @@ declare(strict_types=1);
 
 namespace Modules\SettingsModule\Services;
 
+use Modules\SettingsModule\Contracts\AiModelServiceInterface;
 use Modules\SettingsModule\Models\AiModel;
 
-class AiModelService
+class AiModelService implements AiModelServiceInterface
 {
     public function getAll(?string $type = null): array
     {
