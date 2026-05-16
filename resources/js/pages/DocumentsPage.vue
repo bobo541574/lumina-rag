@@ -83,7 +83,7 @@
     </div>
 
     <DocumentList
-      :documents="pagedDocuments"
+      :documents="documents"
       :sort-key="sortKey"
       :sort-dir="sortDir"
       :selectable="totalCount > 0"
@@ -101,14 +101,14 @@
 
     <!-- Pagination footer -->
     <div
-      v-if="totalFiltered > pageSize"
+      v-if="totalPages > 1"
       class="mt-3 flex items-center justify-between gap-3 flex-wrap text-sm text-surface-600"
     >
       <span class="tabular-nums">
         Showing
         <span class="font-medium text-surface-800">{{ rangeStart }}</span>
         –<span class="font-medium text-surface-800">{{ rangeEnd }}</span>
-        of <span class="font-medium text-surface-800">{{ totalFiltered }}</span>
+        of <span class="font-medium text-surface-800">{{ totalCount }}</span>
       </span>
       <div class="flex items-center gap-2">
         <AppButton
@@ -178,7 +178,7 @@ const PAGE_SIZE_OPTIONS = [10, 25, 50, 100]
 
 const store = useDocumentStore()
 const toast = useToast()
-const { documents } = storeToRefs(store)
+const { documents, meta } = storeToRefs(store)
 const selectedDoc = ref<Document | null>(null)
 
 // --- Filter, search, sort, pagination state ---
@@ -193,7 +193,7 @@ const pageSize = ref(25)
 const selectedIds = ref<Set<string>>(new Set())
 
 // --- Derived data ---
-const totalCount = computed(() => documents.value.length)
+const totalCount = computed(() => meta.value?.total ?? 0)
 
 const counts = computed(() => {
   const map: Record<Document['status'], number> = { pending: 0, processing: 0, completed: 0, failed: 0 }
@@ -204,65 +204,52 @@ const counts = computed(() => {
 })
 
 const tabs = computed(() => [
-  { key: 'all'        as StatusFilter, label: 'All',        count: totalCount.value      },
+  { key: 'all'        as StatusFilter, label: 'All',        count: totalCount.value },
   { key: 'pending'    as StatusFilter, label: 'Pending',    count: counts.value.pending    },
   { key: 'processing' as StatusFilter, label: 'Processing', count: counts.value.processing },
   { key: 'completed'  as StatusFilter, label: 'Completed',  count: counts.value.completed  },
   { key: 'failed'     as StatusFilter, label: 'Failed',     count: counts.value.failed     },
 ])
 
-const filteredDocuments = computed(() => {
-  const q = searchQuery.value.trim().toLowerCase()
-  return documents.value.filter((d) => {
-    if (statusFilter.value !== 'all' && d.status !== statusFilter.value) return false
-    if (!q) return true
-    return (
-      d.title?.toLowerCase().includes(q) ||
-      d.original_filename?.toLowerCase().includes(q)
-    )
-  })
-})
-
-const sortedDocuments = computed(() => {
-  const docs = [...filteredDocuments.value]
-  const dir = sortDir.value === 'asc' ? 1 : -1
-  const key = sortKey.value
-  docs.sort((a, b) => {
-    const av = (a as any)[key]
-    const bv = (b as any)[key]
-    if (av == null && bv == null) return 0
-    if (av == null) return 1
-    if (bv == null) return -1
-    if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir
-    if (key === 'created_at') return (new Date(av).getTime() - new Date(bv).getTime()) * dir
-    return String(av).localeCompare(String(bv)) * dir
-  })
-  return docs
-})
-
-const totalFiltered = computed(() => sortedDocuments.value.length)
-const totalPages = computed(() => Math.max(1, Math.ceil(totalFiltered.value / pageSize.value)))
-
-const pagedDocuments = computed(() => {
-  const start = (currentPage.value - 1) * pageSize.value
-  return sortedDocuments.value.slice(start, start + pageSize.value)
-})
+const totalPages = computed(() => meta.value?.last_page ?? 1)
 
 const rangeStart = computed(() =>
-  totalFiltered.value === 0 ? 0 : (currentPage.value - 1) * pageSize.value + 1,
+  totalCount.value === 0 ? 0 : ((meta.value?.current_page ?? 1) - 1) * (meta.value?.per_page ?? 25) + 1,
 )
 const rangeEnd = computed(() =>
-  Math.min(currentPage.value * pageSize.value, totalFiltered.value),
+  Math.min((meta.value?.current_page ?? 1) * (meta.value?.per_page ?? 25), totalCount.value),
 )
 
-// Reset to page 1 whenever filters/search/sort/page-size change
-watch([statusFilter, searchQuery, sortKey, sortDir, pageSize], () => {
+// --- Server fetch helper ---
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+
+function fetchPage() {
+  store.fetchDocuments({
+    status: statusFilter.value === 'all' ? undefined : statusFilter.value,
+    page: currentPage.value,
+    per_page: pageSize.value,
+    search: searchQuery.value.trim() || undefined,
+    sort_key: sortKey.value,
+    sort_dir: sortDir.value,
+  })
+}
+
+// Watch filters and re-fetch
+watch([statusFilter, sortKey, sortDir, pageSize], () => {
   currentPage.value = 1
+  fetchPage()
 })
 
-// Clamp current page if list shrinks
-watch(totalPages, (pages) => {
-  if (currentPage.value > pages) currentPage.value = pages
+watch(currentPage, () => {
+  fetchPage()
+})
+
+watch(searchQuery, () => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    currentPage.value = 1
+    fetchPage()
+  }, 300)
 })
 
 // --- Sort handler ---
@@ -284,7 +271,7 @@ function toggleSelect(id: string) {
 }
 
 function togglePageSelection() {
-  const pageIds = pagedDocuments.value.map((d) => d.id)
+  const pageIds = documents.value.map((d) => d.id)
   const allSelected = pageIds.every((id) => selectedIds.value.has(id))
   const next = new Set(selectedIds.value)
   if (allSelected) {
@@ -300,15 +287,14 @@ function clearSelection() {
 }
 
 function onUploaded() {
-  store.fetchDocuments()
-  // No selection invalidation needed — uploaded ID isn't selected yet.
+  fetchPage()
 }
 
 const initialLoading = ref(true)
 
 onMounted(async () => {
   try {
-    await store.fetchDocuments()
+    await fetchPage()
   } finally {
     initialLoading.value = false
   }
@@ -372,7 +358,6 @@ async function performDelete() {
       if (!pendingDeleteId.value) return
       await store.deleteDocument(pendingDeleteId.value)
       toast.success('Document deleted')
-      // remove from selection if present
       const next = new Set(selectedIds.value)
       next.delete(pendingDeleteId.value)
       selectedIds.value = next
@@ -384,7 +369,6 @@ async function performDelete() {
       const succeeded = ids.length - failed
       if (succeeded > 0) toast.success(`Deleted ${succeeded} document${succeeded === 1 ? '' : 's'}`)
       if (failed > 0) toast.error(`Failed to delete ${failed} document${failed === 1 ? '' : 's'}`)
-      // Drop successfully deleted ids from selection
       const next = new Set(selectedIds.value)
       results.forEach((r, i) => {
         if (r.status === 'fulfilled') next.delete(ids[i])
@@ -392,6 +376,7 @@ async function performDelete() {
       selectedIds.value = next
     }
     confirmOpen.value = false
+    fetchPage()
   } catch (e: any) {
     toast.error(e?.response?.data?.message ?? 'Delete failed')
   } finally {

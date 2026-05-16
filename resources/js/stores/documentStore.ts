@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { Document } from '../types'
+import type { Document, PaginationMeta } from '../types'
 import { documentService } from '../services/documentService'
 
 export const useDocumentStore = defineStore('document', () => {
@@ -9,12 +9,22 @@ export const useDocumentStore = defineStore('document', () => {
   const isLoading = ref(false)
   const isUploading = ref(false)
   const error = ref<string | null>(null)
+  const meta = ref<PaginationMeta | null>(null)
 
-  async function fetchDocuments(params?: { status?: string }) {
+  async function fetchDocuments(params?: {
+    status?: string
+    per_page?: number
+    page?: number
+    search?: string
+    sort_key?: string
+    sort_dir?: string
+  }) {
     isLoading.value = true
     try {
       const response = await documentService.list(params)
-      documents.value = response.data?.data ?? []
+      const payload = response.data
+      documents.value = payload.data ?? []
+      meta.value = payload.meta ?? null
     } catch (e: any) {
       error.value = e.response?.data?.message ?? 'Failed to load documents'
     } finally {
@@ -101,6 +111,7 @@ export const useDocumentStore = defineStore('document', () => {
     isLoading,
     isUploading,
     error,
+    meta,
     fetchDocuments,
     fetchDocument,
     uploadDocument,

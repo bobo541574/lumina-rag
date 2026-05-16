@@ -1,9 +1,16 @@
 import { get, post, put, del, upload } from './api'
-import type { Document } from '../types'
+import type { Document, PaginationMeta } from '../types'
 
 export const documentService = {
-  async list(params?: { status?: string; per_page?: number }) {
-    return get<{ data: Document[] }>('/documents', params)
+  async list(params?: {
+    status?: string
+    per_page?: number
+    page?: number
+    search?: string
+    sort_key?: string
+    sort_dir?: string
+  }) {
+    return get<{ data: Document[]; meta?: PaginationMeta }>('/documents', params)
   },
 
   async getDocument(id: string) {
