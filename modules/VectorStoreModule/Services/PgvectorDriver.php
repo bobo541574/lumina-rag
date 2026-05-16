@@ -82,6 +82,9 @@ class PgvectorDriver implements VectorStoreInterface
                 'dc.content',
                 'd.id as document_id',
                 'd.title as document_title',
+                'd.user_id as document_user_id',
+                'd.project as document_project',
+                'd.report_date as document_report_date',
                 'dc.chunk_index',
                 'dc.page_number',
                 'd.created_at as document_created_at',
@@ -101,16 +104,19 @@ class PgvectorDriver implements VectorStoreInterface
                 'dc.content',
                 'd.id as document_id',
                 'd.title as document_title',
+                'd.user_id as document_user_id',
+                'd.project as document_project',
+                'd.report_date as document_report_date',
                 'dc.chunk_index',
                 'dc.page_number',
                 'd.created_at as document_created_at',
             )
             ->selectRaw('0.0 as similarity_score')
-            ->selectRaw('ts_rank(dc.tsv_content, plainto_tsquery(\'simple\', ?)) as fts_score', [$queryText])
+            ->selectRaw('ts_rank(dc.tsv_content, plainto_tsquery(\'english\', ?)) as fts_score', [$queryText])
             ->join('documents as d', 'd.id', '=', 'dc.document_id')
             ->whereNull('d.deleted_at')
-            ->whereRaw('dc.tsv_content @@ plainto_tsquery(\'simple\', ?)', [$queryText])
-            ->orderByRaw('ts_rank(dc.tsv_content, plainto_tsquery(\'simple\', ?)) desc', [$queryText])
+            ->whereRaw('dc.tsv_content @@ plainto_tsquery(\'english\', ?)', [$queryText])
+            ->orderByRaw('ts_rank(dc.tsv_content, plainto_tsquery(\'english\', ?)) desc', [$queryText])
             ->limit($topK * 3);
 
         $vectorQuery = $this->applyFiltersVector($vectorQuery, $filters, 've');
@@ -144,6 +150,9 @@ class PgvectorDriver implements VectorStoreInterface
                 'dc.content',
                 'd.id as document_id',
                 'd.title as document_title',
+                'd.user_id as document_user_id',
+                'd.project as document_project',
+                'd.report_date as document_report_date',
                 'dc.chunk_index',
                 'dc.page_number',
                 'd.created_at as document_created_at',
@@ -176,6 +185,9 @@ class PgvectorDriver implements VectorStoreInterface
                 'dc.content',
                 'd.id as document_id',
                 'd.title as document_title',
+                'd.user_id as document_user_id',
+                'd.project as document_project',
+                'd.report_date as document_report_date',
                 'dc.chunk_index',
                 'dc.page_number',
                 'd.created_at as document_created_at',
@@ -208,7 +220,11 @@ class PgvectorDriver implements VectorStoreInterface
     {
         if (! $this->isSqlite) {
             foreach (self::DIM_TABLES as $dim) {
-                $this->db->table("ve_{$dim}")->whereIn('id', $ids)->delete();
+                try {
+                    $this->db->table("ve_{$dim}")->whereIn('id', $ids)->delete();
+                } catch (\RuntimeException) {
+                    // Shard table may not exist — skip.
+                }
             }
         }
         VectorEmbedding::whereIn('id', $ids)->delete();
@@ -226,9 +242,13 @@ class PgvectorDriver implements VectorStoreInterface
 
         if (! $this->isSqlite) {
             foreach (self::DIM_TABLES as $dim) {
-                $this->db->table("ve_{$dim}")
-                    ->whereIn('chunk_id', $chunkIds)
-                    ->delete();
+                try {
+                    $this->db->table("ve_{$dim}")
+                        ->whereIn('chunk_id', $chunkIds)
+                        ->delete();
+                } catch (\RuntimeException) {
+                    // Shard table may not exist — skip.
+                }
             }
         }
 
@@ -279,6 +299,18 @@ class PgvectorDriver implements VectorStoreInterface
         if (isset($filters['date_to'])) {
             $query->where('d.created_at', '<=', $filters['date_to']);
         }
+        if (isset($filters['user_ids'])) {
+            $query->whereIn('d.user_id', (array) $filters['user_ids']);
+        }
+        if (isset($filters['project'])) {
+            $query->where('d.project', $filters['project']);
+        }
+        if (isset($filters['report_date_from'])) {
+            $query->where('d.report_date', '>=', $filters['report_date_from']);
+        }
+        if (isset($filters['report_date_to'])) {
+            $query->where('d.report_date', '<=', $filters['report_date_to']);
+        }
         if (isset($filters['model_name'])) {
             $query->where("{$alias}.model_name", $filters['model_name']);
         }
@@ -296,6 +328,18 @@ class PgvectorDriver implements VectorStoreInterface
         }
         if (isset($filters['date_to'])) {
             $query->where('d.created_at', '<=', $filters['date_to']);
+        }
+        if (isset($filters['user_ids'])) {
+            $query->whereIn('d.user_id', (array) $filters['user_ids']);
+        }
+        if (isset($filters['project'])) {
+            $query->where('d.project', $filters['project']);
+        }
+        if (isset($filters['report_date_from'])) {
+            $query->where('d.report_date', '>=', $filters['report_date_from']);
+        }
+        if (isset($filters['report_date_to'])) {
+            $query->where('d.report_date', '<=', $filters['report_date_to']);
         }
 
         return $query;
@@ -328,10 +372,15 @@ class PgvectorDriver implements VectorStoreInterface
 
         usort($scores, fn (array $a, array $b): int => $b['score'] <=> $a['score']);
 
+        // Normalise RRF scores to 0-1 so downstream threshold logic
+        // (designed for cosine similarity) works correctly.
+        $topItems = array_slice($scores, 0, $topK);
+        $maxScore = $topItems !== [] ? $topItems[0]['score'] : 1.0;
+
         $results = [];
-        foreach (array_slice($scores, 0, $topK) as $item) {
+        foreach ($topItems as $item) {
             $row = $item['row'];
-            $row->similarity_score = $item['score'];
+            $row->similarity_score = $maxScore > 0.0 ? $item['score'] / $maxScore : 0.0;
             $results[] = $row;
         }
 
