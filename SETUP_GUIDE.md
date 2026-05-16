@@ -15,9 +15,9 @@ End-to-end installation for local development. For production deployment see [do
 | PostgreSQL | **16** | Primary database |
 | pgvector | 0.6+ | Vector similarity search (Postgres extension) |
 | Redis | 7+ | Cache + sessions + queue (recommended) |
-| OpenAI API key | — | Default embedding + LLM provider. Skip if you'll use only Ollama. |
+| Ollama | — | Default embedding + LLM provider (seeded models: `nomic-embed-text`, `all-MiniLM-L6-v2` for embedding; `qwen3.5:9b`, `gemma4:e4b` for LLM). Optional OpenAI API key if you want to use OpenAI models — configure via AI Models registry. |
 
-You can substitute Ollama for OpenAI on either embedding or LLM independently — see "Using Ollama" below.
+You can substitute OpenAI for Ollama on either embedding or LLM independently — see "Using Ollama" below (or configure via the AI Models UI at `/settings/ai-models`).
 
 ---
 

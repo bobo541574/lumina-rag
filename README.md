@@ -31,7 +31,7 @@ Most RAG systems are notebooks, scripts, or thin wrappers around a vendor API. L
 | Backend | **Laravel 13** (PHP 8.3+) — 7 internal modules with strict service contracts |
 | Database | **PostgreSQL 16** + **pgvector 0.6+** — relational data and vectors in the same store |
 | Cache / queue / sessions | **Redis** (recommended); database fallback |
-| AI | **OpenAI** (`gpt-4o`, `text-embedding-3-small`) and **Ollama** (`llama3.1`, `nomic-embed-text`) |
+| AI | **Ollama** (`nomic-embed-text:latest`, `all-MiniLM-L6-v2`, `mxbai-embed-large`) and optionally **OpenAI** (configurable via AiModel registry) |
 | Document parsing | `smalot/pdfparser`, `phpoffice/phpword` |
 | Frontend | **Vue 3** (Composition API + TypeScript) + **Pinia** + **vue-router** |
 | Styling | **Tailwind v4** with a centralized `@theme` design-token system |
@@ -89,14 +89,47 @@ For full setup (PostgreSQL install, pgvector, Ollama, troubleshooting), see [SET
                 └─────────────────────┘
 ```
 
-**Data flow on a question:**
-1. SPA sends `POST /api/chat` with the question (and optional filters / chosen LLM).
-2. ChatModule embeds the question, runs hybrid vector + FTS search across the user's documents (filterable).
-3. Top-K chunks above the similarity threshold are MMR-re-ranked and concatenated into the LLM prompt.
-4. LLM streams an answer back over SSE; sources arrive as a final event.
-5. Both messages persist in `chat_messages`; the user sees the answer with citations.
+**Flow diagrams:**
 
-If no chunks pass the threshold, the system returns *"I cannot answer this question based on the available documents"* without calling the LLM.
+```mermaid
+flowchart TB
+    subgraph Document["📄 Document Ingestion"]
+        Upload["Upload PDF/DOCX/TXT/CSV/MD\n< 50MB"] --> Dedup["SHA-256 dedup\n→ 409 Conflict if exists"]
+        Dedup --> Job["Dispatch ProcessDocumentJob\n(async queue)"]
+        Job --> Extract["Extract text\nsmalot/pdfparser • phpoffice/phpword"]
+        Extract --> Chunk["Recursive char splitter\n1000 chars / 200 overlap"]
+        Chunk --> Embed["Batch embed via AiModel\n(100 texts/call, MD5-cached 24h)"]
+        Embed --> Store["Upsert vectors to ve_{dim}\npostgres + pgvector"]
+        Store --> Complete["Mark document completed"]
+    end
+
+    subgraph Query["💬 Chat / Query"]
+        Ask["User asks question\nPOST /api/chat"] --> Filter["Apply filters\n(documents, date range, LLM)"]
+        Filter --> QEmbed["Embed question\nEmbeddingService"]
+        QEmbed --> Search["Hybrid search\nvector cosine + FTS"]
+        Search --> Threshold["≥ 0.65 similarity?"]
+        Threshold -- No --> Refusal["Return: I cannot answer...\n(no LLM call)"]
+        Threshold -- Yes --> MMR["MMR re-rank\nλ=0.7 • deduplicate"]
+        MMR --> Prompt["Build LLM prompt\ncontext + question"]
+        Prompt --> LLM["LLM streams answer\nover SSE"]
+        LLM --> Sources["Attach sources\n(document, page, score, excerpt)"]
+        Sources --> Persist["Save chat_messages\nuser + assistant"]
+    end
+
+    subgraph Config["⚙️ Configuration"]
+        direction LR
+        AiModel["AiModel registry\nprovider • credentials • dims • settings<br/>active model by sort_order"] --- ConfigFile["config/rag.php\n.env overrides"]
+    end
+
+    Document -.->|"AiModel picks\nembedding provider"| Config
+    Query -.->|"AiModel picks\nLLM provider"| Config
+```
+
+**Document ingestion flow (top):** Upload → SHA-256 dedup → async queue job → text extraction → chunking → batch embedding via the selected AiModel → upsert vectors → mark complete. All async via Laravel queue with automatic retries.
+
+**Chat flow (middle):** Question → hybrid search (vector + FTS) → similarity threshold check (≥ 0.65) → MMR re-ranking → LLM prompt → streamed answer with source citations → persisted to session. If no chunks pass the threshold, the LLM is never called.
+
+**Configuration (bottom):** `config/rag.php` is the global source of truth. Per-model overrides (search mode, top-K, MMR params, query expansion) live in the AiModel's `settings` JSONB column.
 
 ---
 

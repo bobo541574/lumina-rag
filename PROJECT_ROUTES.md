@@ -58,7 +58,7 @@ Complete reference for **API routes** (backend) and **SPA routes** (Vue frontend
 
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
-| POST | `/api/chat` | Token | Body: `{ question, session_id?, document_ids?, date_from?, date_to?, llm_model_id?, stream? }`. Returns `{ session, message, sources }`. With `stream: true`, responds with `text/event-stream`. |
+| POST | `/api/chat` | Token | Body: `{ question, session_id?, document_filter: { user_ids?, project?, date_from?, date_to? }?, llm_model_id?, stream? }`. Returns `{ session, message, sources }`. With `stream: true`, responds with `text/event-stream` (events: `chunk`, `sources`, `status`, `done`). |
 | GET | `/api/chat/sessions` | Token | List the current user's sessions |
 | GET | `/api/chat/sessions/{ulid}` | Token | Session detail with messages |
 | DELETE | `/api/chat/sessions/{ulid}` | Token | Soft-delete a session |
@@ -67,7 +67,7 @@ Complete reference for **API routes** (backend) and **SPA routes** (Vue frontend
 
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
-| GET | `/api/documents` | Token | List documents the user owns |
+| GET | `/api/documents` | Token | Server-side pagination: `?page=&per_page=&search=&status=&sort_key=&sort_dir=` |
 | POST | `/api/documents` | Token | Multipart upload — see [BUSINESS_LOGIC.md](BUSINESS_LOGIC.md#document-upload-rules) |
 | GET | `/api/documents/{ulid}` | Token | Document detail |
 | GET | `/api/documents/{ulid}/status` | Token | Lightweight status poll (`pending` / `processing` / `completed` / `failed`) |
@@ -107,26 +107,26 @@ Duplicate detection: SHA-256 file hash matched against `documents.file_hash`. Re
 
 ```json
 {
-  "name": "OpenAI text-embedding-3-small",
-  "type": "embedding",                 // "embedding" | "llm"
-  "provider": "openai",                // "openai" | "ollama"
-  "model": "text-embedding-3-small",
-  "api_key": "sk-…",                   // required for openai; optional for ollama
-  "base_url": null,                    // required for ollama; optional for openai (proxy)
-  "collection": "ve_1536",             // pgvector table suffix; "" = auto-detect from dimensions
-  "dimensions": 1536,                  // embedding only
-  "batch_size": 100,                   // embedding only
-  "cache_ttl": 86400,                  // embedding only
-  "temperature": null,                 // llm only
-  "max_context_tokens": null,          // llm only
+  "name": "nomic-embed-text",
+  "type": "embedding",
+  "provider": "ollama",
+  "model": "nomic-embed-text:latest",
+  "api_key": null,
+  "base_url": "http://localhost:11434",
+  "collection": "ve_768",
+  "dimensions": 768,
+  "batch_size": 100,
+  "cache_ttl": 86400,
+  "temperature": null,
+  "max_context_tokens": null,
   "timeout": 30,
-  "description": "<p>HTML from Trix</p>",
-  "settings": {                        // optional per-model overrides
+  "description": "<p>Fast general-purpose embedding (768d)</p>",
+  "settings": {
     "top_k": 5,
     "search_mode": "hybrid"
   },
   "is_active": true,
-  "sort_order": 0
+  "sort_order": 1
 }
 ```
 

@@ -32,7 +32,7 @@ Tests use SQLite `:memory:` and `QUEUE_CONNECTION=sync` — see `phpunit.xml`. `
 - **Backend**: Laravel 13 monolith, PHP 8.3+
 - **Database**: PostgreSQL 16 + pgvector 0.6+ (vectors live in the same DB as relational data)
 - **Cache/Session/Queue**: Redis recommended; queue defaults to `database`
-- **AI**: OpenAI (`gpt-4o`, `text-embedding-ada-002`) via **raw curl** — no official SDK
+- **AI**: Ollama (`nomic-embed-text:latest`, `all-MiniLM-L6-v2`, `mxbai-embed-large` for embedding; `qwen3.5:9b`, `gemma4:e4b`, `qwen2.5-coder` for LLM) via raw curl — no official SDK. OpenAI is supported but no longer the default; the AiModel registry in the DB is the source of truth.
 - **Frontend**: Vue 3 + Pinia + vue-router + Tailwind v4 + TypeScript, built with Vite. Single SPA mounted from `resources/js/app.js`.
 
 ### Module layout (PSR-4 → `Modules\{Name}Module\` → `modules/{Name}Module/`)
@@ -126,7 +126,7 @@ All routes are prefixed `api/` and registered by each module's `ServiceProvider`
 |-------|-----------|
 | Auth (`auth.php`) | `POST /api/auth/register \| /login \| /logout`, `GET /api/auth/me` |
 | Chat (`chat.php`) | `POST /api/chat`, `GET/DELETE /api/chat/sessions[/{ulid}]` |
-| Documents (`document.php`) | `GET /api/documents`, `POST /api/documents`, `GET /api/documents/{ulid}`, `GET /api/documents/{ulid}/status`, `DELETE /api/documents/{ulid}` (plus a `retry` route added in recent commits — verify in `Routes/document.php` before referencing) |
+| Documents (`document.php`) | `GET /api/documents` (server-side pagination: `?page=&per_page=&search=&sort_key=&sort_dir=`), `POST /api/documents`, `GET /api/documents/{ulid}`, `GET /api/documents/{ulid}/status`, `POST /api/documents/{ulid}/retry`, `PUT /api/documents/{ulid}`, `DELETE /api/documents/{ulid}` |
 | Settings (`settings.php`) | `GET /api/settings`, `PUT /api/settings/bulk`, `PUT/DELETE /api/settings/{key}`, `GET/POST/PUT/DELETE /api/settings/ai-models[/{ulid}]` |
 
 Standard response envelope: `{ success, message, data, errors }`.
@@ -139,7 +139,7 @@ Tokens: 80-char hex (`bin2hex(random_bytes(40))`), stored on `users.api_token`. 
 
 [config/rag.php](config/rag.php) is the central knob panel — embedding/LLM provider, model, dimensions, batch size, cache TTL, timeouts, search top-K, similarity threshold, chunk size/overlap, max question length, max messages per session. All read via `env()` with sensible defaults; the user's standard prefers constructor-injected config over runtime `config()` calls inside services.
 
-`OPENAI_API_KEY` is required. `RAG_VECTOR_DRIVER` defaults to `pgsql` (only driver implemented).
+`RAG_VECTOR_DRIVER` defaults to `pgsql` (only driver implemented).
 
 ---
 

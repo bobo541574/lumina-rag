@@ -8,77 +8,81 @@
 
 | Action | Command |
 |--------|---------|
-| Dev (server + queue + logs + Vite) | `composer run dev` |
-| All tests | `composer run test` (clears config, then `artisan test` via Pest) |
-| Single test | `php artisan test --filter=TestName` |
-| Test suite | `php artisan test --testsuite=Unit` or `--testsuite=Feature` |
-| Formatter | `./vendor/bin/pint` (or `--dirty` for changed files) |
+| Dev (concurrent: serve + queue + logs + Vite) | `composer run dev` |
+| Run all tests | `composer run test` (clears config, then `artisan test` via Pest) |
+| Run one test | `php artisan test --filter=TestName` |
+| Run one suite | `php artisan test --testsuite=Unit` or `--testsuite=Feature` |
+| Format PHP | `./vendor/bin/pint` (or `--dirty` for changed files) |
 | Frontend build | `npm run build` |
 | Frontend dev | `npm run dev` |
-| Setup from scratch | `composer run setup` |
-| Install npm | `npm install --ignore-scripts` (`.npmrc` sets `ignore-scripts=true`) |
+| Install npm | `npm install --ignore-scripts` |
 | Queue worker | `php artisan queue:work` |
 | Seed data | `php artisan db:seed` |
+| Re‑embed all chunks (regenerates vectors) | `php artisan rag:reembed` |
+| Re‑embed one document | `php artisan rag:reembed --document={ulid}` |
+
+Tests: SQLite `:memory:`, `QUEUE_CONNECTION=sync`. `tests/Pest.php` applies `RefreshDatabase` to Feature suite only.
 
 ---
 
-## Stack
+## Architecture
 
-| Layer | Detail |
-|-------|--------|
-| Backend | Laravel 13 monolith, PHP 8.3+, strict types on every PHP file |
-| Database | PostgreSQL 16 + pgvector 0.6+ (vectors colocated) |
-| Cache/Session/Queue | Redis recommended; queue defaults to `database` in `.env` |
-| AI providers | ollama + openai — **raw curl**, no SDK. Implemented in `EmbeddingModule` / `LLMModule` |
-| Frontend | Vue 3 + Pinia + vue-router + Tailwind v4 + TypeScript, Vite 8 SPA |
-| Testing | Pest 4, SQLite `:memory:` test DB, `QUEUE_CONNECTION=sync` in tests |
+### Stack
+- **Backend**: Laravel 13 monolith, PHP 8.3+
+- **Database**: PostgreSQL 16 + pgvector 0.6+ (vectors in same DB)
+- **Cache/Session/Queue**: Redis recommended; queue defaults to `database`
+- **AI**: OpenAI (`gpt-4o`, `text-embedding-3-small`) **or** Ollama (`nomic-embed-text:latest`) via raw curl — no official SDK. Interchangeable per-document via AiModel registry.
+- **Frontend**: Vue 3 + Pinia + vue-router + Tailwind v4 + TypeScript, built with Vite. Single SPA from `resources/js/app.js`.
 
-Config defaults are ollama-local (`nomic-embed-text:latest`, `qwen3.5:9b`). Override via `.env` — see `config/rag.php`.
-
----
-
-## Modules
-
-7 PSR-4 modules under `Modules\{Name}Module\` → `modules/{Name}Module/`.
+### Module layout (PSR-4 → `Modules\{Name}Module\` → `modules/{Name}Module/`)
 
 ```
 ChatModule       → EmbeddingModule + VectorStoreModule + LLMModule
 DocumentModule   → EmbeddingModule + VectorStoreModule
-SettingsModule   → standalone (AiModel registry only — no more `settings` table)
+SettingsModule   → standalone (AiModel registry)
 UserModule       → standalone (token auth)
-EmbeddingModule, VectorStoreModule, LLMModule → leaf modules
+EmbeddingModule  → leaf
+VectorStoreModule → leaf
+LLMModule        → leaf
 ```
 
-All registered manually in `config/app.php` via `ServiceProvider::defaultProviders()->merge([...])`. No auto-discovery. `config/modules.php` has enabled flags but nothing reads them to disable modules.
+All 7 service providers registered manually in `config/app.php` via `ServiceProvider::defaultProviders()->merge([...])`. No auto-discovery. `config/modules.php` exists but is **not** read at runtime.
 
-### Module structure
+### Standard module structure
 ```
 modules/{Name}Module/
 ├── Controllers/     (validation + dispatch only)
-├── Services/        (business logic — only layer that touches Models)
-├── Contracts/       (interfaces bound in Providers/)
-├── Models/
+├── Services/        (business logic — the only layer touching Models)
+├── Contracts/       (interfaces, bound in ServiceProvider)
+├── Models/          (Eloquent, HasUlids, soft-deletes)
 ├── Requests/        (FormRequest validation)
 ├── Routes/          (loaded by ServiceProvider)
 ├── Providers/
 ├── Jobs/            (DocumentModule only)
-├── Commands/        (ChatModule, DocumentModule only)
-└── Database/migrations + Seeders
+├── Commands/        (ChatModule → CleanupExpiredSessions, DocumentModule → ReEmbed)
+└── database/migrations + database/Seeders
 ```
 
-Every module has its own `AGENTS.md` — may be stale, cross-reference with source.
+### Request flow
+```
+Request → Controller → Service (Interface) → Model
+```
+No Repository layer. Services interact with Models directly. Controllers only validate and dispatch.
 
-### Service bindings
+---
 
-| Module | Contract → Implementation |
-|--------|--------------------------|
-| ChatModule | `RAGPipelineServiceInterface` → `RAGPipelineService` |
-| DocumentModule | `TextExtractionServiceInterface` → `TextExtractionService`, `TextChunkingServiceInterface` → `TextChunkingService` |
-| EmbeddingModule | `EmbeddingProviderInterface` → `OpenAIEmbeddingProvider`, `EmbeddingServiceInterface` → `EmbeddingService` |
-| LLMModule | `LLMProviderInterface` → `OpenAILLMProvider`, `LLMServiceInterface` → `LLMService` |
-| UserModule | `AuthServiceInterface` → `AuthService` |
-| VectorStoreModule | `VectorStoreInterface` → `VectorStoreService` (wraps `PgvectorDriver` — only driver) |
-| SettingsModule | `AiModelService` (no Contract/) |
+## RAG pipeline
+
+`modules/ChatModule/Services/RAGPipelineService.php` orchestrates:
+
+1. **Embed** the question via `EmbeddingService` (MD5-cached, 24h TTL).
+2. **Search** — `VectorStoreService::searchHybrid()` runs vector cosine + FTS (`plainto_tsquery('english', ...)`) in parallel, fused by reciprocal rank fusion.
+3. **Filter** — chunks below `similarity_threshold` (default `0.65`) are dropped. If none survive → refusal, no LLM call.
+4. **Context** — top chunks (truncated to `llm.max_context_tokens`) concatenated into the LLM prompt.
+5. **Answer** — `LLMService::complete(...)` with `temperature=0.3`. Sources attached (document_id, title, chunk_index, page_number, score, excerpt).
+6. **Persist** — user + assistant `chat_messages` saved to `chat_session`.
+
+Document upload: `DocumentService::upload()` → dispatch `ProcessDocumentJob` → extract text (smalot/pdfparser, phpoffice/phpword) → chunk (recursive char splitter, 1000/200) → batch-embed via document's `embedding_model_id` AiModel → upsert vectors → mark `completed`.
 
 ---
 
@@ -86,71 +90,62 @@ Every module has its own `AGENTS.md` — may be stale, cross-reference with sour
 
 All PKs are **ULIDs** (`HasUlids` trait, `->whereUlid()` route binding). **No DB-level FK constraints** — enforced in app code only.
 
-| Table | PK | Key columns |
-|-------|----|-------------|
-| `chat_sessions` | ULID | `user_id`, `title`, `is_archived` (bool), `last_activity_at`, soft deletes |
-| `chat_messages` | ULID | `session_id`, `role`, `content` (longText), `sources` (jsonb), soft deletes |
-| `documents` | ULID | `user_id`, `title`, `file_hash` (unique), `status`, `chunks_count`, soft deletes |
-| `document_chunks` | ULID | `document_id`, `content`, `chunk_index`, `page_number`, `char_start`, `char_end`, unique `(document_id, chunk_index)` |
-| `vector_embeddings` | ULID | Metadata only: `chunk_id`, `dimensions`, `model_name`, `content_hash`. JSON `embedding` on SQLite fallback. |
-| `ve_{dims}` (shard tables) | — | `chunk_id`, `embedding` `vector(N)`, `model_name`, `content_hash`. IVFFlat `vector_cosine_ops` index on `embedding`. Created conditionally (pgvector required, skipped on SQLite). |
-| `ai_models` | ULID | Embedding/LLM model registry with per-model config (provider, credentials, dimensions, temperature, timeout, settings JSONB for pipeline overrides) |
+| Table | Key notes |
+|-------|-----------|
+| `chat_sessions` | `user_id`, soft deletes |
+| `chat_messages` | `session_id`, `role`, `content`, `sources` (jsonb), soft deletes |
+| `documents` | `user_id`, `file_hash` (unique), `status`, `chunks_count`, `report_date` (date), `project` (varchar), `embedding_model_id` (ULID → ai_models), `embedding_model` (string), soft deletes |
+| `document_chunks` | `document_id`, `content`, `chunk_index`, unique `(document_id, chunk_index)`, `tsv_content` (tsvector, `english` config) |
+| `vector_embeddings` | Metadata only on pgvector (no embedding column); `embedding` column exists only on SQLite fallback |
+| `ve_{dims}` (shard tables) | `chunk_id`, `embedding` `vector(N)`, `model_name`, `content_hash`. IVFFlat `vector_cosine_ops` index. Shards: `ve_{384,768,1024,1536,3072}` |
+| `ai_models` | Embedding/LLM model registry with per-model config (provider, credentials, dims, temperature, timeout, settings JSONB for pipeline overrides). Active model determined by `is_active` + `sort_order`. |
 
-The old `settings` key/value table was removed — `config/rag.php` is the single source of truth for global config. Per-model pipeline overrides live in `ai_models.settings` JSONB.
-
-Shard tables: `ve_384`, `ve_768`, `ve_1024`, `ve_1536`, `ve_3072`.
+Shard tables are created conditionally (pgvector required, skipped on SQLite).
 
 ---
 
 ## API
 
-All routes under `api/`, auth via custom `auth.token` middleware (no Sanctum). Standard envelope: `{ success, message, data, errors }`. 80-char hex tokens (`bin2hex(random_bytes(40))`), stored on `users.api_token`.
+All routes under `api/`. Auth via custom `auth.token` middleware (80-char hex token, `Authorization: Bearer`).
 
 | Group | Endpoints |
 |-------|-----------|
-| Auth | `POST /api/auth/register \| /login \| /logout`, `GET /api/auth/me` |
-| Chat | `POST /api/chat`, `GET/DELETE /api/chat/sessions[/{id}]` |
-| Documents | `GET/POST /api/documents`, `GET /api/documents/{id} \| /status \| /retry`, `PUT/DELETE /api/documents/{id}` |
-| Settings (AiModels) | `CRUD /api/settings/ai-models[/{id}]` |
+| Auth | `POST /api/auth/{register\|login\|logout}`, `GET /api/auth/me` |
+| Chat | `POST /api/chat`, `GET/DELETE /api/chat/sessions[/{ulid}]` |
+| Documents | `GET /api/documents`, `POST /api/documents`, `GET /api/documents/{ulid}[/status]`, `DELETE /api/documents/{ulid}` |
+| AiModels | `CRUD /api/settings/ai-models[/{id}]` |
+
+Response envelope: `{ success, message, data, errors }`.
 
 ---
 
 ## Configuration
 
-`config/rag.php` is the single source of truth — embedding/LLM provider, model, dimensions, batch size, cache TTL, timeouts, search top-K, similarity threshold, chunk size/overlap, chat limits, logging. All values read via `env()` with sensible defaults for local Ollama.
+`config/rag.php` is the central knob — all RAG params read via `env()` with sensible defaults:
+- `RAG_EMBEDDING_PROVIDER` / `RAG_LLM_PROVIDER` — `openai` or `ollama`
+- `RAG_VECTOR_DRIVER` — only `pgsql` is implemented
+- Provider-specific model, dimensions, batch size, cache TTL, timeouts, search mode, chunk params
 
-Per-model overrides (search mode, top_K, MMR, query expansion, max_question_length) stored in `ai_models.settings` JSONB, consumed by `RAGPipelineService`.
-
----
-
-## Business Rules (verified from code)
-
-- **Question**: empty → `InvalidArgumentException`. >1000 chars → truncated. No chunks ≥0.65 threshold → *"I cannot answer..."* (no LLM call).
-- **Sessions**: auto-created if no `session_id`. Title from **first user question** (50 chars). Max 100 msgs → `RuntimeException`.
-- **Uploads**: max 50MB. Formats: PDF, DOCX, TXT, CSV, MD. SHA-256 dedup → 409. Processing is **async** via `ProcessDocumentJob` (dispatched by `DocumentService::upload()`).
-- **Chunking**: recursive char splitter, priority `\n\n` → `\n` → `.` → `,` → space → char, 1000/200 chars. MD5-hash cached embeddings (24h TTL).
-- **Auth**: tokens rotate on login, nulled on logout. Login throttled 5/60s.
-- **AiModel selection**: `RAGPipelineService` picks first active model by `sort_order` unless a specific model ID is provided in the request. `DocumentUpload` allows per-document embedding model override.
+**Either** `OPENAI_API_KEY` (for OpenAI provider) **or** a local Ollama instance is required, depending on the provider setting. The AiModel registry (`ai_models` table) can override the global provider per-document.
 
 ---
 
-## Testing
+## Conventions
 
-- `tests/Pest.php` applies `RefreshDatabase` to **Feature** suite only.
-- `phpunit.xml`: `DB_CONNECTION=sqlite`, `DB_DATABASE=:memory:`, `QUEUE_CONNECTION=sync`, `CACHE_STORE=array`.
-- External API calls must be mocked (no network in tests).
-- Naming convention: `test_{what}_{expectedOutcome}`.
+- `declare(strict_types=1);` at top of every PHP file.
+- ULID PKs everywhere — use `HasUlids` on new models.
+- No DB-level FK constraints; enforce in service code.
+- OpenAI/Ollama calls go through raw curl in provider classes — keep new providers behind `EmbeddingProviderInterface` / `LLMProviderInterface`.
+- Embeddings are MD5-cached (24h). Always go through `EmbeddingService`.
+- Documents have `embedding_model_id` (FK to `ai_models`) and `embedding_model` (model name string). `ReEmbedDocumentJob` respects these per-document settings.
+- FTS uses `plainto_tsquery('english', ...)` and `to_tsvector('english', ...)`. The `simple` config was replaced because it lacks stopword removal and stemming.
+- New module: create directory under `modules/`, add PSR-4 entry in `composer.json`, register `ServiceProvider` in `config/app.php`, run `composer dump-autoload`.
 
 ---
 
-## Conventions & Gotchas
+## Known doc/code drift
 
-- `declare(strict_types=1)` on every PHP file.
-- ULID PKs everywhere. Route binding: `->whereUlid('id')`.
-- Only Services touch Models. Controllers validate + dispatch only.
-- Providers (EmbeddingModule/LLMModule) call OpenAI/Ollama via raw curl — keep behind `EmbeddingProviderInterface` / `LLMProviderInterface`.
-- Both facades (`Storage`, `Log`, `Response`) and constructor-injected config are used — don't refactor one to the other without reason.
-- New modules: create dir under `modules/`, add PSR-4 entry in `composer.json`, register `ServiceProvider` in `config/app.php`, run `composer dump-autoload`.
-- Horizon is installed (`laravel/horizon`) but the UI isn't wired — use `php artisan queue:work`.
-- Module-level `AGENTS.md` files may be stale — cross-reference with source code.
-- `PROJECT_RULES.md` describes aspirational coding standards (e.g. "no facades", "90% coverage") that the codebase does not fully enforce — treat as guidelines, not hard rules.
+- `config/modules.php` has all 7 modules `enabled` — but no code reads this flag at runtime.
+- Per-module `AGENTS.md` files exist but may be stale — verify against code.
+- `.env.example` defaults to OpenAI models; `config/rag.php` defaults to Ollama. The AiModel registry in the DB is the source of truth for which provider/model is actually active.
+- Older docs (`BUSINESS_LOGIC.md`, `PROJECT_STRUCTURE.md`, `PROJECT_ROUTES.md`) predate several refactors. Routes, services, and migrations are the executable truth.

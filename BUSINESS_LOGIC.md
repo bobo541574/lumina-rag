@@ -46,8 +46,8 @@ Implemented in [TextChunkingService.php](modules/DocumentModule/Services/TextChu
 
 Implemented in [EmbeddingService.php](modules/EmbeddingModule/Services/EmbeddingService.php).
 
-- **Default model**: `text-embedding-3-small` (1 536 dims) via `config('rag.embedding.model')`. Override per-upload via `embedding_model_id`.
-- **Provider**: OpenAI (default) or Ollama. Both implemented behind `EmbeddingProviderInterface`.
+- **Default model**: Ollama `nomic-embed-text:latest` (768 dims) or the AiModel registry's active embedding model. Override per-upload via `embedding_model_id`.
+- **Provider**: Ollama (default seeder) or OpenAI. Both implemented behind `EmbeddingProviderInterface`.
 - **Batch size**: 100 texts per provider call (`config('rag.embedding.batch_size')`).
 - **Cache**: MD5 hash of `(model + text)` → vector, TTL 24 h (`config('rag.embedding.cache_ttl')`).
 - **Job retries**: `ProcessDocumentJob` has `tries = 3` with exponential backoff (Laravel default).
@@ -80,21 +80,21 @@ Orchestrated in [RAGPipelineService.php](modules/ChatModule/Services/RAGPipeline
 1. **Validation**:
    - Empty question → `InvalidArgumentException`.
    - Question > `config('rag.chat.max_question_length')` (1 000 chars) → truncated.
-2. **Question embedding**: same model the matching documents were embedded with (per-document override falls back to default).
-3. **Vector search**: top-K (default 5) chunks via cosine distance. Filtered by `similarity_threshold` (default 0.65).
-4. **Search modes** (`config('rag.search.mode')`):
+2. **Auto-filters**: `extractFiltersFromQuestion()` detects user names, project names, date ranges from the question text and applies them as SQL filters (user_id, project, report_date range) to both vector and FTS queries — not as FTS search terms.
+3. **Question embedding**: same model the matching documents were embedded with (per-document override falls back to AiModel registry or config default).
+4. **FTS query refinement**: `refineFtsQuery()` strips detected filter terms (user, project, date) and stopwords from the FTS query so they don't compete with content terms. Date patterns (`YYYY-MM-DD`, `YYYY-MM`) are stripped before individual year removal to avoid bare `-MM` fragments being interpreted as PostgreSQL FTS negation operators.
+5. **Vector search**: top-K (default 5) chunks via cosine distance. Initial threshold lowered to `min(0.65, 0.40)` to cast a wider net; final threshold applied post-fusion.
+6. **Search modes** (`config('rag.search.mode')`):
    - `vector` — pure cosine similarity.
-   - `fts` — full-text search (PostgreSQL `tsvector`).
-   - `hybrid` (default) — weighted combination: `0.7 × vector + 0.3 × fts`.
-5. **MMR re-ranking** (`config('rag.search.mmr.enabled')`, default `true`): Maximal Marginal Relevance to reduce redundancy among top-K results. Tuned by `lambda` (default 0.7).
-6. **Query expansion** (`config('rag.search.query_expansion.enabled')`, default `false`): generates additional query variants via the LLM, runs each, merges results.
-7. **Threshold handling**:
-   - Top result score < threshold → return `"I cannot answer this question based on the available documents."` — no LLM call made.
-   - One or more chunks above threshold → continue.
-8. **Context assembly**: chunks sorted by score desc, concatenated with source labels, truncated to `config('rag.llm.max_context_tokens')` (4 000 tokens default).
-9. **LLM completion**: provider per `config('rag.llm.provider')` (`openai` or `ollama`). Temperature 0.3 default.
-10. **Streaming**: when the chat request includes `stream: true`, the controller emits `text/event-stream` with token deltas and a final `sources` event. Frontend uses `EventSource` and updates the message bubble incrementally; the **Stop** button calls `store.abortStream()`.
-11. **Persistence**: user message + assistant message saved to `chat_messages`; `sources[]` stored as jsonb on the assistant message.
+   - `fts` — full-text search (PostgreSQL `tsvector` with `english` config).
+   - `hybrid` (default) — vector + FTS in parallel, fused via Reciprocal Rank Fusion (RRF) with scores normalised to 0–1.
+7. **MMR re-ranking** (`config('rag.search.mmr.enabled')`, default `true`): Maximal Marginal Relevance to reduce redundancy among top-K results. Tuned by `lambda` (default 0.7).
+8. **Query expansion** (`config('rag.search.query_expansion.enabled')`, default `false`): generates additional query variants via the LLM, runs each, merges results.
+9. **Threshold handling** (`applyDynamicThreshold()`): uses the configured similarity threshold (default 0.65) with an elbow-detection fallback. If all chunks score below threshold, a single best chunk survives as a safety valve.
+10. **Context assembly**: chunks sorted by score desc, concatenated with source labels, truncated to `config('rag.llm.max_context_tokens')` (4 000 tokens default).
+11. **LLM completion**: provider per AiModel registry (Ollama default). Temperature 0.3 default.
+12. **Streaming**: SSE with `chunk`, `sources`, `status` (embedding/searching/generating), and `done` (with tokens_used/search_time_ms/llm_time_ms/total_time_ms metadata) events. Frontend uses `fetch` with `ReadableStream` reader and automatic retry (up to 3 attempts with exponential backoff). The **Stop** button calls `store.abortStream()`.
+13. **Persistence**: user message + assistant message saved to `chat_messages`; `sources[]` stored as jsonb on the assistant message.
 
 ### Source citation format
 

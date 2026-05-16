@@ -34,7 +34,7 @@ The Laravel app is monolithic; "modules" are an internal organization, not separ
 | **LLMModule** | LLM completions with streaming | `LLMProviderInterface` → `OpenAILLMProvider` / `OllamaLLMProvider`<br>`LLMServiceInterface` → `LLMService` |
 | **DocumentModule** | Upload → extract → chunk → embed pipeline | `TextExtractionServiceInterface` → `TextExtractionService`<br>`TextChunkingServiceInterface` → `TextChunkingService` |
 | **ChatModule** | Session management + RAG orchestration | `RAGPipelineServiceInterface` → `RAGPipelineService` |
-| **SettingsModule** | Runtime settings + AI model registry | `SettingsService`, `AiModelService` |
+| **SettingsModule** | Runtime settings + AI model registry | `AiModelServiceInterface` → `AiModelService` |
 
 ### Module dependency graph
 
