@@ -83,6 +83,16 @@
     </main>
   </div>
 
+  <div v-else-if="!auth.isInitialized" class="h-screen bg-surface-50 flex items-center justify-center">
+    <div class="flex flex-col items-center gap-3" role="status" aria-label="Loading">
+      <svg class="w-8 h-8 text-brand-600 animate-spin" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+      </svg>
+      <p class="text-sm text-surface-500">Loading…</p>
+    </div>
+  </div>
+
   <router-view v-else v-slot="{ Component, route: r }">
     <Transition name="fade-route" mode="out-in">
       <component :is="Component" :key="r.fullPath" />

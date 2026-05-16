@@ -32,12 +32,14 @@ export const useAuthStore = defineStore('auth', () => {
       return
     }
 
+    isLoading.value = true
     try {
       const response = await authService.me()
       user.value = response.data
     } catch {
       clearAuth()
     } finally {
+      isLoading.value = false
       isInitialized.value = true
     }
   }

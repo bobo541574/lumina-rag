@@ -15,6 +15,7 @@ const routes = [
   { path: '/settings/ai-models', name: 'ai-models', component: AiModelsPage, meta: { auth: true } },
   { path: '/settings/ai-models/new', name: 'ai-model-create', component: AiModelManager, meta: { auth: true } },
   { path: '/settings/ai-models/:id/edit', name: 'ai-model-edit', component: AiModelManager, meta: { auth: true }, props: true },
+  { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 
 const router = createRouter({
