@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { ChatMessage, ChatSession, Source } from '../types'
+import type { StreamMeta } from '../services/chatService'
 import { chatService } from '../services/chatService'
 
 export const useChatStore = defineStore('chat', () => {
@@ -11,6 +12,8 @@ export const useChatStore = defineStore('chat', () => {
   const isStreaming = ref(false)
   const error = ref<string | null>(null)
   const streamAbortController = ref<AbortController | null>(null)
+  const currentStage = ref<{ stage: string; message: string } | null>(null)
+  const lastStreamMeta = ref<StreamMeta | null>(null)
 
   const currentSessionId = computed(() => currentSession.value?.id ?? null)
 
@@ -74,7 +77,12 @@ export const useChatStore = defineStore('chat', () => {
           const msg = messages.value.find(m => m.id === assistantId)
           if (msg) msg.content = finalContent
         },
-        onDone(sessionId) {
+        onStatus(stage, message) {
+          currentStage.value = { stage, message }
+        },
+        onDone(sessionId, meta) {
+          lastStreamMeta.value = meta ?? null
+          currentStage.value = null
           currentSession.value = {
             id: sessionId,
             title: '',
@@ -84,12 +92,16 @@ export const useChatStore = defineStore('chat', () => {
             created_at: new Date().toISOString(),
           }
           const msg = messages.value.find(m => m.id === assistantId)
-          if (msg) msg.id = `${sessionId}-${Date.now()}`
+          if (msg) {
+            msg.id = `${sessionId}-${Date.now()}`
+            if (meta?.tokens_used) msg.tokens_used = meta.tokens_used
+          }
           isStreaming.value = false
           isLoading.value = false
           fetchSessions()
         },
         onError(message) {
+          currentStage.value = null
           error.value = message
           const msg = messages.value.find(m => m.id === assistantId)
           if (msg && !msg.content) msg.content = message
@@ -109,6 +121,7 @@ export const useChatStore = defineStore('chat', () => {
     }
     isStreaming.value = false
     isLoading.value = false
+    currentStage.value = null
     messages.value = messages.value.filter(m => !m.id.startsWith('stream-'))
   }
 
@@ -181,6 +194,8 @@ export const useChatStore = defineStore('chat', () => {
     error,
     currentSessionId,
     documentFilter,
+    currentStage,
+    lastStreamMeta,
     fetchSessions,
     fetchSession,
     sendMessage,

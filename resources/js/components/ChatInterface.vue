@@ -88,12 +88,27 @@
             </ul>
           </div>
 
-          <p
-            v-if="msg.created_at"
-            :class="['text-[10px] mt-1.5 tabular-nums', msg.role === 'user' ? 'text-white/70 text-right' : 'text-surface-400']"
-          >
-            {{ formatRelativeTime(msg.created_at) }}
-          </p>
+          <div :class="['flex items-center gap-2 mt-1.5', msg.role === 'user' ? 'justify-end' : 'justify-start']">
+            <p
+              :class="['text-[10px] tabular-nums', msg.role === 'user' ? 'text-white/70' : 'text-surface-400']"
+            >
+              {{ formatRelativeTime(msg.created_at) }}
+            </p>
+            <p
+              v-if="msg.tokens_used"
+              class="text-[10px] text-surface-400 tabular-nums"
+              title="Total tokens used"
+            >
+              · {{ msg.tokens_used }} tokens
+            </p>
+            <p
+              v-if="lastStreamMeta?.total_time_ms && msg.id === messages[messages.length - 1]?.id"
+              class="text-[10px] text-surface-400 tabular-nums"
+              title="Total processing time"
+            >
+              · {{ (lastStreamMeta.total_time_ms / 1000).toFixed(1) }}s
+            </p>
+          </div>
         </div>
 
         <!-- User avatar -->
@@ -104,16 +119,25 @@
         >U</div>
       </div>
 
-      <!-- Streaming indicator: typing dots -->
+      <!-- Streaming indicator: progress stage -->
       <div v-if="isStreaming && messages.length > 0" class="flex justify-start gap-2">
         <div
           class="w-7 h-7 flex-shrink-0 rounded-full bg-brand-100 text-brand-700 flex items-center justify-center text-xs font-semibold mt-0.5"
           aria-hidden="true"
         >L</div>
-        <div class="bg-white border border-surface-200 rounded-card px-4 py-3 flex items-center gap-1" role="status" aria-label="Assistant is typing">
-          <span class="typing-dot bg-brand-600 rounded-full w-1.5 h-1.5 inline-block" />
-          <span class="typing-dot bg-brand-600 rounded-full w-1.5 h-1.5 inline-block" style="animation-delay: 150ms" />
-          <span class="typing-dot bg-brand-600 rounded-full w-1.5 h-1.5 inline-block" style="animation-delay: 300ms" />
+        <div class="bg-white border border-surface-200 rounded-card px-4 py-3 min-w-[200px]" role="status" aria-label="Assistant is processing">
+          <div class="flex items-center gap-2">
+            <svg v-if="currentStage?.stage === 'generating'" class="w-4 h-4 text-brand-600 animate-spin" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+            <span v-else class="flex items-center gap-1">
+              <span class="w-1.5 h-1.5 bg-brand-600 rounded-full animate-pulse" />
+              <span class="w-1.5 h-1.5 bg-brand-600 rounded-full animate-pulse" style="animation-delay: 200ms" />
+              <span class="w-1.5 h-1.5 bg-brand-600 rounded-full animate-pulse" style="animation-delay: 400ms" />
+            </span>
+            <span class="text-sm text-surface-600">{{ currentStage?.message ?? 'Processing...' }}</span>
+          </div>
         </div>
       </div>
 
@@ -184,7 +208,7 @@ import { formatRelativeTime } from '../utils/dates'
 
 const store = useChatStore()
 const docStore = useDocumentStore()
-const { messages, isLoading, isStreaming, error } = storeToRefs(store)
+const { messages, isLoading, isStreaming, error, currentStage, lastStreamMeta } = storeToRefs(store)
 const { documents } = storeToRefs(docStore)
 
 const MAX_QUESTION_LENGTH = 1000
