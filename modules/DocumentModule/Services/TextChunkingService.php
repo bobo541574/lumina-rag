@@ -151,6 +151,7 @@ class TextChunkingService implements TextChunkingServiceInterface
                     'char_start' => 0,
                     'char_end' => $length,
                     'page_number' => null,
+                    'section' => $heading,
                 ],
             ];
         }
@@ -171,6 +172,7 @@ class TextChunkingService implements TextChunkingServiceInterface
                     'char_start' => $start,
                     'char_end' => $length,
                     'page_number' => null,
+                    'section' => $heading,
                 ];
                 break;
             }
@@ -187,6 +189,7 @@ class TextChunkingService implements TextChunkingServiceInterface
                 'char_start' => $start,
                 'char_end' => $chunkEnd,
                 'page_number' => null,
+                'section' => $heading,
             ];
 
             $nextStart = $chunkEnd - $overlap;

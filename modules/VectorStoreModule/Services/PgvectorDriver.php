@@ -140,6 +140,7 @@ class PgvectorDriver implements VectorStoreInterface
                 've.id',
                 've.chunk_id',
                 'dc.content',
+                'dc.metadata',
                 'd.id as document_id',
                 'd.title as document_title',
                 'd.user_id as document_user_id',
@@ -162,6 +163,7 @@ class PgvectorDriver implements VectorStoreInterface
                 'dc.id',
                 'dc.id as chunk_id',
                 'dc.content',
+                'dc.metadata',
                 'd.id as document_id',
                 'd.title as document_title',
                 'd.user_id as document_user_id',
@@ -225,6 +227,7 @@ class PgvectorDriver implements VectorStoreInterface
                 've.id',
                 've.chunk_id',
                 'dc.content',
+                'dc.metadata',
                 'd.id as document_id',
                 'd.title as document_title',
                 'd.user_id as document_user_id',
@@ -273,6 +276,7 @@ class PgvectorDriver implements VectorStoreInterface
                 've.id',
                 've.chunk_id',
                 'dc.content',
+                'dc.metadata',
                 'd.id as document_id',
                 'd.title as document_title',
                 'd.user_id as document_user_id',
@@ -314,7 +318,6 @@ class PgvectorDriver implements VectorStoreInterface
      * wrapped in try/catch since the table may not exist for all dimensions.
      *
      * @param  array  $ids  Array of vector ULIDs to delete. Example: ["01JAR...", "01JAS..."]
-     * @return void
      *
      * @throws \RuntimeException When the vector_embeddings delete fails
      */
@@ -340,7 +343,6 @@ class PgvectorDriver implements VectorStoreInterface
      * vector_embeddings metadata table. No-op if the document has no chunks.
      *
      * @param  string  $documentId  Document ULID. Example: "01JAR..."
-     * @return void
      *
      * @throws \RuntimeException When the database delete query fails
      */
@@ -456,6 +458,18 @@ class PgvectorDriver implements VectorStoreInterface
         if (isset($filters['model_name'])) {
             $query->where("{$alias}.model_name", $filters['model_name']);
         }
+        if (isset($filters['meta']) && is_array($filters['meta'])) {
+            if (! $this->isSqlite) {
+                foreach ($filters['meta'] as $key => $value) {
+                    $jsonCondition = json_encode([$key => $value]);
+                    $query->whereRaw('dc.metadata @> ?::jsonb', [$jsonCondition]);
+                }
+            } elseif ($this->isSqlite) {
+                foreach ($filters['meta'] as $key => $value) {
+                    $query->whereRaw("json_extract(dc.metadata, '$.\"{$key}\"') = ?", [$value]);
+                }
+            }
+        }
 
         return $query;
     }
@@ -493,6 +507,18 @@ class PgvectorDriver implements VectorStoreInterface
         }
         if (isset($filters['report_date_to'])) {
             $query->where('d.report_date', '<=', $filters['report_date_to']);
+        }
+        if (isset($filters['meta']) && is_array($filters['meta'])) {
+            if (! $this->isSqlite) {
+                foreach ($filters['meta'] as $key => $value) {
+                    $jsonCondition = json_encode([$key => $value]);
+                    $query->whereRaw('dc.metadata @> ?::jsonb', [$jsonCondition]);
+                }
+            } elseif ($this->isSqlite) {
+                foreach ($filters['meta'] as $key => $value) {
+                    $query->whereRaw("json_extract(dc.metadata, '$.\"{$key}\"') = ?", [$value]);
+                }
+            }
         }
 
         return $query;

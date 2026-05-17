@@ -231,6 +231,15 @@ class ProcessDocumentJob implements ShouldQueue
         $reportDate = $document->report_date ?? $document->created_at?->format('Y-m-d') ?? now()->format('Y-m-d');
         $metaHeader = "Report by: {$userName}\nProject: {$project}\nDate: {$reportDate}\n\n";
 
+        // Build document-level metadata for all chunks
+        $docMeta = [
+            'user_id' => $document->user_id,
+            'user_name' => $userName,
+            'project' => $project,
+            'report_date' => $reportDate,
+            'document_title' => $document->title,
+        ];
+
         $now = now();
         $records = [];
         $ids = [];
@@ -239,6 +248,15 @@ class ProcessDocumentJob implements ShouldQueue
             $id = (string) Str::ulid();
             $ids[] = $id;
             $prefixed = $metaHeader.$chunkData['content'];
+
+            // Merge chunk-level metadata with document-level metadata
+            $chunkMeta = array_merge($docMeta, [
+                'chunk_index' => $i,
+                'section' => $chunkData['section'] ?? null,
+                'page_number' => $chunkData['page_number'] ?? null,
+            ]);
+            $chunkMeta = array_filter($chunkMeta, fn ($v): bool => $v !== null);
+
             $records[] = [
                 'id' => $id,
                 'document_id' => $document->id,
@@ -248,6 +266,7 @@ class ProcessDocumentJob implements ShouldQueue
                 'char_end' => $chunkData['char_end'],
                 'token_count' => $this->estimateTokenCount($prefixed),
                 'page_number' => $chunkData['page_number'] ?? null,
+                'metadata' => json_encode($chunkMeta),
                 'created_at' => $now,
             ];
         }
