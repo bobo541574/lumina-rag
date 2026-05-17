@@ -64,7 +64,9 @@
                 :aria-label="`Edit ${m.name}`"
                 @click="$emit('edit', m.id)"
               >
-                Edit
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                </svg>
               </AppButton>
               <AppButton
                 variant="danger"
@@ -72,7 +74,9 @@
                 :aria-label="`Delete ${m.name}`"
                 @click="$emit('delete', m.id)"
               >
-                Delete
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
               </AppButton>
             </div>
           </div>
@@ -85,6 +89,19 @@
 </template>
 
 <script setup lang="ts">
+/**
+ * AI Model List
+ *
+ * Displays AI models grouped by type (embedding/LLM) in a card layout.
+ * Each model row shows name, provider, model ID, dimensions, active badge,
+ * and action buttons for edit and delete.
+ *
+ * @prop {AiModel[]} models - All models to display. Example: [{ id: "01J...", name: "OpenAI Embedding", type: "embedding", ... }]
+ * @prop {boolean} [loading=false] - Show skeleton loader when true
+ *
+ * @emits {edit} (id: string) - User clicked edit. Example: edit("01J...")
+ * @emits {delete} (id: string) - User clicked delete. Example: delete("01J...")
+ */
 import { computed } from 'vue'
 import AppButton from './ui/AppButton.vue'
 import AppBadge from './ui/AppBadge.vue'
