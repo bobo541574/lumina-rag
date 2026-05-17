@@ -1,460 +1,250 @@
-# Lumina RAG — Learning Guide
+# Lumina RAG — Learning Guide (Tutorial Style)
 
-> **Self-hosted Document Q&A System**
-> Upload PDF/DOCX/TXT/CSV/MD files — ask questions in natural language — get answers with source citations.
-
----
-
-## Table of Contents
-
-1. [Project Overview](#1-project-overview)
-2. [Tech Stack](#2-tech-stack)
-3. [Project Structure](#3-project-structure)
-4. [Database Schema](#4-database-schema)
-5. [Module System](#5-module-system)
-6. [RAG Pipeline (Core Logic)](#6-rag-pipeline-core-logic)
-7. [Document Upload & Processing](#7-document-upload--processing)
-8. [API Routes](#8-api-routes)
-9. [Authentication](#9-authentication)
-10. [Frontend (Vue 3 SPA)](#10-frontend-vue-3-spa)
-11. [Configuration](#11-configuration)
-12. [Commands & Tools](#12-commands--tools)
-13. [Testing](#13-testing)
-14. [Key Conventions](#14-key-conventions)
+> ဒီ document က codebase ကို သင်ကြားရေးပုံစံနဲ့ ရှင်းပြထားတာပါ။ ဘာကြောင့် ဒီလိုလုပ်ထားလဲ၊ ဘာပြဿနာကိုဖြေရှင်းတာလဲဆိုတာကို အဓိကထားပါတယ်။
 
 ---
 
-## 1. Project Overview
+## 1. Project Overview — ဒီ Project က ဘာလဲ?
 
-Lumina RAG is a **Retrieval-Augmented Generation** system. The idea is simple:
+**ပြဿနာ:** ကုမ္ပဏီတွေမှာ PDF, DOCX, စာရွက်စာတမ်းတွေ အများကြီးရှိတယ်။ ဒါပေမယ့် အဲဒီထဲက အချက်အလက်တွေကို ပြန်ရှာဖို့ခက်တယ်။ တစ်ခုချင်းဖွင့်ကြည့်နေရတယ်။
 
-1. **Upload** documents (PDF, DOCX, TXT, CSV, Markdown)
-2. **Ask** questions in natural language (English or Myanmar/Burmese)
-3. **Get** answers with citations showing exactly which source passages were used
+**အဖြေ:** RAG (Retrieval-Augmented Generation) — စာရွက်စာတမ်းတွေကို တင်လိုက် → မေးခွန်းမေး → စာရွက်ထဲကနေ ဆိုင်ရာအပိုင်းကိုရှာပြီး AI နဲ့အဖြေထုတ်ပေးတယ်။
 
-### How RAG works (simplified)
+### RAG ဆိုတာဘာလဲ? (ရှင်းရှင်းလေးရှင်းပြရရင်)
 
-```
-User Question
-      ↓
-[1] Embed question → vector ( numbers that represent meaning )
-      ↓
-[2] Search documents for similar chunks (vector search + text search)
-      ↓
-[3] Filter best matching chunks (above similarity threshold)
-      ↓
-[4] Send chunks + question to an AI (LLM) → generate answer
-      ↓
-[5] Return answer with source citations
-```
+LLM (GPT, Qwen, etc.) တွေက သူတို့လေ့ကျင့်ထားတဲ့ data ထဲကပဲ ဖြေနိုင်တယ်။ ကိုယ့်ကုမ္ပဏီရဲ့ လျှို့ဝှက်စာရွက်တွေအကြောင်း မသိဘူး။ ဒါကြောင့်:
 
-The key insight: instead of asking the AI to guess from its training data, we **find the relevant passages first** and feed them to the AI so it answers based on your actual documents.
+1. ကိုယ့်စာရွက်တွေကို ကြိုတင်ပြင်ဆင်ထားတယ် (text ထုတ် → အတုံးလေးတွေဖြတ် → vector အဖြစ်ပြောင်း)
+2. မေးခွန်းမေးလာရင် အဲဒီအတုံးတွေထဲက ဆိုင်ရာတွေကို ရှာတယ် (vector search + text search)
+3. တွေ့တဲ့အတုံးတွေကို LLM ဆီ ကော်ပီကူးထည့်ပေးတယ် ("ဒီအချက်အလက်တွေကိုကြည့်ပြီး ဖြေပေးပါ" ဆိုပြီး)
+4. LLM က သူ့ကိုယ်ပိုင်အသိမသုံးပဲ ကိုယ်ပေးထားတဲ့ data ထဲကနေ ဖြေတယ်
+
+**ဒါက ဘာလို့ LLM ကိုတန်းမေးတာထက် ကောင်းလဲ?**
+- LLM က ကိုယ့် company ရဲ့ internal data ကို မသိဘူး
+- LLM က အချက်အလက်တွေကို လိမ်လည်ဖြေနိုင်တယ် (hallucination)
+- RAG က ဘယ်စာရွက်ကနေ ဖြေတယ်ဆိုတာ ပြတယ် (source citation)
 
 ---
 
-## 2. Tech Stack
+## 2. Tech Stack — ဘာတွေသုံးထားလဲ၊ ဘာလို့သုံးတာလဲ?
 
-| Layer | Technology | Purpose |
-|-------|------------|---------|
-| **Backend** | Laravel 13 (PHP 8.3+) | Web framework, REST API |
-| **Database** | PostgreSQL 16 + pgvector 0.6+ | Store data + vector embeddings (same DB) |
-| **Cache/Queue** | Redis (recommended) / database fallback | Cache embeddings, queue processing jobs |
-| **AI Embedding** | Ollama (`nomic-embed-text:latest`, etc.) or OpenAI | Convert text → vectors |
-| **AI LLM** | Ollama (`qwen3.5:9b`, `gemma4:e4b`, etc.) or OpenAI | Generate answers from context |
-| **Frontend** | Vue 3 + TypeScript + Pinia + vue-router | Single-page application |
-| **CSS** | Tailwind v4 | Styling |
-| **Build** | Vite 8 | Frontend build tool |
-| **Testing** | Pest PHP (backend) + Vitest (frontend) | Automated tests |
+### Laravel (PHP)
+PHP က ရွေးချယ်စရာမဟုတ်ဘူး — Laravel က ရွေးချယ်စရာ။ ဘာလို့ Laravel လဲ?
+- Eloquent ORM — DB queries တွေကို လွယ်လွယ်ကူကူရေးလို့ရတယ်
+- Queue system — Document processing က heavy ဖြစ်တယ် (PDF ကနေ text ထုတ်၊ chunk ဖြတ်၊ vector ပြောင်း) — ဒါတွေကို background job အနေနဲ့ queue ထဲထည့်ပြီး async လုပ်လို့ရတယ်
+- Service Container — Dependency injection က testing အတွက်အဆင်ပြေတယ်
 
-### Key PHP libraries
+### PostgreSQL + pgvector
+**ဘာလို့ separate vector database မသုံးတာလဲ?** (ဥပမာ Pinecone, Weaviate)
 
-- `smalot/pdfparser` — extract text from PDFs
-- `phpoffice/phpword` — extract text from DOCX files
+ကိုယ့် data က vector ရော metadata ရော တွဲပြီးသုံးရတယ်။ PostgreSQL မှာဆိုရင်:
+- Document ရဲ့ project, user, date တွေက SQL WHERE နဲ့လွယ်လွယ်ကူကူစစ်လို့ရတယ်
+- Vector search ကော FTS ကော အတူတူတွဲသုံးလို့ရတယ် (hybrid search)
+- DB ၂ ခု manage လုပ်စရာမလိုဘူး
+- pgvector က production-ready ဖြစ်နေပြီ
 
-### AI Note
+### Ollama (သို့) OpenAI
+နှစ်မျိုးလုံး support လုပ်ထားတယ်။ ဘာလို့ interface တစ်ခုတည်းနဲ့ထားလဲ?
+- Provider တွေက API format မတူဘူး (OpenAI က chat completion, Ollama က /api/chat)
+- ဒါပေမယ့် အပေါ်ယံကနေကြည့်ရင် တူတူပဲ — "text ထည့် → vector ထုတ်" (embedding) သို့ "prompt ထည့် → text ထုတ်" (LLM)
+- Interface/Implementation pattern သုံးထားတယ် — ဘယ် provider ပြောင်းပြောင်း calling code က ပြောင်းစရာမလိုဘူး
 
-All AI calls go through **raw PHP curl** — no official OpenAI SDK. This keeps dependencies minimal and works equally well with OpenAI or Ollama (just change the URL).
+**ဘာလို့ raw cURL သုံးတာလဲ? ဘာလို့ official SDK မသုံးတာလဲ?**
+SDK တွေက:
+- Dependencies တွေများတယ် (guzzlehttp, psr-7, etc.)
+- Version တက်လိုက်ကျလိုက်နဲ့ breaking changes တွေရှိတယ်
+- တကယ်တော့ AI API တွေက simple HTTP POST ပဲ — curl နဲ့တန်းခေါ်ရတာ ပိုမြန်တယ်၊ ပိုရှင်းတယ်
 
----
+### Vue 3 + TypeScript + Tailwind
+Frontend framework တွေအများကြီးရှိပေမယ့်:
+- Vue က React ထက်သင်ရတာလွယ်တယ် (အထူးသဖြင့် Composition API)
+- TypeScript က autocompletion + type safety အတွက်
+- Tailwind v4 — utility classes တွေနဲ့ မြန်မြန်ဆန်ဆန် UI ဆောက်လို့ရတယ်
 
-## 3. Project Structure
+### Key PHP Libraries (နှစ်ခုပဲရှိတယ် — ဘာလို့?)
+- `smalot/pdfparser` — PDF ကနေ text ထုတ်ဖို့
+- `phpoffice/phpword` — DOCX ကနေ text ထုတ်ဖို့
 
-```
-lumina_rag/
-├── AGENTS.md                 # Quick reference for AI coding assistants
-├── LEARNING.md               # THIS FILE — learning guide
-├── composer.json             # PHP dependencies
-├── package.json              # Frontend dependencies
-├── config/
-│   ├── app.php               # Service providers registered here
-│   ├── rag.php               # ALL RAG settings (central config file)
-│   └── modules.php           # Module enabled flags (NOT read at runtime!)
-├── app/
-│   ├── Models/User.php       # User model (ULID, api_token auth)
-│   └── Http/Middleware/
-│       └── AuthenticateWithToken.php  # Custom token auth middleware
-├── modules/                  # 7 feature modules
-│   ├── ChatModule/           # RAG orchestration, chat sessions
-│   ├── DocumentModule/       # Upload, extract, chunk documents
-│   ├── EmbeddingModule/      # Text → vector conversion
-│   ├── LLMModule/            # LLM completions (streaming + non-streaming)
-│   ├── VectorStoreModule/    # Vector storage + similarity search
-│   ├── UserModule/           # Registration, login, token auth
-│   └── SettingsModule/       # AI model registry, settings
-├── resources/js/             # Vue 3 frontend
-│   ├── app.js                # Entry point — boots Vue + Pinia + Router
-│   ├── App.vue               # Root component (nav, auth loading)
-│   ├── router.ts              # SPA routes with auth guards
-│   ├── types/index.ts         # TypeScript interfaces
-│   ├── services/              # API calls (axios)
-│   ├── stores/                # Pinia stores (auth, chat, document)
-│   ├── components/            # Reusable Vue components
-│   └── pages/                 # Page-level components
-├── docs/                      # Documentation
-├── tests/                     # PHP tests (Pest)
-└── database/                  # Shared migrations, seeders
-```
-
-### Module Dependency Graph
-
-```
-                   UserModule (standalone — login/register/token auth)
-                   SettingsModule (standalone — AI model registry)
-
-                   EmbeddingModule ──┐
-                   VectorStoreModule ┤
-                   LLMModule ────────┤
-                                      ↓
-                   DocumentModule (uses Embedding + VectorStore)
-                   ChatModule (uses Embedding + VectorStore + LLM)
-```
+ဒါပဲရှိတယ်။ **ဘာလို့ဒီလောက်နည်းတာလဲ?** ဘာလို့ langchain လိုမျိုး LLM framework မသုံးတာလဲ?
+- RAG pipeline က ရှုပ်ထွေးတာမဟုတ်ဘူး — embed → search → LLM call → respond ပဲ
+- Framework တွေက abstraction တွေအများကြီးထပ်ထားတယ် — debugging ခက်တယ်
+- ကိုယ်တိုင်ရေးရင် ဘာဖြစ်နေလဲဆိုတာ ရှင်းရှင်းလင်းလင်းသိတယ်
+- Codebase က 1500 line ပဲရှိတယ် (RAGPipelineService တစ်ခုလုံး) — ဒါက framework သုံးရင် မဖြစ်နိုင်ဘူး
 
 ---
 
-## 4. Database Schema
+## 3. Project Structure — ဘာလို့ဒီလိုဖွဲ့စည်းထားတာလဲ?
 
-### Key Design Decisions
+### Module System (ဘာလို့ ၇ ခုကွဲထားတာလဲ?)
 
-1. **All primary keys are ULIDs** — not auto-increment integers. ULIDs are 26-character strings (Crockford base32) that are sortable by time, URL-safe, and collision-resistant.
-2. **No database-level foreign key constraints** — relationships are enforced in PHP service code. This makes migrations easier and supports future sharding.
-3. **Vectors live in the same database** — pgvector extension adds a `vector` column type.
+RAG system က component ၃ ခုရှိတယ်:
+- **Embedding** — text → vector ပြောင်း
+- **Vector Store** — vector တွေကို သိမ်း + ရှာ
+- **LLM** — အဖြေထုတ်
 
-### Tables
+ဒီ ၃ ခုက အချင်းချင်း မှီခိုမှုမရှိဘူး။ ဒါကြောင့် သပ်သပ်ခွဲထားတယ်။
 
-#### `users`
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | ULID | Primary key |
-| `name` | string | Display name |
-| `email` | string (unique) | Login identifier |
-| `password` | string | bcrypt hash |
-| `api_token` | string(80) (unique) | 80-char hex token for API auth |
-| `created_at` | timestamptz | |
-| `updated_at` | timestamptz | |
-| `deleted_at` | timestamptz | Soft delete |
-
-#### `documents`
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | ULID | Primary key |
-| `user_id` | ULID | Owner (no FK) |
-| `title` | varchar(255) | Editable title |
-| `original_filename` | varchar(255) | Original upload name |
-| `file_path` | varchar(500) | Storage path |
-| `file_size` | integer | Bytes |
-| `mime_type` | varchar(100) | PDF/DOCX/TXT/CSV/MD |
-| `file_hash` | varchar(64) (unique) | SHA-256 — duplicate detection |
-| `status` | varchar(20) | `pending` → `processing` → `completed` / `failed` |
-| `chunks_count` | integer | Number of text chunks |
-| `report_date` | date | Optional date field for reports |
-| `project` | varchar | Optional project name for grouping |
-| `embedding_model` | varchar(100) | Model used for embeddings |
-| `embedding_model_id` | ULID | → `ai_models.id` |
-| `error_message` | text | Populated on failure |
-| `processed_at` | timestamptz | When processing completed |
-| `created_at` | timestamptz | |
-| `deleted_at` | timestamptz | Soft delete |
-
-#### `document_chunks`
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | ULID | Primary key |
-| `document_id` | ULID | → documents.id |
-| `content` | longtext | The chunk text |
-| `chunk_index` | integer | 0-based position |
-| `page_number` | integer | PDF only |
-| `char_start` / `char_end` | integer | Character offsets in original text |
-| `token_count` | integer | Estimated token count |
-| `tsv_content` | tsvector | PostgreSQL FTS vector (for text search) |
-| `created_at` | timestamptz | |
-
-Unique: `(document_id, chunk_index)`
-
-#### `chat_sessions`
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | ULID | Primary key |
-| `user_id` | ULID | Owner |
-| `title` | varchar(255) | Auto-set from first question |
-| `is_archived` | boolean | |
-| `message_count` | integer | Cached count |
-| `last_activity_at` | timestamptz | Updated on every message |
-| `created_at` / `updated_at` | timestamptz | |
-| `deleted_at` | timestamptz | Soft delete |
-
-#### `chat_messages`
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | ULID | Primary key |
-| `session_id` | ULID | → chat_sessions.id |
-| `role` | varchar(20) | `user` or `assistant` |
-| `content` | longtext | Message body |
-| `sources` | jsonb | Array of `{document_id, title, chunk_index, score, excerpt}` |
-| `token_count` | integer | |
-| `created_at` | timestamptz | |
-| `deleted_at` | timestamptz | Soft delete |
-
-#### `ai_models`
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | ULID | Primary key |
-| `name` | varchar(255) | Friendly name (e.g. "nomic-embed-text") |
-| `type` | varchar(20) | `embedding` or `llm` |
-| `provider` | varchar(50) | `openai` or `ollama` |
-| `model` | varchar(255) | Model name (e.g. `nomic-embed-text:latest`) |
-| `api_key` | text | OpenAI API key (null for Ollama) |
-| `base_url` | varchar(500) | Ollama URL (e.g. `http://localhost:11434`) |
-| `dimensions` | integer | Embedding dimension (768, 1024, 1536, 3072) |
-| `batch_size` | integer | Embedding batch size |
-| `temperature` | decimal | LLM temperature |
-| `max_context_tokens` | integer | LLM context limit |
-| `timeout` | integer | Request timeout |
-| `settings` | jsonb | Per-model pipeline overrides (top_k, threshold, etc.) |
-| `is_active` | boolean | |
-| `sort_order` | integer | Priority order |
-
-#### Vector storage (`ve_384`, `ve_768`, `ve_1024`, `ve_1536`, `ve_3072`)
-
-This is the most unique part. Vectors are stored in **per-dimension shard tables**:
-
+ဘယ် module တွေက ဘယ် module တွေကိုသုံးလဲ:
 ```
-ve_768     ← nomic-embed-text (768 dimensions)
-ve_1024    ← mxbai-embed-large (1024 dimensions)
-ve_1536    ← text-embedding-3-small (1536 dimensions)
-ve_3072    ← text-embedding-3-large (3072 dimensions)
+ChatModule → EmbeddingModule + VectorStoreModule + LLMModule
+DocumentModule → EmbeddingModule + VectorStoreModule
+SettingsModule → standalone
+UserModule → standalone
 ```
 
-Each shard table:
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | ULID | |
-| `chunk_id` | ULID | → document_chunks.id |
-| `embedding` | `vector(N)` | The actual vector |
-| `model_name` | varchar(100) | |
-| `content_hash` | varchar(32) | MD5 of content |
+**ဒီပုံစံရဲ့ အားသာချက်:**
+- Component တစ်ခုကို ပြင်ရင် ကျန်တာတွေ မထိခိုက်ဘူး
+- ဥပမာ — vector store ကို pgvector ကနေ another DB ပြောင်းချင်ရင် `VectorStoreModule` ကိုပဲပြင်ရတယ်
+- Testing လုပ်ရတာလွယ်တယ် (component တစ်ခုချင်းစီကို သပ်သပ် mock လုပ်လို့ရ)
 
-There's also a `vector_embeddings` metadata table for bookkeeping (and SQLite fallback).
+### ဘာလို့ Repository layer မပါတာလဲ?
 
-**Why shard tables?** pgvector's `vector(N)` type fixes dimensions at column creation time, and different models produce different dimensions. So we need separate tables.
+Standard Laravel မှာ Controller → Service → Repository → Model ဆိုပြီးရှိတယ်။ ဒါပေမယ့် ဒီ project မှာ **Service က Model ကိုတိုက်ရိုက်သုံးတယ်**။
 
----
+ဘာလို့လဲ?
+- Repository pattern က ရှုပ်ထွေးတယ် — abstraction တစ်ထပ်ထပ်ထည့်တာ
+- ဒီ project က CRUD-heavy မဟုတ်ဘူး — RAG logic က အဓိက
+- တကယ်တော့ `RAGPipelineService` က Eloquent queries တွေကို တိုက်ရိုက်သုံးတယ် (User::where(), Document::query())
+- ဒါက ပိုရှင်းတယ် — ဘာ query ပြေးလဲဆိုတာ မျက်စိရှေ့မှာမြင်ရတယ်
 
-## 5. Module System
-
-Each module follows the same structure:
+### Module တစ်ခုရဲ့ standard structure
 
 ```
 modules/{Name}Module/
-├── Controllers/     → Thin HTTP layer (validation + dispatch, no business logic)
-├── Services/        → Business logic (the only layer touching Models)
-├── Contracts/       → Interfaces (bound in ServiceProvider)
+├── Controllers/     → HTTP layer (validation + dispatch)
+├── Services/        → Business logic (Models တွေကို ဒီမှာပဲ touch တယ်)
+├── Contracts/       → Interfaces (ServiceProvider မှာ bind)
 ├── Models/          → Eloquent models
-├── Requests/        → Form request validation
+├── Requests/        → FormRequest validation
 ├── Routes/          → API route definitions
 ├── Providers/       → ServiceProvider registration
-├── Jobs/            → Queue jobs (DocumentModule only)
+├── Jobs/            → Background jobs (DocumentModule မှာပဲရှိ)
 ├── Commands/        → Artisan commands
 └── database/
-    ├── migrations/  → Module-specific migrations
-    └── Seeders/     → Demo data seeders
+    ├── migrations/
+    └── Seeders/
 ```
-
-### Module-by-module breakdown
-
-#### ChatModule
-- **Purpose**: RAG orchestration — takes a question, finds relevant chunks, generates answer
-- **Key files**:
-  - `Services/RAGPipelineService.php` — THE core file (1500+ lines). Orchestrates the entire RAG flow
-  - `Controllers/ChatController.php` — Handles streaming and non-streaming chat requests
-  - `Models/ChatSession.php`, `Models/ChatMessage.php`
-- **Key flow**: `ask()` → extract filters from question → embed → hybrid search → dynamic threshold → context assembly → LLM call → save messages
-
-#### DocumentModule
-- **Purpose**: Upload, validate, extract text, chunk, and embed documents
-- **Key files**:
-  - `Services/DocumentService.php` — Upload validation, CRUD, list with server-side pagination
-  - `Services/TextExtractionService.php` — Extract text from PDF/DOCX/TXT/CSV/MD
-  - `Services/TextChunkingService.php` — Recursive character text splitter
-  - `Jobs/ProcessDocumentJob.php` — Async processing pipeline (extract → chunk → embed)
-- **Flow**: Upload → validate → SHA-256 dedup → store file → dispatch job → extract → chunk → batch-embed → upsert vectors
-
-#### EmbeddingModule
-- **Purpose**: Convert text → vector, with caching
-- **Key files**:
-  - `Services/EmbeddingService.php` — Caching wrapper. MD5-caches embeddings for 24h
-  - `Services/OpenAIEmbeddingProvider.php` — OpenAI API via curl
-  - `Services/OllamaEmbeddingProvider.php` — Ollama API via curl
-- **Key detail**: `embedBatch()` checks cache first for each text, only sends uncached texts to the API
-
-#### LLMModule
-- **Purpose**: LLM completions (streaming + non-streaming)
-- **Key files**:
-  - `Services/LLMService.php` — Assembles prompt with context, calls provider
-  - `Services/OllamaLLMProvider.php` — Ollama streaming/non-streaming via curl
-  - `Services/OpenAILLMProvider.php` — OpenAI via curl
-- **Key detail**: `buildContextString()` adds chunks one by one, stopping when `max_context_tokens` is reached. Each chunk gets a source label like `[Source: Q3 Report.pdf (85%)]`
-
-#### VectorStoreModule
-- **Purpose**: Store vectors, search by similarity
-- **Key files**:
-  - `Services/PgvectorDriver.php` — PostgreSQL + pgvector implementation
-  - `Services/VectorStoreService.php` — Orchestrates driver selection
-- **Search modes**:
-  - `vector` → pure cosine similarity (`1 - (embedding <=> ?)`)
-  - `fts` → PostgreSQL full-text search (`tsv_content @@ plainto_tsquery('english', ...)`)
-  - `hybrid` → Both in parallel, fused via Reciprocal Rank Fusion (RRF)
-
-#### UserModule
-- **Purpose**: Registration, login, token authentication
-- **Key files**:
-  - `Controllers/AuthController.php` — register, login, logout, me
-  - `Services/AuthService.php` — Token management
-- **Auth**: Custom 80-char hex tokens (not Laravel Sanctum/Sanctum)
-
-#### SettingsModule
-- **Purpose**: AI model registry + key/value settings
-- **Key files**:
-  - `Services/AiModelService.php` — CRUD for embedding/LLM models
-  - `Models/AiModel.php` — Model registry Eloquent model
-  - `Database/Seeders/SettingsModuleSeeder.php` — Seeds default Ollama models
 
 ---
 
-## 6. RAG Pipeline (Core Logic)
+## 4. Database Schema — ဘာလို့ဒီလိုဒီဇိုင်းလုပ်ထားတာလဲ?
 
-This is the heart of the application, in `modules/ChatModule/Services/RAGPipelineService.php`.
+### ULID (ဘာလို့ auto-increment integer မသုံးတာလဲ?)
 
-### Step-by-step flow
+Auto-increment ID တွေက:
+- Predictable ဖြစ်တယ် — ပထမ document က 1, ဒုတိယက 2 (ပြင်ပလူက ခန့်မှန်းလို့ရ)
+- Merge conflict ဖြစ်နိုင်တယ် — branch ၂ ခုမှာ တူညီတဲ့ ID ရနိုင်တယ်
+- Distributed system အတွက် မကောင်းဘူး
 
-#### Step 1: `ask($question, $options)`
+ULID တွေက:
+- Time-sortable — ID အလိုက် sorting လုပ်ရင် created_at အတိုင်းရတယ်
+- URL-safe — base32 encoding
+- Collision-resistant — 26 characters, random enough
+
+### ဘာလို့ DB-level foreign key constraints မပါတာလဲ?
+
+```sql
+-- ဒီလိုမျိုး DB constraint မရှိဘူး
+FOREIGN KEY (user_id) REFERENCES users(id)
+```
+
+ဘာလို့လဲ?
+- ULID တွေက string တွေဖြစ်တယ် — FK constraint တွေက performance ကျစေတယ်
+- အနာဂတ်မှာ sharding လုပ်ရင် FK တွေက အဆင်မပြေဘူး
+- Application code မှာပဲ စစ်တယ် (Service layer က စစ်တယ် — user မရှိရင် မသိမ်းဘူး)
+- Migrations တွေက ပိုလွယ်တယ် (constraint error တွေမရှိတော့)
+
+### Vector Shard Tables — ဘာလို့ table တစ်ခုတည်းမသုံးတာလဲ?
+
+pgvector ရဲ့ `vector(N)` type က dimension အရေအတွက်ကို column creation မှာတည်ဆောက်တယ်။ တစ်ခါသတ်မှတ်ပြီးရင် ပြောင်းလို့မရဘူး။
+
+ဒါပေမယ့် model တစ်ခုက 768d, နောက်တစ်ခုက 1536d — မတူဘူး။ ဒါကြောင့်:
+```
+ve_768    ← nomic-embed-text (768 dimensions)
+ve_1024   ← mxbai-embed-large
+ve_1536   ← text-embedding-3-small
+ve_3072   ← text-embedding-3-large
+```
+
+**ဘာလို့ EAV (Entity-Attribute-Value) style မသုံးတာလဲ?** (ဥပမာ `(chunk_id, dimension_index, value)`)
+- EAV က performance ဆိုးတယ် — vector ရှာဖို့ row 768 ခုကို join ရမယ်
+- pgvector ရဲ့ native vector operations သုံးလို့မရတော့ဘူး
+- IVFFlat index က တစ်ခုချင်းစီအတွက် သပ်သပ်ဆောက်လို့ရ
+
+### တခြားထူးခြားချက်တွေ
+
+**`tsv_content` column in `document_chunks`:**
+- PostgreSQL full-text search vector
+- `to_tsvector('english', content)` နဲ့ auto-populate
+- `plainto_tsquery('english', ...)` နဲ့ search
+- **ဘာလို့ `english` config သုံးတာလဲ?** `simple` က stopword တွေကိုမဖယ်ဘူး၊ stemming မလုပ်ဘူး။ `english` က "running" → "run" ပြောင်းပေးတယ်
+
+**`settings` JSONB in `ai_models`:**
+- Per-model overrides အတွက် (top_k, similarity_threshold, search_mode, etc.)
+- Config file က fallback — ai_models DB table က source of truth
+- **ဒီပုံစံရဲ့ အားသာချက်:** Admin က UI ကနေ တစ်ခါတည်းပြင်လို့ရတယ် — `.env` ပြင်စရာ၊ deploy ပြန်လုပ်စရာမလိုဘူး
+
+---
+
+## 5. Module System — Module တစ်ခုချင်းစီက ဘာလုပ်လဲ၊ ဘာလို့ဒီလိုလုပ်ထားလဲ?
+
+### ChatModule — RAG Orchestration
+
+ဒါက project ရဲ့ဗဟို။ `RAGPipelineService.php` (1500+ lines) က ဒီ flow ကို orchestrate လုပ်တယ်:
+
+```
+Question → extract filters → embed → hybrid search → dynamic threshold → MMR → LLM → save
+```
+
+**ဘာလို့ Controller က thin လဲ?**
+Controller က validation လုပ်ပြီး Service ကိုခေါ်ရုံပဲ။ Business logic က Service ထဲမှာ။
+- Testing လုပ်ရတာလွယ်တယ် — Service ကိုပဲ unit test လုပ်လို့ရ
+- Controller က HTTP အတွက်ပဲ — business logic နဲ့မရောဘူး
+
+**ဘာလို့ streaming ကော non-streaming ကော ရှိတာလဲ?**
+- Non-streaming: အဖြေအပြည့်စောင့်ပြီးမှ ပြန် (API consumer တွေအတွက်)
+- Streaming: အဖြေကို တစ်ပိုင်းချင်းပြန် (UI အတွက် — user က typing effect မြင်ရတယ်)
+- ChatController က `?stream=true` query param ကိုကြည့်ပြီး ဘယ် method ခေါ်မလဲဆုံးဖြတ်တယ်
+
+### DocumentModule — Upload → Process Pipeline
+
+**ဘာလို့ job queue သုံးတာလဲ?**
+Document processing က တစ်ခါတည်းမပြီးဘူး:
+- PDF (100 pages) ကနေ text ထုတ်ရတာ 5-10 စက္ကန့်ကြာတယ်
+- Text ကို chunk တွေဖြတ်တယ်
+- Chunk အရေအတွက်ပေါ်မူတည်ပြီး embedding ကို batch နဲ့ခေါ်တယ် (API call တစ်ခုက 1-3 စက္ကန့်)
+- Vector upsert လုပ်တယ်
+
+User က upload လုပ်ပြီး ၃၀ စက္ကန့်စောင့်နေရင် ဆိုးတယ်။ ဒါကြောင့်:
+1. Upload → "pending" status နဲ့ record လုပ် → 201 ပြန်
+2. Job ကို queue ထဲထည့်
+3. User က status ကို poll လုပ်လို့ရတယ် (GET /api/documents/{id}/status)
+4. Job က background မှာ processing လုပ်
+
+### EmbeddingModule — Text → Vector
+
+**ဘာလို့ MD5 cache လုပ်တာလဲ?**
+Embedding API calls တွေက:
+- စျေးကြီးတယ် (OpenAI ဆိုရင် token တွေအတွက်ပိုက်ဆံပေးရ)
+- နှေးတယ် (network round-trip)
+- တူတဲ့ text ကို ထပ်ခါထပ်ခါ embed လုပ်စရာမလိုဘူး
+
+Cache key: `md5($text)` — 24h TTL
+
+**ဘာလို့ `embedBatch()` ဆိုတဲ့ method ရှိတာလဲ?**
+Document တစ်ခုမှာ chunk ၁၀၀ ရှိတယ်ဆိုပါစို့။ တစ်ခုချင်းခေါ်ရင် API call ၁၀၀ လိုမယ်။
+Batch နဲ့ဆို:
+- Cache ကိုအရင်စစ် → မရှိသေးတာတွေကိုပဲ API ကိုပို့
+- API ကို တစ်ခါတည်း array လိုက်ပို့ (OpenAI: `input` array, Ollama: sequential)
+- Configurable batch size (default: 100)
+
+### LLMModule — အဖြေထုတ်
+
+`LLMService.php` က context ကို assemble လုပ်တယ်:
 
 ```php
-// 1. Truncate long questions
-$question = $this->normalizeQuestion($question);
-
-// 2. Get or create chat session
-$session = $this->resolveSession($sessionId, $userId);
-
-// 3. Check message limit (max 100 per session)
-$this->checkMessageLimit($session);
-
-// 4. Extract filters from question text
-$autoFilters = $this->extractFiltersFromQuestion($question);
-//   → Detects user names → user_ids
-//   → Detects project names → project
-//   → Detects date references (today, yesterday, April 2026, etc.) → date range
-
-// 5. Refine FTS query (remove filter terms, stopwords)
-$ftsQuery = $this->refineFtsQuery($question, $autoFilters);
-
-// 6. Save user message to DB
-$this->saveUserMessage($session, $question);
-
-// 7. Resolve follow-up filters (inherit from previous question)
-//   If this question has no user/project, inherit from last question
-//   If previous answer was a refusal, DON'T inherit dates
-
-// 8. Dynamic model selection — detect which embedding model
-//   the filtered documents use, use that for the question embedding
-```
-
-#### Step 2: `extractFiltersFromQuestion($question)`
-
-This method parses natural language to extract structured filters:
-
-- **User names**: matching against all user names in DB (e.g. "အောင်ဇေယျာ", "Sarah Chen")
-- **Project names**: matching against known projects (e.g. "Project Orion", "Project Atlas")
-- **Date references**:
-  - Today, yesterday: resolves to exact dates
-  - "2026-04" → April 1-30, 2026
-  - "this week", "last month" → relative date ranges
-  - "Q1 2025" → January-March 2025
-  - "2026" → January 1 - December 31, 2026
-
-These filters are applied as SQL WHERE clauses, NOT as FTS search terms.
-
-#### Step 3: `refineFtsQuery($question, $filters)`
-
-Strips the question down to content words only for FTS search:
-
-1. Remove detected user names (e.g. "အောင်ဇေယျာ", "Sarah Chen")
-2. Remove detected project names (e.g. "Project Orion")
-3. Remove complete date patterns (`YYYY-MM-DD`, `YYYY-MM`) — done BEFORE individual year stripping to avoid bare `-04` being interpreted as PostgreSQL FTS negation
-4. Remove individual years and quarters
-5. Remove stopwords (English + Burmese conversational words)
-6. Filter out short tokens (< 3 ASCII chars, < 2 non-ASCII chars)
-7. Remove hyphen-prefixed numeric tokens (date fragments)
-8. Trim leading/trailing hyphens from tokens
-
-**Why so much stripping?** The filters (user, project, date) are already applied as SQL WHERE clauses. The FTS query should only contain the actual content words to search for.
-
-#### Step 4: Search
-
-```php
-// Vector search:
-//   1 - (embedding <=> question_vector) as similarity_score
-//   Filters: user_ids, project, report_date range, similarity_threshold
-
-// FTS search (hybrid mode only):
-//   tsv_content @@ plainto_tsquery('english', $ftsQuery)
-//   Filters: user_ids, project, report_date range
-
-// Hybrid fusion: Reciprocal Rank Fusion (RRF)
-//   Both searches run in parallel, results combined by rank position
-//   Scores normalized to 0-1
-```
-
-**Threshold logic**:
-- Initial search: lowered to `min(0.65, 0.40)` to cast a wider net
-- Post-fusion: `applyDynamicThreshold()` uses the configured 0.65 threshold
-  - If there's a big score gap (>0.15) between consecutive results, cut at that gap
-  - Otherwise: `cutoff = max(0.65, top_score * 0.85)`
-  - Safety valve: if all chunks filtered out, keep the single best chunk
-
-#### Step 5: MMR Re-ranking (optional)
-
-Maximal Marginal Relevance reduces redundancy:
-- Scores each chunk by `lambda * similarity - (1-lambda) * max_similarity_to_already_selected`
-- Default lambda: 0.7 (balance between relevance and diversity)
-
-#### Step 6: Context Assembly
-
-```php
-// Chunks sorted by score descending
-// Concatenated with source labels:
-//   [Source: Document Title (85%)], Page 5
-//   Chunk content here...
-// Truncated to max_context_tokens (default 32768)
-```
-
-#### Step 7: LLM Call
-
-The assembled context + user question are sent to the LLM:
-```
-System: You are a helpful assistant. Answer based ONLY on the provided context.
-        If the context doesn't contain enough info, say so.
-
-Context:
+// assemblePrompt က ဒီလိုပုံစံမျိုး prompt ဆောက်တယ်
+"Context:
 ---
 [Source: Q3 Report.pdf (92%)], Page 12
 Revenue in Q3 reached $45.2 million...
@@ -465,481 +255,579 @@ Operating expenses increased by 12%...
 
 Question: What was the revenue in Q3?
 
-Answer:
+Answer:"
 ```
 
-#### Step 8: Streaming
+**ဘာလို့ `max_context_tokens` နဲ့ truncate လုပ်တာလဲ?**
+LLM တွေမှာ context window limit ရှိတယ်။ Chunk တွေအားလုံးထည့်လိုက်ရင် limit ကျော်သွားနိုင်တယ်။
+ဒါကြောင့်:
+1. Chunks တွေကို similarity score အရ sort လုပ် (အကောင်းဆုံးက အရင်)
+2. တစ်ခုချင်းထည့် → token count စစ်
+3. Limit ကျော်တော့မယ်ဆို ရပ်လိုက်
 
-When `stream: true`, the server emits Server-Sent Events (SSE):
+### VectorStoreModule — Search
 
-```
-data: {"type":"status","stage":"embedding","message":"Embedding question..."}
+**ဘာလို့ hybrid search (vector + FTS) သုံးတာလဲ?**
 
-data: {"type":"status","stage":"searching","message":"Searching documents..."}
+**Vector search** (cosine similarity):
+- "ကားအသစ်ရဲ့ဈေးနှုန်း" နဲ့ "automobile pricing" ကို ဆက်စပ်ပေးနိုင်တယ် (semantic matching)
+- ဒါပေမယ့် specific keyword ("Orion-2024-Q3") ကို ရှာမတွေ့ဘူး
 
-data: {"type":"sources","sources":[...]}
+**FTS** (full-text search):
+- "Orion-2024-Q3" အတိအကျပါတဲ့ chunk ကိုရှာနိုင်တယ် (keyword matching)
+- ဒါပေမယ့် "ကားအသစ်" နဲ့ "automobile" ကို ဆက်စပ်မပေးနိုင်ဘူး
 
-data: {"type":"status","stage":"generating","message":"Generating answer..."}
-
-data: {"type":"chunk","content":"The revenue"}
-
-data: {"type":"chunk","content":" in Q3 was"}
-
-data: {"type":"chunk","content":" $45.2 million."}
-
-data: {"type":"done","session_id":"...","tokens_used":150,"search_time_ms":320,"llm_time_ms":1200,"total_time_ms":1650}
-```
-
-#### Step 9: Persistence
-
-Both user message and assistant message are saved to `chat_messages` table. Sources are stored as JSONB.
-
----
-
-## 7. Document Upload & Processing
-
-### Upload Flow
-
-```
-User uploads file → browser sends multipart POST to /api/documents
-      ↓
-DocumentService::upload()
-  1. Validate file type (PDF/DOCX/TXT/CSV/MD)
-  2. Validate file size (max 50MB)
-  3. Compute SHA-256 hash
-  4. Check for duplicate (returns 409 if exists)
-  5. Store file to storage/app/documents/
-  6. Create Document record (status: 'pending')
-  7. Dispatch ProcessDocumentJob to queue
-  8. Return document ID (client can poll status)
+**Hybrid (RRF fusion):**
+နှစ်ခုလုံးကို parallel ပြေး → rank တွေကိုပေါင်း → အကောင်းဆုံးကိုယူ
+```php
+// RRF: reciprocal rank fusion
+$score = 1 / (60 + $vectorRank) + 1 / (60 + $ftsRank)
+// 60 = constant (RRF parameter)
 ```
 
-### Processing Flow (Async Queue Job)
+### SettingsModule — AI Model Registry
 
-```
-ProcessDocumentJob::handle()
-  1. Delete any previous chunks/vectors (for retries)
-  2. Extract text from file
-     - PDF: smalot/pdfparser → preserves page boundaries
-     - DOCX: phpoffice/phpword
-     - TXT/CSV/MD: direct read
-  3. Chunk text using recursive character splitter
-     - Chunk size: 1000 chars (configurable)
-     - Overlap: 200 chars
-     - Separator priority: ¶ → line → . → , → space → char
-  4. Save chunks to document_chunks table
-     - Auto-populate tsv_content (FTS vector) for PostgreSQL
-     - Each chunk gets metadata header:
-       "Report by: {user}\nProject: {project}\nDate: {date}\n\n{content}"
-  5. Generate embeddings (in batches of 100)
-     - Checks cache first → only sends uncached texts
-     - Uses the document's configured embedding model
-  6. Upsert vectors to the matching ve_{dim} shard table
-  7. Mark document as 'completed'
+**ဘာလို့ Model Registry လိုတာလဲ?**
+- Document တစ်ခုစီက မတူတဲ့ embedding model သုံးနိုင်တယ်
+- LLM ကိုလည်း ပြောင်းသုံးနိုင်တယ် (ဥပမာ code document ဆို qwen2.5-coder)
+- တစ်ချိန်တည်းမှာ model ၂ ခု active ဖြစ်နေလို့ရတယ် (primary + fallback)
+
+`is_active` + `sort_order` က ဘယ် model က active လဲဆုံးဖြတ်တယ်:
+```php
+AiModel::active()->embedding()->orderBy('sort_order')->first();
 ```
 
 ---
 
-## 8. API Routes
+## 6. RAG Pipeline — အသေးစိတ် Code Walkthrough
 
-All routes under `/api/`, all authenticated with `Authorization: Bearer <80-char-hex-token>`.
+ဒါက project ရဲ့အဓိက အပိုင်း — `RAGPipelineService.php` ကို step-by-step လိုက်ကြည့်ရအောင်။
 
-### Auth (`POST /api/auth/*`)
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| POST | `/api/auth/register` | No | Create account |
-| POST | `/api/auth/login` | No | Login, returns token |
-| POST | `/api/auth/logout` | Yes | Invalidate token |
-| GET | `/api/auth/me` | Yes | Current user info |
-
-### Chat
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/chat` | Ask question (streaming or non-streaming) |
-| GET | `/api/chat/sessions` | List chat sessions |
-| GET | `/api/chat/sessions/{ulid}` | Get session with messages |
-| DELETE | `/api/chat/sessions/{ulid}` | Delete session |
-
-Chat POST body:
-```json
-{
-  "question": "What is the Q3 revenue?",
-  "session_id": null,
-  "document_filter": {
-    "user_ids": ["..."],
-    "project": "Project Orion",
-    "date_from": "2026-04-01",
-    "date_to": "2026-04-30"
-  },
-  "llm_model_id": "...",
-  "stream": true
-}
-```
-
-### Documents
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/documents` | List (server-side pagination: `?page=&per_page=&search=&status=&sort_key=&sort_dir=`) |
-| POST | `/api/documents` | Upload (multipart) |
-| GET | `/api/documents/{ulid}` | Document detail |
-| GET | `/api/documents/{ulid}/status` | Poll status |
-| POST | `/api/documents/{ulid}/retry` | Retry failed document |
-| PUT | `/api/documents/{ulid}` | Update title/description |
-| DELETE | `/api/documents/{ulid}` | Soft-delete + cascading cleanup |
-
-Upload payload (multipart/form-data):
-```
-file:                 <the file> (required, max 50MB)
-title:                (optional)
-embedding_model:      (optional) model name
-embedding_model_id:   (optional) ai_models ULID
-report_date:          (optional) YYYY-MM-DD
-project:              (optional) project name
-```
-
-### AI Models (Settings)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/settings/ai-models` | List (optional `?type=embedding` or `?type=llm`) |
-| POST | `/api/settings/ai-models` | Create |
-| GET | `/api/settings/ai-models/{ulid}` | Get one |
-| PUT | `/api/settings/ai-models/{ulid}` | Update |
-| DELETE | `/api/settings/ai-models/{ulid}` | Delete |
-
-### Settings
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/settings` | All settings with definitions |
-| PUT | `/api/settings/bulk` | Bulk update |
-| PUT | `/api/settings/{key}` | Single update |
-| DELETE | `/api/settings/{key}` | Reset to default |
-
-### Response Envelope
-
-```json
-{
-  "success": true,
-  "message": "...",
-  "data": { ... },
-  "errors": { "field": ["message"] },
-  "meta": {
-    "current_page": 1,
-    "last_page": 5,
-    "per_page": 20,
-    "total": 100
-  }
-}
-```
-
----
-
-## 9. Authentication
-
-### How it works
-
-1. **Registration**: `POST /api/auth/register` with name/email/password → creates user + generates 80-char hex `api_token`
-2. **Login**: `POST /api/auth/login` → returns existing token (or rotates it)
-3. **Authentication**: Every API call sends `Authorization: Bearer <token>` header
-4. **Middleware**: `app/Http/Middleware/AuthenticateWithToken.php` looks up `users.api_token` and attaches the user to the request
+### Step 1: `ask($question, $options)`
 
 ```php
-// Middleware logic (simplified)
-$token = $request->bearerToken();
+public function ask(string $question, array $options = []): array
+```
+
+**ဘာလို့ parameter တွေက `$question` နဲ့ `$options` ပဲရှိတာလဲ?**
+- Question က main input
+- Options က session_id, user_id, document_filter, stream, llm_model_id — ဒါတွေက optional metadata
+
+**ပထမဆုံး ဘာလုပ်လဲ?**
+```php
+$question = $this->normalizeQuestion($question);
+```
+- Trim + truncate (maxQuestionLength)
+- `2026-04` → `2026-April` ပြောင်း (embedding model က "04" ကို month အဖြစ်နားမလည်ဘူး, "April" ကနားလည်တယ်)
+
+```php
+$session = $this->resolveSession($options['session_id'] ?? null, ...);
+```
+- session_id ပါရင် → DB ကနေရှာ (24h inactivity ဆို expire)
+- session_id မပါရင် → အသစ်ဆောက်
+
+```php
+$this->checkMessageLimit($session);
+```
+- Session တစ်ခုမှာ message 100 ပဲရှိတယ်
+
+### Step 2: Filter Extraction
+
+```php
+$autoFilters = $this->extractFiltersFromQuestion($question);
+```
+
+ဒီ method က မေးခွန်းထဲက filter တွေကို ထုတ်တယ်။
+
+**ဘာလို့ filter extraction လိုတာလဲ?**
+"အောင်ဇေယျာ Project Orion report 2026-04 လပိုင်းအတွက်ရှိလား?"
+→ user=အောင်ဇေယျာ, project=Project Orion, date=2026-04
+
+ဒီ filter တွေကို SQL WHERE clause အနေနဲ့သုံးတယ် (FTS မဟုတ်ဘူး)။
+
+**Filter တွေကို ဘယ်လိုထုတ်လဲ?**
+
+1. **User name** — DB က user name အားလုံးကို cache လုပ် → question ထဲမှာပါလားစစ်
+2. **Project name** — Document ရဲ့ distinct project တွေကို cache လုပ် → question ထဲမှာပါလားစစ်
+3. **Date** — အောက်ပါ pattern တွေကို priority နဲ့စစ်:
+   - `YYYY-MM-DD` (2026-04-15)
+   - `YYYY-MM` (2026-04)
+   - `YYYY-MonthName` (2026-April)
+   - `MonthName DD` (April 15 → current year သုံး)
+   - `Q1 2026`, `2026`, `April 2026`
+
+**ဘာလို့ cache လုပ်တာလဲ?**
+User နဲ့ project list က ခဏခဏမပြောင်းဘူး။ Request တိုင်း DB query ပြန်စီးစရာမလိုဘူး (300s cache)။
+
+### Step 3: FTS Query Refinement
+
+```php
+$ftsQuery = $this->refineFtsQuery($question, $autoFilters);
+```
+
+ဒီ method က FTS search အတွက် question ကို content words ချည်းပဲထုတ်တယ်။
+
+**ဘာလို့ stripping တွေလုပ်တာလဲ?**
+
+ဥပမာ: "အောင်ဇေယျာ Project Orion report 2026-04 လပိုင်းအတွက်ရှိလား?"
+
+| Step | ဘာလုပ်လဲ | Result |
+|------|-----------|--------|
+| normalizeQuestion | "2026-04" → "2026-April" | "အောင်ဇေယျာ Project Orion report 2026-April လပိုင်းအတွက်ရှိလား?" |
+| Strip user | "အောင်ဇေယျာ" ကိုဖယ် | " Project Orion report 2026-April လပိုင်းအတွက်ရှိလား?" |
+| Strip project | "Project Orion" ကိုဖယ် | " report 2026-April လပိုင်းအတွက်ရှိလား?" |
+| Strip YYYY-MonthName | "2026-April" ကိုဖယ် | " report လပိုင်းအတွက်ရှိလား?" |
+| Strip stopwords | "report", "လပိုင်း", "အတွက်" etc. ဖယ် | "ရှိလား" → "" |
+| Fallback | empty ဖြစ်ရင် "report" သုံး | "report" |
+
+**ဒီလောက်တောင် stripping လုပ်ရတဲ့ အဓိကအကြောင်းရင်း:**
+Filter တွေ (user, project, date) ကို SQL WHERE clause အနေနဲ့ပြီးသားထည့်ထားတယ်။ FTS မှာ ထပ်ထည့်စရာမလိုဘူး။ အမှန်တကယ် content word တွေချည်းပဲ FTS မှာထားရင် ပိုတိကျတယ်။
+
+### Step 4: Follow-up Inheritance
+
+```php
+// ဒီ code က နောက်ထပ်မေးတဲ့မေးခွန်းတွေအတွက်
+// အရင် question ရဲ့ filter တွေကို အမွေဆက်ခံတယ်
+if (empty($autoFilters['user_ids']) && empty($autoFilters['project'])) {
+    $inheritedFilters = $this->extractFiltersFromQuestion($prevUserMsg->content);
+    // user, project, date တွေကို inherit လုပ်
+}
+```
+
+**ဘာလို့ဒီလိုလုပ်တာလဲ?**
+
+User က:
+1. "အောင်ဇေယျာ Project Orion report 2026-April လအတွက်ရှိလား?"
+2. "April 15 ရက်အတွက် အသေးစိတ်ရှင်းပြပေးပါ"
+
+ဒုတိယမေးခွန်းမှာ "အောင်ဇေယျာ" နဲ့ "Project Orion" ကိုထပ်မပြောဘူး။
+ဒါပေမယ့် ပထမမေးခွန်းက သူ့အတွက်ပဲဆိုတာ သိတယ်။ ဒါကြောင့် အမွေဆက်ခံတယ်။
+
+**ဘာလို့ refusal ဆို date ကို inherit မလုပ်တာလဲ?**
+ပထမမေးခွန်းကို အဖြေမရဘူးဆိုရင် (ဥပမာ "ဒီရက်အတွက်မရှိဘူး") → user က "ဒါဆိုဘာရှိလဲ?" ပြန်မေးတယ်။
+ဒီအခါမှာ အရင် date filter ကို inherit လုပ်ရင် ပြန်မရဘူး။ ဒါကြောင့် date ကိုချန်လိုက်တယ်။
+
+### Step 5: Dynamic Model Selection
+
+```php
+// ဒီကောင်က document တွေက ဘယ် embedding model သုံးထားလဲဆိုတာကြည့်ပြီး
+// question ကိုလည်း အဲဒီ model နဲ့ပဲ embed လုပ်တယ်
+$usedModelIds = $modelQuery->distinct()->pluck('embedding_model_id');
+if ($usedModelIds->count() === 1) {
+    // တစ်မျိုးတည်းပဲရှိရင် အဲဒါကိုသုံး
+}
+```
+
+**ဘာလို့ဒီလိုလုပ်တာလဲ?**
+Document A ကို nomic-embed-text (768d) နဲ့ embed လုပ်ထားတယ်။
+Question ကို text-embedding-3-small (1536d) နဲ့ embed လုပ်ရင် dimension မတူတော့ဘူး → ရှာလို့မရဘူး။
+
+### Step 6: Query Expansion
+
+```php
+$searchQueries = $this->expandQuery($question, $llm);
+```
+
+Default: disabled (`config('rag.search.query_expansion.enabled', false)`)
+
+Enabled ဆိုရင် LLM ကို မေးတယ်: "ဒီမေးခွန်းကို ပုံစံအမျိုးမျိုးနဲ့ပြန်ရေးပေးပါ" → query 3 ခုရ → အကုန် embed → အကုန် search → results တွေကိုပေါင်း
+
+**ဘာလို့ default disable လဲ?**
+- LLM call တစ်ခုထပ်တိုးတယ် (နှေးတယ်၊ cost များတယ်)
+- Simple query တွေအတွက် မလိုဘူး
+- Complex query တွေအတွက်ပဲ enable လုပ်သင့်တယ်
+
+### Step 7: Search
+
+```php
+$chunks = $this->searchMode === 'hybrid'
+    ? $this->vectorStore->searchHybrid($ftsQuery, $questionVector, $this->topK * 3, $filters)
+    : $this->vectorStore->search($questionVector, $this->topK * 3, $filters);
+```
+
+**ဘာလို့ `topK * 3` ကိုသုံးတာလဲ?**
+နောက်ပိုင်းမှာ dynamic threshold နဲ့ MMR က အများကြီးထဲက ရွေးထုတ်တယ်။
+အစကနေလက်တစ်ဆုပ်စာပဲယူရင် ရွေးစရာမရှိတော့ဘူး။
+
+**Initial threshold ကို `0.20` အထိလျှော့ထားတယ် — ဘာလို့?**
+`applyDynamicThreshold` က elbow method သုံးတယ် — similarity scores တွေကို sort လုပ် → အကွာအဝေးအကြီးဆုံးနေရာမှာဖြတ်။
+ဒါပေမယ့် အစကနေ threshold မြင့်ရင် elbow ကိုမတွေ့ဘူး။ ဒါကြောင့် အစကနေ အနိမ့်ထား → အကုန်ယူ → ပြီးမှ dynamic ဖြတ်။
+
+### Step 8: Dynamic Threshold
+
+```php
+private function applyDynamicThreshold(array $chunks, array $filters): array
+```
+
+**ဒီ method က ဘာလုပ်လဲ?**
+1. Chunks တွေကို score နဲ့ sort
+2. Consecutive scores တွေကြားက gap ကိုရှာ
+3. အကြီးဆုံး gap (>0.15) ရှိရင် အဲဒီမှာဖြတ်
+4. Gap မရှိရင်: `cutoff = max(0.65, top_score * 0.85)`
+5. အကုန်ပါသွားရင် safety valve: အကောင်းဆုံး 1 chunk ကိုထားပေး
+
+**ဘာလို့ ဒီနည်းလမ်းကို fixed threshold ထက်သုံးတာလဲ?**
+Fixed threshold (ဥပမာ 0.65) က အလုပ်မဖြစ်တဲ့အခါတွေရှိတယ်:
+- ရှာလို့ရတဲ့ chunk တွေက 0.64-0.70 အကောင်းဆုံးဖြစ်နေရင် 0.65 က cutoff က အလယ်မှာဖြတ်မယ်
+- Dynamic threshold က score distribution ကိုကြည့်ပြီး ဉာဏ်ရှိရှိဖြတ်တယ်
+
+### Step 9: MMR Re-ranking
+
+```php
+$chunks = $this->applyMMR($chunks);
+```
+
+**MMR (Maximal Marginal Relevance) ဆိုတာဘာလဲ?**
+တူညီတဲ့အကြောင်းအရာပါတဲ့ chunk တွေကိုရှောင်ပြီး မတူညီတဲ့ information ကိုဦးစားပေးတယ်။
+
+```php
+// MMR score = λ * similarity - (1-λ) * maxSimilarityToAlreadySelected
+// λ (lambda) = 0.7 → similarity (70%) vs diversity (30%) balance
+```
+
+**ဥပမာ:** Chunk ၅ ခုရှိတယ် — ၃ ခုက revenue အကြောင်း, ၂ ခုက expenses အကြောင်း။
+MMR က revenue ၂ ခု + expenses ၂ ခုကိုရွေးမယ် (အကုန် revenue မယူဘူး)။
+
+**ဘာလို့ default enable လဲ?**
+Context window က အကန့်အသတ်ရှိတယ်။ တူတဲ့အကြောင်းအရာ ၃ ခုထည့်မယ့်အစား မတူတဲ့ ၃ ခုထည့်ရင် LLM က ပိုကောင်းတဲ့အဖြေပေးနိုင်တယ်။
+
+### Step 10: Context Assembly + LLM Call
+
+```php
+$response = $llm->complete($systemPrompt, $llmQuestion, $context, [
+    'temperature' => 0.3,
+    'max_tokens' => $this->maxTokens,
+]);
+```
+
+**ဘာလို့ temperature 0.3 လဲ?**
+- 0.0 → deterministic (တူတူမေးရင် တူတူဖြေ)
+- 1.0 → creative (စိတ်ကြိုက်တွေပါလာနိုင်တယ်)
+- RAG အတွက်က factual ဖြေဖို့လိုတယ် → 0.3 က balance ကောင်းတယ်
+
+### Step 11: Finish Reason Check
+
+```php
+if ($response->getFinishReason() === 'length') {
+    $content .= "\n\n*[မှတ်ချက်: အဖြေသည် သတ်မှတ်ထားသော token ကန့်သတ်ချက်ကို ကျော်လွန်နေသောကြောင့် ဖြတ်တောက်ထားပါသည်။]*";
+}
+```
+
+**ဘာလို့ဒီစစ်ဆေးမှုလိုတာလဲ?**
+LLM တွေမှာ max output token limit ရှိတယ်။ Limit ရောက်ရင် `finish_reason: "length"` ပြန်တယ် — စာကြောင်းမပြည့်ခင် ဖြတ်သွားတယ်။
+ဒီ code မရှိရင် user က ပြတ်နေတဲ့စာကိုမြင်ရမယ်။
+
+### Step 12: Save + Log
+
+```php
+$message = $this->saveAssistantMessage($session, $content, $sources);
+Log::channel(config('rag.logging.channel', 'rag'))->info('RAG pipeline: complete', [
+    'search_time_ms' => ..., 'llm_time_ms' => ..., 'tokens_used' => ...,
+]);
+```
+
+**ဘာလို့ log လုပ်တာလဲ?**
+- Performance monitoring (search က LLM ထက်မြန်လား? နှေးလား?)
+- Error tracking (ဘယ် step မှာ fail ဖြစ်လဲ?)
+- Token usage tracking (cost estimation အတွက်)
+
+---
+
+## 7. Document Upload & Processing — Flow အသေးစိတ်
+
+### ဘာလို့ processing က async လဲ?
+
+Document processing pipeline:
+```
+Upload → Validate → SHA-256 dedup → Store file → [JOB] Extract text → Chunk → Embed → Upsert vectors
+```
+
+တစ်ဆင့်ချင်းစီက ဘာလို့ဒီလိုလုပ်တာလဲ။
+
+### SHA-256 Dedup
+
+```php
+$fileHash = hash_file('sha256', $file->getPathname());
+$existing = Document::where('file_hash', $fileHash)->first();
+if ($existing) {
+    return response()->json([...], 409); // Conflict
+}
+```
+
+**ဘာလို့ file name မစစ်တာလဲ?**
+File name က ပြောင်းလို့ရတယ်။ "report.pdf" ဆိုတဲ့ file ၂ ခုရှိရင် တူတူလား? SHA-256 hash က content ကိုစစ်တယ် — file content တူရင် duplicate။
+
+**ဘာလို့ 409 (Conflict) ပြန်တာလဲ?**
+File content တူတယ် → အသစ်ထပ်တင်လို့မရဘူးဆိုတဲ့အဓိပ္ပါယ်။ 422 (Validation Error) မဟုတ်ဘူး — error မဟုတ်ဘူး၊ conflict ပဲ။
+
+### Text Extraction
+
+```php
+// PDF
+$parser = new \Smalot\PdfParser\Parser();
+$pdf = $parser->parseFile($path);
+$text = $pdf->getText();
+
+// DOCX
+$phpWord = \PhpOffice\PhpWord\IOFactory::load($path);
+// iterate sections → elements → get text
+```
+
+**ဘာလို့ PDF parser က page boundaries ကိုထိန်းတာလဲ?**
+Chunk ဖြတ်တဲ့အခါမှာ page break က natural separator ဖြစ်တယ်။
+ဥပမာ — "ဒီအကြောင်းအရာက စာမျက်နှာ ၅ မှာစပြီး ၆ မှာဆက်တယ်" ဆိုရင် page break မှာဖြတ်တာက logical ဖြစ်တယ်။
+
+### Recursive Character Text Splitter
+
+**ဘာလို့ recursive splitter သုံးတာလဲ?**
+ပုံမှန် splitter တွေက:
+- Fixed size: "aaaaaa\nbbbbbb" → "aaaaaa\nbb" ဆိုပြီး စာကြောင်းပြတ်သွားနိုင်တယ်
+- Sentence splitter: sentence တွေက အရမ်းရှည်နေရင် မဖြတ်နိုင်ဘူး
+
+Recursive splitter က:
+1. Paragraph (`\n\n`) နဲ့အရင်ဖြတ်ကြည့်
+2. မရရင် line break (`\n`) နဲ့
+3. မရရင် sentence (`.`) နဲ့
+4. မရရင် comma (`,`) နဲ့
+5. မရရင် character by character
+
+**ဘာလို့ overlap 200 လဲ?**
+Chunk 1 ရဲ့အဆုံးနဲ့ chunk 2 ရဲ့အစပိုင်းကို ထပ်ထားတယ်။
+ဒါမှ "ရောင်းအားက ၂၀၂၆ ခုနှစ်မှာ" ဆိုတဲ့ sentence က chunk 1 ရဲ့အဆုံးမှာပါပြီး chunk 2 ရဲ့အစမှာလည်းပါမယ်။
+Search လုပ်ရင် နှစ်မျိုးလုံးမှာတွေ့နိုင်တယ်။
+
+### Metadata Header
+
+```php
+$metaHeader = "Report by: {$userName}\nProject: {$project}\nDate: {$reportDate}\n\n";
+```
+
+**ဘာလို့ chunk content ရဲ့အစမှာ metadata ထည့်တာလဲ?**
+- LLM က "ဒီအပိုင်းက ဘယ် project အတွက်လဲ၊ ဘယ်ရက်စွဲလဲ" ဆိုတာ context ထဲမှာမြင်ရမယ်
+- FTS က "Project Orion" ဆိုတဲ့ keyword ကိုလည်းရှာနိုင်တယ် (document level column မှာလည်းရှိပေမယ့် chunk content ထဲမှာပါထည့်ထားတာ)
+- Vector embedding မှာလည်း metadata ပါသွားတယ် → "Project Orion" နဲ့ "2026-04" က semantic ဆက်စပ်မှုကိုလည်းဖမ်းတယ်
+
+---
+
+## 8. Authentication — ဘာလို့ Custom Token Auth လဲ?
+
+### ဘာလို့ Laravel Sanctum/Passport မသုံးတာလဲ?
+
+Sanctum က:
+- Cookie/Session based (SPA အတွက်ဆိုရင် CSRF protection လိုတယ်)
+- API token ထုတ်ပေးတယ် — ဒါပေမယ့် tokens table သပ်သပ်လိုတယ်
+
+Passport က:
+- OAuth2 (access token + refresh token) — SPA အတွက် overkill
+- Database tables ၆ ခုလောက်လိုတယ်
+- Complexity များတယ်
+
+**ဒီ project ရဲ့ auth:**
+```php
+// User မှာ api_token column တစ်ခုပဲ
+$token = bin2hex(random_bytes(40)); // 80-char hex
 $user = User::where('api_token', $token)->first();
-$request->merge(['authenticated_user' => $user]);
 ```
 
-This is a **custom implementation** — not Laravel Sanctum or Passport. Just a hex token stored in the `users` table.
+- Simple: token က user table ထဲမှာပဲရှိတယ်
+- Secure: random hex (80 chars = 320 bits entropy)
+- Stateless: token ကို DB မှာပဲစစ်
 
 ---
 
-## 10. Frontend (Vue 3 SPA)
+## 9. Frontend Architecture — Vue 3 Components တွေဘယ်လိုအလုပ်လုပ်လဲ
 
-### App Bootstrap
+### App.vue — Root Component
 
-`resources/js/app.js`:
-1. Create Vue app + Pinia
-2. Initialize auth store (check for token, validate with `/api/auth/me`)
-3. Mount the router
-4. Mount to `#app` div
+State ၃ ခု:
+- **Loading**: `!auth.isInitialized` — app က boot လုပ်နေတုန်း (pinia store က `/api/auth/me` ကိုခေါ်နေတယ်)
+- **Guest**: `!auth.isAuthenticated` — login/register page ပဲပြ
+- **Authenticated**: Header + sidebar + main content
 
-### Routing
+**ဘာလို့ `/api/auth/me` ကို app boot မှာခေါ်တာလဲ?**
+Token က localStorage မှာရှိတယ်။ ဒါပေမယ့် token က expire ဖြစ်နေနိုင်တယ် (server က regenerate)။
+Token ရှိရုံနဲ့ authenticated လို့မယူဘူး — server ကိုသွားစစ်မှရတယ်။
 
-`resources/js/router.ts` — 8 routes:
-| Path | Component | Guard |
-|------|-----------|-------|
-| `/login` | LoginPage | guest (redirect to / if logged in) |
-| `/register` | RegisterPage | guest |
-| `/` | ChatPage | auth (redirect to /login if not) |
-| `/documents` | DocumentsPage | auth |
-| `/settings/ai-models` | AiModelsPage | auth |
-| `/settings/ai-models/new` | AiModelManager | auth |
-| `/settings/ai-models/:id/edit` | AiModelManager | auth |
-| `/:pathMatch(.*)*` | → redirect to `/` | catch-all |
+### ChatInterface.vue — Main Chat
 
-### App.vue — The Root Component
+**Streaming ကို ဘယ်လိုကိုင်တွယ်လဲ?**
 
-Three main states:
-1. **Authenticated** (`auth.isAuthenticated`): Shows header (desktop nav + mobile hamburger) + main content area
-2. **Loading** (`!auth.isInitialized`): Shows spinning loader while checking auth
-3. **Guest** (`else`): Shows login/register pages (no header)
+```typescript
+// chatService.ts
+async function* askStream(question: string, ...): AsyncGenerator<StreamChunk> {
+    const response = await fetch('/api/chat?' + params);
+    const reader = response.body!.getReader();
+    // SSE: data: {...}\n\n
+    // တစ်ပိုင်းချင်းဖတ် → JSON parse → yield
+}
+```
 
-### Pinia Stores
+1. `fetch` ကို stream: true နဲ့ခေါ်
+2. `response.body.getReader()` ကိုသုံးပြီး chunk တွေကိုဖတ်
+3. Status event: "embedding..." → "searching..." → "generating..." (user ကိုပြ)
+4. Sources event: ဘယ် document တွေကိုသုံးလဲဆိုတာပြ
+5. Chunk events: typing effect အတွက်
 
-**authStore** — Authentication state:
-- `user`, `token`, `isLoading`, `isInitialized`, `isAuthenticated`
-- `init()` — check stored token, call `/api/auth/me`
-- `login()`, `register()`, `logout()`
-- Token stored in `localStorage('lumina_token')`
+**ဒီပုံစံရဲ့ အားသာချက်:**
+- User က စက္ကန့် ၃၀ စောင့်နေစရာမလိုဘူး
+- Processing stages တွေကိုမြင်ရတယ်
+- အဖြေစထွက်လာတာနဲ့ စဖတ်လို့ရတယ်
 
-**chatStore** — Chat functionality:
-- `sessions`, `currentSession`, `messages`, `isStreaming`, `currentStage`, `lastStreamMeta`
-- `sendMessage()` — streaming (default) or non-streaming
-- `abortStream()` — stop button
-- Stream callbacks: `onChunk`, `onSources`, `onStatus`, `onDone`, `onError`
+### DocumentsPage.vue — Document Table
 
-**documentStore** — Document management:
-- `documents`, `isLoading`, `meta` (pagination)
-- `fetchDocuments()` — server-side pagination with status/search/sort filters
-- `uploadDocument()`, `deleteDocument()`, `bulkDelete()`
+**ဘာလို့ server-side pagination သုံးတာလဲ?**
+Document ၁၀၀၀၀ ရှိတယ်ဆိုပါစို့။ Client ကို အကုန်ပို့ရင်:
+- Network: 10MB data တစ်ခါတည်းပို့ရမယ်
+- Memory: Browser က item 10000 ကို DOM မှာထားရမယ်
+- Search: JS နဲ့ filter လုပ်ရင် client မှာလေးတယ်
 
-### Key Components
-
-**ChatInterface.vue** — Main chat area:
-- Filter bar (document selection, date range, LLM model)
-- Message list with auto-scroll
-- Streaming indicator (stages: embedding/searching/generating)
-- Source citations (expandable)
-- Message input with send button
-- Shows tokens used + processing time
-
-**ChatSidebar.vue** — Session list:
-- List of past chat sessions
-- New Chat button
-- Session deletion
-
-**DocumentsPage.vue** — Document table:
-- Status tabs (All/Pending/Processing/Completed/Failed)
-- Search input (debounced 300ms)
-- Sortable columns
-- Server-side pagination with page size selector
-- Bulk select + batch delete
-- Upload button → DocumentUpload modal
-
-### API Layer
-
-`resources/js/services/api.ts` — Axios wrapper:
-- Base URL: `/api`
-- Auto-injects `Authorization: Bearer <token>` header
-- Auto-redirects to `/login` on 401
-- Helper functions: `get()`, `post()`, `put()`, `del()`, `upload()`
-
-Each feature has its own service file:
-- `authService.ts` — login, register, logout, me
-- `chatService.ts` — ask (streaming), sessions CRUD
-- `documentService.ts` — list, get, upload, update, delete
-- `aiModelService.ts` — CRUD for AI models
+Server-side pagination:
+- Request: `GET /api/documents?page=1&per_page=20&search=Orion&sort_key=created_at&sort_dir=desc`
+- Response: 20 items + pagination meta
+- Client: လက်ရှိစာမျက်နှာကို ပြရုံပဲ
 
 ---
 
-## 11. Configuration
+## 10. Configuration — Config vs Database Override
 
-### config/rag.php — The Central Knob
+### config/rag.php — Default Values
 
-Every RAG parameter is configurable via environment variables:
+```php
+'search' => [
+    'similarity_threshold' => (float) env('RAG_SEARCH_SIMILARITY_THRESHOLD', 0.65),
+],
+```
 
-| Config key | Env variable | Default | Description |
-|------------|-------------|---------|-------------|
-| `embedding.provider` | `RAG_EMBEDDING_PROVIDER` | `ollama` | `openai` or `ollama` |
-| `embedding.model` | `RAG_EMBEDDING_MODEL` | `nomic-embed-text:latest` | Embedding model |
-| `embedding.dimensions` | `RAG_EMBEDDING_DIMENSIONS` | `768` | Vector dimensions |
-| `embedding.batch_size` | `RAG_EMBEDDING_BATCH_SIZE` | `100` | Embedding batch size |
-| `embedding.cache_ttl` | `RAG_EMBEDDING_CACHE_TTL` | `86400` | Cache TTL (24h) |
-| `llm.provider` | `RAG_LLM_PROVIDER` | `ollama` | `openai` or `ollama` |
-| `llm.model` | `RAG_LLM_MODEL` | `qwen3.5:9b` | LLM model |
-| `llm.max_context_tokens` | `RAG_LLM_MAX_CONTEXT_TOKENS` | `32768` | Max context window |
-| `vector_store.driver` | `RAG_VECTOR_DRIVER` | `pgsql` | Only `pgsql` implemented |
-| `search.mode` | `RAG_SEARCH_MODE` | `hybrid` | `vector`, `fts`, or `hybrid` |
-| `search.top_k` | `RAG_SEARCH_TOP_K` | `5` | Number of results |
-| `search.similarity_threshold` | `RAG_SEARCH_SIMILARITY_THRESHOLD` | `0.65` | Minimum similarity |
-| `search.mmr.enabled` | `RAG_SEARCH_MMR_ENABLED` | `true` | MMR re-ranking |
-| `search.mmr.lambda` | `RAG_SEARCH_MMR_LAMBDA` | `0.7` | MMR diversity/relevance balance |
-| `chunking.chunk_size` | `RAG_CHUNK_SIZE` | `1000` | Characters per chunk |
-| `chunking.overlap` | `RAG_CHUNK_OVERLAP` | `200` | Overlap between chunks |
-| `chat.max_question_length` | `RAG_MAX_QUESTION_LENGTH` | `1000` | Max question chars |
-| `chat.max_messages_per_session` | `RAG_MAX_MESSAGES_PER_SESSION` | `100` | Message limit |
+ဒါက default ပဲ။ AiModel ရဲ့ `settings` JSONB က override လုပ်နိုင်တယ်:
+```php
+// RAGPipelineService constructor
+if (isset($s['similarity_threshold'])) {
+    $this->similarityThreshold = (float) $s['similarity_threshold'];
+}
+```
 
-### AiModel Registry (Database)
+**ဘာလို့ config file ရှိနေသေးတာလဲ? AiModel က source of truth မဟုတ်ဘူးလား?**
 
-The `ai_models` table overrides config defaults. The active model is determined by:
-- Type: `embedding` or `llm`
-- `is_active = true`
-- Ordered by `sort_order`
-- First active model wins
+၂ ခုလုံးက လိုတယ် — ဒါပေမယ့် layer ကွာတယ်:
 
-Each AiModel can also have a `settings` JSONB column that overrides pipeline settings (top_k, similarity_threshold, search_mode, etc.)
+| | config/rag.php | AiModel DB |
+|---|---|---|
+| **Purpose** | Build-time defaults + env binding | Runtime overrides |
+| **When used** | AiModel not found / field not set | When explicitly configured |
+| **Scope** | Global | Per-model |
+| **Examples** | `vector_store.driver`, `chunk_size`, `base_url`, `api_key` | `top_k`, `similarity_threshold`, `search_mode` |
+
+Config file ကို ဖျက်လို့မရတဲ့အကြောင်းရင်းတွေ:
+1. **AiModel table က empty ဖြစ်နိုင်တယ်** — fresh install, seeder မပြေးရသေး
+2. **Infrastructure settings** — `vector_store.driver`, `chunking.*`, `logging.*` တို့က per-model မဟုတ်ဘူး
+3. **Env binding** — Laravel က `env()` ကို config file ထဲမှာပဲသုံးလို့ရတယ်
+4. **58 call sites** — code တစ်ခုလုံးက `config('rag.xxx')` ကို ၅၈ နေရာမှာသုံးထားတယ်
 
 ---
 
-## 12. Commands & Tools
+## 11. Testing Strategy
 
-### Development
+### Backend: Pest PHP
 
-```bash
-composer run dev
-# Runs 4 processes concurrently:
-#   1. php artisan serve        → HTTP server
-#   2. php artisan queue:listen → Queue worker
-#   3. php artisan pail         → Log viewer
-#   4. npm run dev              → Vite dev server
-```
+**ဘာလို့ in-memory SQLite သုံးတာလဲ?**
+- PostgreSQL ကို testing အတွက်ဆောက်စရာမလိုဘူး
+- CI/CD pipeline မှာ PostgreSQL ထည့်စရာမလိုဘူး
+- Test တစ်ခုစီက `RefreshDatabase` သုံးတယ် → ပြီးရင် data တွေပျက်
+- SQLite က `:memory:` ဖြစ်တယ် → အမြန်ဆုံး
 
-### Testing
+**ဒါပေမယ့် pgvector features တွေကို မစမ်းနိုင်ဘူးဆိုတာ သိထားရမယ်**
+- Vector search ကို mock လုပ်ထားတယ်
+- FTS (tsvector) ကို SQLite မှာ support မလုပ်ဘူး
 
-```bash
-composer run test
-# Clears config cache, then runs all Pest tests
-# 53 tests (as of writing)
+**ဘာလို့ `QUEUE_CONNECTION=sync` လဲ?**
+Job တွေက background မှာပြေးရင် test က job ပြီးတာကိုစောင့်ရမယ်။
+`sync` ဆိုရင် job က synchronous ပြေးတယ် — test ထဲမှာ result ကိုချက်ချင်းစစ်လို့ရတယ်။
 
-# Run individual tests
-php artisan test --filter=TestName
-php artisan test --testsuite=Unit
-php artisan test --testsuite=Feature
-```
+### Root-level PHP Scripts
 
-### PHP Formatting
+`diagnostic.php`, `test_ask.php`, `bulk_fix_vectors.php` — ဒါတွေက test suite မဟုတ်ဘူး၊ **ad-hoc debugging scripts** တွေပဲ။
 
-```bash
-./vendor/bin/pint              # Format all PHP files
-./vendor/bin/pint --dirty      # Format only changed files
-```
-
-### Database
-
-```bash
-php artisan db:seed            # Seed demo data
-php artisan migrate            # Run pending migrations
-```
-
-### Vector Re-embedding
-
-```bash
-php artisan rag:reembed                        # Re-embed ALL documents
-php artisan rag:reembed --document={ulid}      # Re-embed one document
-```
+| | tests/ (Pest) | Root scripts |
+|---|---|---|
+| **Run ပုံ** | `php artisan test` | `php script.php` |
+| **DB** | SQLite `:memory:` | Real PostgreSQL |
+| **Mocking** | Yes (services တွေကို mock) | No (real API calls) |
+| **ဘာအတွက်လဲ** | Automated CI + regression | Manual debugging, one-off ops |
 
 ---
 
-## 13. Testing
+## 12. Key Design Decisions Summary
 
-### Backend (Pest PHP)
+### ဘာလို့ဒီလိုတွေလုပ်ထားတာလဲ — Quick Reference
 
-53 tests across 5 test files:
-
-| Test file | Type | What it tests |
-|-----------|------|---------------|
-| `tests/Feature/RAGPipelineEdgeCaseTest.php` | Feature | FTS stopword stripping, empty result fallback, Burmese query handling |
-| `tests/Feature/AiModelApiTest.php` | Feature | CRUD operations, validation, error handling |
-| `tests/Feature/ExampleTest.php` | Feature | Basic Laravel test |
-| `tests/Unit/ExampleTest.php` | Unit | Basic unit test |
-| `tests/Unit/LLMProviderTest.php` | Unit | LLM provider streaming logic |
-| `tests/Unit/VectorStoreServiceTest.php` | Unit | Vector search and filter behavior |
-
-**Test environment**:
-- SQLite `:memory:` (not PostgreSQL) — faster, but means pgvector features aren't tested
-- `QUEUE_CONNECTION=sync` — jobs run synchronously
-- `tests/Pest.php` — applies `RefreshDatabase` trait to Feature suite only
-
-### Frontend (Vitest)
-
-- `vitest.config.ts` + `resources/js/services/__tests__/`
-- Tests API layer and chat service
+| Decision | Reason |
+|----------|--------|
+| **Raw cURL instead of SDK** | Minimal dependencies, transparent debugging |
+| **No Repository layer** | CRUD-heavy မဟုတ်, abstraction overkill |
+| **No DB foreign keys** | ULIDs + future sharding, easier migrations |
+| **Vector shard tables** | pgvector dimension fixity, different models = different dims |
+| **Hybrid search (vector + FTS)** | Semantic + keyword matching, RRF fusion |
+| **Dynamic threshold** | Adaptive to score distribution, better than fixed cutoff |
+| **MMR re-ranking** | Diversity in context window, avoids redundant chunks |
+| **Streaming SSE** | Real-time UX, stages display, early text rendering |
+| **Custom token auth** | Simple, stateless, no extra tables |
+| **Module system** | Separation of concerns, independent testing |
+| **MD5 embedding cache** | Avoid redundant API calls, save cost |
+| **Recursive chunking** | Semantic boundaries preserved, graceful fallback |
+| **Metadata header in chunks** | LLM sees context (user/project/date) in each chunk |
+| **Follow-up inheritance** | Natural conversation flow without repeating context |
+| **Burmese language support** | Myanmar digit conversion, Burmese stopwords, month names |
 
 ---
 
-## 14. Key Conventions
+## 13. Common Pitfalls & How to Debug
 
-### PHP
-- `declare(strict_types=1);` at the **top** of every PHP file
-- ULIDs for all primary keys (use `HasUlids` trait)
-- No DB-level foreign keys — enforce in service code
-- Controllers are thin: validate + dispatch to service
-- Services are thick: all business logic, interact with Models directly
-- No Repository layer — Services + Models is enough
+### "No chunks found" / Refusal
 
-### Frontend
-- Composition API + `<script setup lang="ts">`
-- Pinia stores use the setup function syntax (not options API)
-- TypeScript interfaces in `types/index.ts`
-- Components in `components/`, pages in `pages/`
-- CSS via Tailwind utility classes
-- Services layer sits between stores and API
+Possible reasons:
+1. **Similarity threshold too high** → Check `config('rag.search.similarity_threshold')`
+2. **Wrong embedding model** → Document က model A, question က model B (dimension mismatch)
+3. **Date filter too narrow** → Check `extractFiltersFromQuestion()` output
+4. **FTS query empty** → `refineFtsQuery()` က fallback "report" ပဲကျန်တယ်
 
-### Database
-- All timestamps: `TIMESTAMPTZ` (not `TIMESTAMP`)
-- Soft deletes everywhere (`deleted_at` column)
-- JSONB for structured metadata (sources, settings)
-- Vectors: per-dimension shard tables with IVFFlat indexes
+Debug: `php diagnostic.php` — ဒီ script က step-by-step debug လုပ်ပေးတယ်
 
-### AI Models
-- OpenAI/Ollama calls go through **raw cURL** — no SDKs
-- All AI communication behind interfaces (`EmbeddingProviderInterface`, `LLMProviderInterface`)
-- Embeddings are MD5-cached (24h TTL)
-- The `ai_models` database table is the **source of truth** for which model/provider is active
+### "Response cut off mid-sentence"
+
+→ `finish_reason: "length"` — LLM က max output token limit ကိုရောက်သွားတယ်
+
+Fix: `.env` မှာ `RAG_LLM_MAX_TOKENS=8192` ထည့် (သို့) AiModel settings မှာ `max_tokens` ကိုမြှင့်
+
+### "Follow-up doesn't work"
+
+1. Check if previous answer was a refusal (date inheritance skips on refusal)
+2. Check if `extractFiltersFromQuestion()` extracts the new date correctly
+3. Run `php test_extraction.php` to see what filters are extracted
 
 ---
 
-## Quick Reference: Request → Response Flow
+## 14. How to Extend This Project
 
-### Chat (Streaming)
-```
-Browser                    Laravel                     Ollama/OpenAI
-  │                          │                            │
-  ├─ POST /api/chat ────────→│                            │
-  │   {question, stream:true}│                            │
-  │                          ├─ Embed question ──────────→│
-  │                          │←──── vector ───────────────│
-  │                          │                            │
-  │                          ├─ Hybrid search ────────────│
-  │                          │  (vector + FTS)            │
-  │                          │  → relevant chunks          │
-  │                          │                            │
-  │  ←── SSE: status ────────┤                            │
-  │  ←── SSE: sources ───────┤                            │
-  │                          ├─ LLM call ────────────────→│
-  │  ←── SSE: chunk ─────────┤←── stream tokens ──────────│
-  │  ←── SSE: chunk ─────────┤                            │
-  │  ←── SSE: done ──────────┤                            │
-  │                          ├─ Save messages to DB       │
-```
+### Add a new embedding/LLM provider (e.g., Anthropic)
 
-### Document Upload
-```
-Browser                    Laravel                      Ollama
-  │                          │                            │
-  ├─ POST /api/documents ───→│                            │
-  │   (multipart)            ├─ Validate file              │
-  │                          ├─ SHA-256 dedup check        │
-  │                          ├─ Store file                 │
-  │                          ├─ Create Document (pending)  │
-  │                          ├─ Dispatch ProcessDocumentJob│
-  │  ←── 201 + document ─────┤                            │
-  │                          │                            │
-  │                          ├─ ProcessDocumentJob:        │
-  │                          │  ├─ Extract text            │
-  │                          │  ├─ Chunk text             │
-  │                          │  ├─ Save chunks (with FTS)  │
-  │                          │  ├─ Embed batch ──────────→│
-  │                          │  │←── vectors ─────────────│
-  │                          │  └─ Upsert vectors          │
-  │                          ├─ Mark completed             │
-```
+1. Create provider class: `AnthropicLLMProvider.php` implements `LLMProviderInterface`
+2. Register in `ProviderFactory.php`
+3. Add provider option in `AiModelForm.vue`
+4. Update validation in `AiModelService.php`
+
+### Add a new search mode
+
+1. Add mode to `VectorStoreService.php`
+2. Add config option in `config/rag.php`
+3. Add setting in `AiModelForm.vue`
+
+### Add a new module
+
+1. Create `modules/NewModule/` directory
+2. Add PSR-4 namespace in `composer.json`
+3. Register `ServiceProvider` in `config/app.php`
+4. Run `composer dump-autoload`
 
 ---
 
-> **Tip**: The best way to learn is to run `composer run dev`, open the app, upload a document, and ask questions. Then read the code top-down: start with the route (e.g. `Routes/chat.php`), follow to the Controller, then to the Service. The AGENTS.md files in each module give a high-level overview.
+> **အကြံပြုချက်:** Codebase ကို နားလည်ဖို့အကောင်းဆုံးနည်းလမ်းက `composer run dev` နဲ့ run ပြီး document upload → chat လုပ် → ပြီးရင် route → controller → service ဆိုပြီး top-down လိုက်ဖတ်ကြည့်ပါ။ Module တစ်ခုချင်းစီမှာရှိတဲ့ AGENTS.md က quick overview ပေးပါတယ်။
