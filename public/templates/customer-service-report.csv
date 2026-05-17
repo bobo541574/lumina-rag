@@ -1,0 +1,13 @@
+Title,Department,Agent,Report Date
+"Monthly Support Summary","Customer Success","Elena Rodriguez",2026-05-15
+
+Case ID,Customer Name,Issue Type,Priority,Status,Response Time (h),Satisfaction,Description,Resolution
+CASE-001,John Smith,Billing,High,Resolved,2,5/5,"Incorrect charge on invoice","Refund processed"
+CASE-002,Jane Doe,Bug,Medium,Open,4,,"Login page crashes on Safari","Awaiting dev fix"
+CASE-003,Bob Lee,Feature Request,Low,In Progress,8,,"Export to PDF option","Under development"
+CASE-004,Alice Wang,Account,High,Resolved,1,4/5,"Cannot reset password","Password reset link sent"
+CASE-005,Tom Brown,Account,Medium,Resolved,3,5/5,"Update billing address","Address updated"
+
+Issue Pattern,Frequency,Suggested Solution
+"Password reset failures",12/month,"Improve error messaging"
+"Slow page load",8/month,"CDN optimization needed"

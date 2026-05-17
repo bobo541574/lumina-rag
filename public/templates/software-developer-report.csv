@@ -1,0 +1,15 @@
+Title,Project,Developer,Report Date
+"Sprint 12 Development Report","Project Orion","Sarah Chen",2026-05-15
+
+Ticket ID,Type,Description,Status,Priority,Hours,Date
+TICKET-123,Feature,"User authentication module","Completed",High,16,2026-05-14
+TICKET-124,Bug,"Login page crash on Safari","Resolved",High,4,2026-05-13
+TICKET-125,Feature,"Dashboard widgets","In Progress",Medium,8,2026-05-15
+TICKET-126,Refactor,"Database query optimization","Pending",Low,0,2026-05-16
+
+Dependency,Current Version,New Version,Reason
+laravel/framework,11.0.0,11.2.0,Security patch
+spatie/laravel-permission,6.0.0,6.4.0,New features
+
+Blocker,Description,Status,Owner
+API rate limiting,"Third-party API hitting rate limit","Waiting on vendor",James

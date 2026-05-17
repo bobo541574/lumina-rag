@@ -1,0 +1,21 @@
+Title,Department,Author,Report Date
+"Weekly Operations Summary","Operations","Admin User",2026-05-15
+
+Item,Category,Status,Value,Notes
+"Server migration","Infrastructure",Completed,,"All servers migrated successfully"
+"Team training","HR",In Progress,12,"12/20 staff completed"
+"Vendor contract renewal","Procurement",Pending,50000,"Awaiting legal review"
+"Customer survey","Marketing",Completed,4.2/5,"200 responses received"
+
+Metric,Target,Actual,Variance
+Uptime (%),99.9,99.95,+0.05
+Response time (ms),200,185,-15
+Customer satisfaction,4.5,4.2,-0.3
+
+Issue,Impact,Status,Owner
+"VPN outage","20 min downtime","Resolved","IT team"
+"Low survey response","Insufficient data","Monitoring","Marketing"
+
+Action,Owner,Due Date,Status
+"Update runbooks",James,2026-05-20,Pending
+"Review Q3 budget",Marcus,2026-05-25,In Progress

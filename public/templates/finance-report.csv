@@ -1,0 +1,22 @@
+Title,Project,Prepared By,Report Date,Period Covered
+"Q2 Financial Summary","Project Orion","James Okafor",2026-05-15,"2026-04-01 to 2026-05-15"
+
+Category,Budget ($),Actual ($),Variance ($),Variance %,Notes
+Revenue,100000.00,95000.00,-5000.00,-5%,"Lower due to delayed launch"
+COGS,40000.00,38000.00,-2000.00,-5%,
+Gross Profit,60000.00,57000.00,-3000.00,-5%,
+Operating Expenses,30000.00,32000.00,2000.00,6.7%,"Overtime costs"
+Net Profit,30000.00,25000.00,-5000.00,-16.7%,
+
+Revenue Stream,Projected ($),Actual ($),% of Total
+Stream A,50000.00,48000.00,50.5
+Stream B,30000.00,28000.00,29.5
+Stream C,20000.00,19000.00,20.0
+
+Expense Category,Budget ($),Actual ($),Notes
+Personnel,15000.00,16000.00,"Hiring bonus"
+Infrastructure,5000.00,4800.00,
+Software / Tools,3000.00,3200.00,"New license"
+Professional Services,5000.00,6000.00,"Consulting fees"
+Travel & Expenses,1000.00,1000.00,
+Other,1000.00,1000.00,

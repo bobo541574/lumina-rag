@@ -1,0 +1,21 @@
+Title,Project,Coordinator,Report Date
+"Weekly Project Status","Project Orion","Marcus Johnson",2026-05-15
+
+Area,Status,Notes
+Scope,On Track,"Requirements finalized for Q3"
+Schedule,At Risk,"Frontend delivery delayed by 1 week"
+Budget,On Track,"Under budget by 5%"
+Quality,On Track,"All tests passing"
+
+Milestone,Planned Date,Actual Date,Status
+"MVP Release",2026-06-01,2026-05-28,Completed
+"Beta Launch",2026-07-15,,In Progress
+"Production Release",2026-09-01,,Not Started
+
+Risk ID,Description,Impact,Probability,Mitigation,Owner
+RISK-001,"Key developer turnover",High,Medium,"Cross-train team members",Marcus
+RISK-002,"Cloud cost overrun",Medium,Low,"Reserved instances",Elena
+
+Action,Owner,Due Date,Status
+"Finalize UI mockups",Sarah,2026-05-20,In Progress
+"Security audit",James,2026-05-25,Pending

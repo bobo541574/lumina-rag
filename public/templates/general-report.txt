@@ -1,0 +1,43 @@
+GENERAL REPORT
+
+Title: 
+Department: 
+Author: 
+Report Date: 
+
+PURPOSE
+(What this report covers and why it was created)
+
+KEY POINTS
+- Point 1
+- Point 2
+- Point 3
+
+DETAILS
+
+Section 1:
+(Detailed content)
+
+Section 2:
+(Detailed content)
+
+Section 3:
+(Detailed content)
+
+DATA & SUPPORTING INFORMATION
+Item: Value - Notes
+Metric 1: Value - Note
+Metric 2: Value - Note
+
+ISSUES & CHALLENGES
+- Issue: Description - Impact - Status
+
+ACTION ITEMS
+Action - Owner - Due Date - Status
+
+CONCLUSION
+(Summary conclusion and recommendations)
+
+ATTACHMENTS / REFERENCES
+- Reference 1
+- Reference 2

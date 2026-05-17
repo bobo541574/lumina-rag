@@ -1,0 +1,33 @@
+PROJECT COORDINATOR REPORT
+
+Title: 
+Project: 
+Coordinator: 
+Report Date: 
+
+EXECUTIVE SUMMARY
+(High-level project status overview)
+
+PROJECT STATUS
+Scope: On Track / At Risk / Behind - Notes
+Schedule: On Track / At Risk / Behind - Notes
+Budget: On Track / At Risk / Behind - Notes
+Quality: On Track / At Risk / Behind - Notes
+
+MILESTONES
+Milestone 1: Planned YYYY-MM-DD, Actual YYYY-MM-DD - Completed
+Milestone 2: Planned YYYY-MM-DD, Actual YYYY-MM-DD - In Progress
+Milestone 3: Planned YYYY-MM-DD - Not Started
+
+RISKS & ISSUES
+1. Risk description - Impact (H/M/L) - Probability (H/M/L) - Mitigation - Owner
+
+RESOURCE ALLOCATION
+Team Member: Allocation %, Capacity Remaining %, Notes
+
+ACTION ITEMS
+Action - Owner - Due Date - Status
+
+NEXT PERIOD PRIORITIES
+1. Priority item
+2. Priority item

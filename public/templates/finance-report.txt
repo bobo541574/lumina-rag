@@ -1,0 +1,41 @@
+FINANCE REPORT
+
+Title: 
+Department / Project: 
+Prepared By: 
+Report Date: 
+Period Covered: 
+
+EXECUTIVE SUMMARY
+(Key financial highlights and concerns)
+
+FINANCIAL OVERVIEW
+Category: Budget ($) - Actual ($) - Variance ($) - Variance %
+Revenue: 0.00 - 0.00 - 0.00 - 0%
+Cost of Goods Sold: 0.00 - 0.00 - 0.00 - 0%
+Gross Profit: 0.00 - 0.00 - 0.00 - 0%
+Operating Expenses: 0.00 - 0.00 - 0.00 - 0%
+Net Profit / Loss: 0.00 - 0.00 - 0.00 - 0%
+
+REVENUE BREAKDOWN
+Revenue Stream 1: Budget 0.00, Actual 0.00, % of Total 0%
+Revenue Stream 2: Budget 0.00, Actual 0.00, % of Total 0%
+
+EXPENSE DETAILS
+Personnel: Budget 0.00, Actual 0.00 - Notes
+Infrastructure: Budget 0.00, Actual 0.00 - Notes
+Software / Tools: Budget 0.00, Actual 0.00 - Notes
+Professional Services: Budget 0.00, Actual 0.00 - Notes
+Travel & Expenses: Budget 0.00, Actual 0.00 - Notes
+Other: Budget 0.00, Actual 0.00 - Notes
+
+BUDGET VARIANCE ANALYSIS
+(Explain any notable over/under spending)
+
+FORECAST
+Revenue: Projected 0.00 - Confidence H/M/L
+Expenses: Projected 0.00 - Confidence H/M/L
+
+NOTES & RISKS
+- Note 1
+- Note 2
