@@ -84,6 +84,16 @@
 </template>
 
 <script setup lang="ts">
+/**
+ * Register Page
+ *
+ * Registration form for new users. On success, auto-authenticates and
+ * redirects to the chat page. Displays per-field validation errors from
+ * the server inline, with fallback to a global error message.
+ *
+ * @prop {void} - This page is route-driven; no custom props
+ * @emits {void} - Navigation is handled via router after successful registration
+ */
 import { ref } from 'vue'
 import AppInput from '../components/ui/AppInput.vue'
 import AppButton from '../components/ui/AppButton.vue'
@@ -100,12 +110,27 @@ const isLoading = ref(false)
 const globalError = ref<string | null>(null)
 const fieldErrors = ref<Record<string, string>>({})
 
+/**
+ * Clear a single field's validation error
+ *
+ * Called when the user starts typing in a field that had an error.
+ *
+ * @param {string} field The field name. Example: "email"
+ */
 function clearFieldError(field: string) {
   if (fieldErrors.value[field]) {
     delete fieldErrors.value[field]
   }
 }
 
+/**
+ * Apply server-side validation errors to the form
+ *
+ * Converts the Laravel-style errors object (field → array of messages)
+ * into a flat field → first message map for inline display.
+ *
+ * @param {Record<string, string[] | string>} errors Server errors object. Example: { email: ["The email field is required."] }
+ */
 function applyServerErrors(errors: Record<string, string[] | string>) {
   const next: Record<string, string> = {}
   for (const [field, messages] of Object.entries(errors)) {
@@ -114,6 +139,13 @@ function applyServerErrors(errors: Record<string, string[] | string>) {
   fieldErrors.value = next
 }
 
+/**
+ * Handle registration form submission
+ *
+ * Validates client-side presence, calls the auth store register action,
+ * and redirects to the home page on success. Displays per-field or
+ * global server errors on failure.
+ */
 async function handleRegister() {
   if (!name.value.trim() || !email.value.trim() || !password.value) return
 

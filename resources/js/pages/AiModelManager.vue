@@ -50,6 +50,16 @@
 </template>
 
 <script setup lang="ts">
+/**
+ * AI Model Manager Page
+ *
+ * Create/edit form for AI model registry entries. Determines mode (create vs
+ * edit) from the route params. On edit mode, fetches the existing model data
+ * and passes it to the AiModelForm component.
+ *
+ * @prop {void} - Route-driven (route.params.id determines mode)
+ * @emits {void} - Navigation is handled via router
+ */
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AiModelForm from '../components/AiModelForm.vue'
@@ -89,6 +99,11 @@ onMounted(async () => {
   }
 })
 
+/**
+ * Handle form submission (create or update)
+ *
+ * @param {Record<string, unknown>} payload Form values. Example: { name: "GPT-4o", type: "llm", provider: "openai", ... }
+ */
 async function handleSubmit(payload: Record<string, unknown>) {
   isSaving.value = true
   saveError.value = null
@@ -109,6 +124,9 @@ async function handleSubmit(payload: Record<string, unknown>) {
   }
 }
 
+/**
+ * Navigate back to the AI models list
+ */
 function goBack() {
   router.push({ name: 'ai-models' })
 }

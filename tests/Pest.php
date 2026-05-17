@@ -14,7 +14,13 @@ expect()->extend('toBeOne', function () {
     return $this->toBe(1);
 });
 
-function something()
+/**
+ * Placeholder helper for demonstration purposes
+ *
+ * Exists only as an example in the Pest bootstrap file.
+ * Not used by any test suite.
+ */
+function something(): void
 {
     // ..
 }

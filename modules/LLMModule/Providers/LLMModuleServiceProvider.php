@@ -11,8 +11,30 @@ use Modules\LLMModule\Services\LLMService;
 use Modules\LLMModule\Services\OllamaLLMProvider;
 use Modules\LLMModule\Services\OpenAILLMProvider;
 
+/**
+ * LLM Module Service Provider
+ *
+ * Registers the LLM Module's core services into the Laravel container.
+ * Binds the LLMProviderInterface to a concrete provider (OpenAI or Ollama)
+ * based on config/rag.php settings, and binds the LLMServiceInterface to
+ * the LLMService that wraps the provider with prompt assembly logic.
+ *
+ * The provider is selected by the `rag.llm.provider` config value, defaulting
+ * to OpenAI. Ollama requires a local running instance at the configured base_url.
+ *
+ * @throws \RuntimeException If the configured provider type is not supported
+ */
 class LLMModuleServiceProvider extends ServiceProvider
 {
+    /**
+     * Register module services in the container.
+     *
+     * Creates two singletons:
+     * 1. LLMProviderInterface — concrete provider based on config
+     * 2. LLMServiceInterface — prompt-assembly service wrapping the provider
+     *
+     * @return void
+     */
     public function register(): void
     {
         $this->app->singleton(LLMProviderInterface::class, function (): LLMProviderInterface {
@@ -38,6 +60,14 @@ class LLMModuleServiceProvider extends ServiceProvider
         ));
     }
 
+    /**
+     * Boot module services.
+     *
+     * Checks if the module is enabled via config and returns early if not.
+     * No additional boot-time actions are currently performed.
+     *
+     * @return void
+     */
     public function boot(): void
     {
         if (! config('modules.modules.llm.enabled', true)) {

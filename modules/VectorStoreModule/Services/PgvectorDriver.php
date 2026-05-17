@@ -9,22 +9,64 @@ use Illuminate\Support\Str;
 use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
 use Modules\VectorStoreModule\Models\VectorEmbedding;
 
+/**
+ * pgvector Vector Store Driver
+ *
+ * Implements VectorStoreInterface using PostgreSQL's pgvector extension.
+ * Stores vectors in dimension-based shard tables (ve_{384,768,1024,1536,3072})
+ * with IVFFlat indexes for efficient cosine similarity search. Metadata-only
+ * records are kept in the vector_embeddings table for cross-shard operations.
+ *
+ * Supports pure vector search and hybrid search (vector + full-text via
+ * plainto_tsquery on the document_chunks.tsv_content column). Results from
+ * both search strategies are fused using Reciprocal Rank Fusion (RRF).
+ *
+ * Falls back to SQLite-compatible in-memory cosine similarity when the
+ * database driver is SQLite (used during testing).
+ *
+ * @param  DatabaseManager  $db  Laravel database manager. Example: app(DatabaseManager::class)
+ *
+ * @throws \RuntimeException On database connection failures or query errors
+ */
 class PgvectorDriver implements VectorStoreInterface
 {
+    /** @var DatabaseManager Laravel database manager for executing queries */
     private DatabaseManager $db;
 
+    /** @var array<int> Supported vector dimension shard table sizes */
     private const DIM_TABLES = [384, 768, 1024, 1536, 3072];
 
+    /** @var int Maximum supported vector dimensions */
     private const DIM_MAX = 3072;
 
+    /** @var bool Whether the database driver is SQLite (triggers fallback) */
     private bool $isSqlite;
 
+    /**
+     * @param  DatabaseManager  $db  Laravel database manager. Example: app(DatabaseManager::class)
+     */
     public function __construct(DatabaseManager $db)
     {
         $this->db = $db;
         $this->isSqlite = $db->getDriverName() === 'sqlite';
     }
 
+    /**
+     * Upsert vectors into the vector store.
+     *
+     * Inserts a metadata record into the vector_embeddings table and, when
+     * not using SQLite, stores the actual vector in the appropriate dimension
+     * shard table. Each vector gets a new ULID.
+     *
+     * @param  array  $vectors  Array of float vectors. Example: [[0.012, -0.034, ...], [0.023, 0.045, ...]]
+     * @param  array  $metadata  Per-vector metadata (model_name, content_hash). Example: [["model_name" => "text-embedding-ada-002", "content_hash" => "a1b2c3"], ...]
+     * @param  string|array  $chunkId  Chunk ULID(s) associated with these vectors. Example: "01J..." or ["01J...", "01J..."]
+     * @param  string  $namespace  Namespace/scope (currently unused but reserved). Example: "default"
+     * @return array Array of newly created vector ULIDs. Example: ["01JAR...", "01JAS...", "01JAT..."]
+     *
+     * @throws \RuntimeException When the database insert fails
+     * @throws \InvalidArgumentException When vector dimensions exceed DIM_MAX
+     */
     public function upsert(array $vectors, array $metadata, string|array $chunkId, string $namespace): array
     {
         $chunkIds = is_array($chunkId) ? $chunkId : array_fill(0, count($vectors), $chunkId);
@@ -66,6 +108,24 @@ class PgvectorDriver implements VectorStoreInterface
         return $ids;
     }
 
+    /**
+     * Perform a hybrid search combining vector cosine similarity and full-text search.
+     *
+     * Runs vector search (cosine distance via <=> operator on the shard table)
+     * and full-text search (plainto_tsquery on document_chunks.tsv_content) in
+     * parallel, then fuses results using Reciprocal Rank Fusion (RRF). Results
+     * below the similarity_threshold filter are excluded.
+     *
+     * On SQLite, falls back to pure vector search with in-memory cosine similarity.
+     *
+     * @param  string  $queryText  Raw query text for FTS. Example: "What is Project Orion?"
+     * @param  array  $queryVector  Query vector. Example: [0.012, -0.034, ..., 0.098]
+     * @param  int  $topK  Number of results to return. Example: 5
+     * @param  array  $filters  Metadata filters. Example: ["project" => "Orion", "similarity_threshold" => 0.65]
+     * @return array Fused result objects. Example: [["chunk_id" => "01J...", "similarity_score" => 0.87, "content" => "...", "document_title" => "Report.pdf"]]
+     *
+     * @throws \RuntimeException When a database query fails
+     */
     public function searchHybrid(string $queryText, array $queryVector, int $topK = 5, array $filters = []): array
     {
         if ($this->isSqlite) {
@@ -134,6 +194,23 @@ class PgvectorDriver implements VectorStoreInterface
         return $this->fuseResults($vectorResults, $ftsResults, $topK);
     }
 
+    /**
+     * Perform a pure vector similarity search.
+     *
+     * Searches the dimension shard table using cosine distance (<=> operator)
+     * with an IVFFlat index. Joins with document_chunks and documents to
+     * return rich result objects. Applies similarity_threshold filtering
+     * and optional metadata filters.
+     *
+     * On SQLite, falls back to in-memory cosine similarity computation.
+     *
+     * @param  array  $queryVector  Query vector. Example: [0.012, -0.034, ..., 0.098]
+     * @param  int  $topK  Number of results to return. Example: 5
+     * @param  array  $filters  Metadata filters. Example: ["project" => "Orion", "user_ids" => ["01J..."]]
+     * @return array Result objects with similarity_score. Example: [["chunk_id" => "01J...", "similarity_score" => 0.92, "content" => "...", "document_title" => "Report.pdf"]]
+     *
+     * @throws \RuntimeException When a database query fails
+     */
     public function search(array $queryVector, int $topK = 5, array $filters = []): array
     {
         if ($this->isSqlite) {
@@ -174,6 +251,19 @@ class PgvectorDriver implements VectorStoreInterface
         );
     }
 
+    /**
+     * Perform vector search using SQLite's in-memory cosine similarity.
+     *
+     * Fallback path used when the database driver is SQLite (testing).
+     * Loads all vector_embeddings records, computes cosine similarity in
+     * PHP, sorts, filters by threshold, and returns top K results.
+     *
+     * @param  array  $queryVector  Query vector. Example: [0.012, -0.034, ..., 0.098]
+     * @param  int  $topK  Number of results to return. Example: 5
+     * @param  array  $filters  Metadata filters. Example: ["project" => "Orion"]
+     * @param  string|null  $queryText  Unused in SQLite fallback. Example: null
+     * @return array Result objects with similarity_score. Example: [["chunk_id" => "01J...", "similarity_score" => 0.92, "content" => "..."]]
+     */
     private function searchSqlite(array $queryVector, int $topK, array $filters, ?string $queryText = null): array
     {
         $threshold = (float) ($filters['similarity_threshold'] ?? 0.65);
@@ -216,6 +306,18 @@ class PgvectorDriver implements VectorStoreInterface
         return $results;
     }
 
+    /**
+     * Delete vectors by their ULIDs.
+     *
+     * Removes records from both the dimension shard tables (PostgreSQL only)
+     * and the vector_embeddings metadata table. Shard table deletions are
+     * wrapped in try/catch since the table may not exist for all dimensions.
+     *
+     * @param  array  $ids  Array of vector ULIDs to delete. Example: ["01JAR...", "01JAS..."]
+     * @return void
+     *
+     * @throws \RuntimeException When the vector_embeddings delete fails
+     */
     public function delete(array $ids): void
     {
         if (! $this->isSqlite) {
@@ -230,6 +332,18 @@ class PgvectorDriver implements VectorStoreInterface
         VectorEmbedding::whereIn('id', $ids)->delete();
     }
 
+    /**
+     * Delete all vectors belonging to a document.
+     *
+     * Finds all chunk ULIDs for the given document, then removes vectors
+     * from both the dimension shard tables (PostgreSQL only) and the
+     * vector_embeddings metadata table. No-op if the document has no chunks.
+     *
+     * @param  string  $documentId  Document ULID. Example: "01JAR..."
+     * @return void
+     *
+     * @throws \RuntimeException When the database delete query fails
+     */
     public function deleteByDocumentId(string $documentId): void
     {
         $chunkIds = $this->db->table('document_chunks')
@@ -257,6 +371,14 @@ class PgvectorDriver implements VectorStoreInterface
             ->delete();
     }
 
+    /**
+     * Get vector store statistics.
+     *
+     * Queries the vector_embeddings table for total count, count grouped
+     * by dimensions, and count grouped by model name.
+     *
+     * @return array Stats with total_vectors, by_dimensions, by_model. Example: ["total_vectors" => 1500, "by_dimensions" => [768 => 500, 1536 => 1000], "by_model" => ["text-embedding-ada-002" => 1000, "nomic-embed-text" => 500]]
+     */
     public function getStats(): array
     {
         $count = VectorEmbedding::count();
@@ -276,6 +398,15 @@ class PgvectorDriver implements VectorStoreInterface
         ];
     }
 
+    /**
+     * Resolve the nearest dimension shard table name for a given dimensionality.
+     *
+     * Finds the closest entry in DIM_TABLES to the requested dimensions and
+     * returns the corresponding table name (e.g., "ve_1536").
+     *
+     * @param  int  $dimensions  Vector dimensionality. Example: 1536
+     * @return string Shard table name. Example: "ve_1536"
+     */
     private function resolveDimTable(int $dimensions): string
     {
         $nearest = self::DIM_TABLES[0];
@@ -288,6 +419,17 @@ class PgvectorDriver implements VectorStoreInterface
         return "ve_{$nearest}";
     }
 
+    /**
+     * Apply metadata filters to a vector search query builder.
+     *
+     * Supports filters: document_ids, date_from, date_to, user_ids, project,
+     * report_date_from, report_date_to, model_name.
+     *
+     * @param  mixed  $query  Query builder instance. Example: DB::table('ve_1536 as ve')
+     * @param  array  $filters  Filter conditions. Example: ["project" => "Orion", "user_ids" => ["01J..."]]
+     * @param  string  $alias  Table alias used in the query. Example: "ve"
+     * @return mixed Query builder with WHERE clauses applied
+     */
     private function applyFiltersVector($query, array $filters, string $alias): mixed
     {
         if (isset($filters['document_ids'])) {
@@ -318,6 +460,17 @@ class PgvectorDriver implements VectorStoreInterface
         return $query;
     }
 
+    /**
+     * Apply metadata filters to a full-text search query builder.
+     *
+     * Supports filters: document_ids, date_from, date_to, user_ids, project,
+     * report_date_from, report_date_to. Note: model_name filter is not
+     * supported in FTS queries (handled by vector query only).
+     *
+     * @param  mixed  $query  Query builder instance. Example: DB::table('document_chunks as dc')
+     * @param  array  $filters  Filter conditions. Example: ["project" => "Orion"]
+     * @return mixed Query builder with WHERE clauses applied
+     */
     private function applyFiltersFts($query, array $filters): mixed
     {
         if (isset($filters['document_ids'])) {
@@ -345,6 +498,19 @@ class PgvectorDriver implements VectorStoreInterface
         return $query;
     }
 
+    /**
+     * Fuse vector and FTS results using Reciprocal Rank Fusion (RRF).
+     *
+     * Each result from both sets is scored as 1/(k + rank) where k is a
+     * constant (default 60). Scores are summed for chunks that appear in
+     * both result sets. Final scores are normalised to 0-1 range so
+     * downstream threshold filtering (designed for cosine similarity) works.
+     *
+     * @param  array  $vectorResults  Results from vector search. Example: [["chunk_id" => "01J...", "similarity_score" => 0.9], ...]
+     * @param  array  $ftsResults  Results from full-text search. Example: [["chunk_id" => "01J...", "fts_score" => 0.8], ...]
+     * @param  int  $topK  Number of results to return after fusion. Example: 5
+     * @return array Fused results sorted by RRF score, limited to topK. Example: [["chunk_id" => "01J...", "similarity_score" => 1.0, "content" => "..."]]
+     */
     private function fuseResults(array $vectorResults, array $ftsResults, int $topK): array
     {
         $k = 60;
@@ -387,6 +553,16 @@ class PgvectorDriver implements VectorStoreInterface
         return $results;
     }
 
+    /**
+     * Compute the cosine similarity between two vectors.
+     *
+     * Calculates dot product divided by the product of Euclidean norms.
+     * Returns 0.0 if either vector has zero magnitude.
+     *
+     * @param  array  $a  First float vector. Example: [0.1, 0.2, 0.3]
+     * @param  array  $b  Second float vector. Example: [0.4, 0.5, 0.6]
+     * @return float Cosine similarity between -1 and 1. Example: 0.975
+     */
     private function cosineSimilarity(array $a, array $b): float
     {
         $dot = 0.0;

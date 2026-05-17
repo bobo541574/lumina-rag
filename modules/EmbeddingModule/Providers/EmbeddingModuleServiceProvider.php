@@ -13,8 +13,29 @@ use Modules\EmbeddingModule\Services\OllamaEmbeddingProvider;
 use Modules\EmbeddingModule\Services\OpenAIEmbeddingProvider;
 use Modules\EmbeddingModule\Services\ProviderFactory;
 
+/**
+ * Embedding Module Service Provider
+ *
+ * Registers the Embedding Module's core services into the Laravel container.
+ * Binds the EmbeddingProviderInterface to a concrete provider (OpenAI or
+ * Ollama) based on config/rag.php settings, and binds the
+ * EmbeddingServiceInterface to the caching EmbeddingService wrapper.
+ *
+ * Also registers the ProviderFactory as a singleton for runtime provider
+ * creation based on AiModel records.
+ *
+ * @throws \RuntimeException If the configured provider type is not supported
+ */
 class EmbeddingModuleServiceProvider extends ServiceProvider
 {
+    /**
+     * Register module services in the container.
+     *
+     * Creates three singletons:
+     * 1. EmbeddingProviderInterface — concrete provider based on config
+     * 2. EmbeddingServiceInterface — caching wrapper around the provider
+     * 3. ProviderFactory — factory for creating providers per AiModel config
+     */
     public function register(): void
     {
         $this->app->singleton(EmbeddingProviderInterface::class, function (): EmbeddingProviderInterface {
@@ -47,6 +68,12 @@ class EmbeddingModuleServiceProvider extends ServiceProvider
         $this->app->singleton(ProviderFactory::class);
     }
 
+    /**
+     * Boot module services.
+     *
+     * Checks if the module is enabled via config and returns early if not.
+     * No additional boot-time actions are currently performed.
+     */
     public function boot(): void
     {
         if (! config('modules.modules.embedding.enabled', true)) {

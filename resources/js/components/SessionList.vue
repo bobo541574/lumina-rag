@@ -65,6 +65,20 @@
 </template>
 
 <script setup lang="ts">
+/**
+ * Session List
+ *
+ * Sidebar list of chat sessions with selection highlighting and delete action.
+ * Each session shows its title and relative timestamp. The active session has
+ * a left accent bar and brand styling.
+ *
+ * @prop {ChatSession[]} sessions - Chat sessions to display. Example: [{ id: "01J...", title: "Q3 Discussion", ... }]
+ * @prop {string|null} activeId - ULID of the currently active session. Example: "01J..."
+ * @prop {boolean} [loading=false] - Show skeleton loader when true
+ *
+ * @emits {select} (id: string) - User clicked a session. Example: select("01J...")
+ * @emits {delete} (id: string) - User clicked delete. Example: delete("01J...")
+ */
 import AppButton from './ui/AppButton.vue'
 import AppEmptyState from './ui/AppEmptyState.vue'
 import { formatRelativeTime, formatAbsoluteTime } from '../utils/dates'
@@ -83,6 +97,12 @@ defineEmits<{
   delete: [id: string]
 }>()
 
+/**
+ * Format a date as absolute time for use in a tooltip
+ *
+ * @param {string} date ISO-8601 date string. Example: "2026-05-17T12:00:00Z"
+ * @returns {string} Formatted absolute date. Example: "May 17, 2026 12:00 PM"
+ */
 function absoluteTime(date: string): string {
   return formatAbsoluteTime(date)
 }

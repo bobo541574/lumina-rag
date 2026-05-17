@@ -6,6 +6,7 @@ namespace Modules\DocumentModule\Jobs;
 
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\InteractsWithQueue;
@@ -16,6 +17,16 @@ use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
 use Modules\EmbeddingModule\Services\ProviderFactory;
 use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
 
+/**
+ * Re-Embed Document Job
+ *
+ * Regenerates vector embeddings for an already-processed document using its
+ * configured embedding model. Deletes existing vectors before regenerating,
+ * so this is safe to run multiple times. Used by the rag:reembed artisan command.
+ * Runs on the document-processing queue with 3 retries and backoff.
+ *
+ * @param  string  $documentId  The ULID of the document to re-embed. Example: "01J..."
+ */
 class ReEmbedDocumentJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, ResolvesEmbedder, SerializesModels;
@@ -34,6 +45,22 @@ class ReEmbedDocumentJob implements ShouldQueue
         $this->onQueue('document-processing');
     }
 
+    /**
+     * Execute the job
+     *
+     * Loads the document, deletes all existing vectors for it, loads all chunks,
+     * resolves the embedder (respecting per-document AiModel override), generates
+     * embeddings in batches, and upserts them into the vector store. If the
+     * document has no chunks, exits silently.
+     *
+     * @param  EmbeddingServiceInterface  $defaultEmbedder  Default embedding service. Example: app(EmbeddingServiceInterface::class)
+     * @param  VectorStoreInterface  $vectorStore  The vector store service. Example: app(VectorStoreInterface::class)
+     * @param  ProviderFactory  $providerFactory  Factory to create per-model providers. Example: app(ProviderFactory::class)
+     * @param  CacheRepository  $cache  Cache repository for embedding caching. Example: app(CacheRepository::class)
+     *
+     * @throws ModelNotFoundException If the document does not exist
+     *                                Example: ReEmbedDocumentJob::dispatch("nonexistent") → ModelNotFoundException
+     */
     public function handle(
         EmbeddingServiceInterface $defaultEmbedder,
         VectorStoreInterface $vectorStore,
@@ -86,6 +113,16 @@ class ReEmbedDocumentJob implements ShouldQueue
         }
     }
 
+    /**
+     * Resolve the embedding model name for a document
+     *
+     * Returns the document's per-document embedding_model if set, otherwise
+     * falls back to the global default from config.
+     *
+     * @param  Document  $document  The document to resolve the model for. Example: Document::findOrFail($id)
+     * @return string The resolved model name.
+     *                Example: "text-embedding-3-small"
+     */
     private function resolveModelName(Document $document): string
     {
         return $document->embedding_model

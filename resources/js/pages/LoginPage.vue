@@ -53,6 +53,15 @@
 </template>
 
 <script setup lang="ts">
+/**
+ * Login Page
+ *
+ * Authentication form for existing users. On success, redirects to the
+ * chat page (root). Shows server-side error messages on failure.
+ *
+ * @prop {void} - This page is route-driven; no custom props
+ * @emits {void} - Navigation is handled via router after successful login
+ */
 import { ref } from 'vue'
 import AppInput from '../components/ui/AppInput.vue'
 import AppButton from '../components/ui/AppButton.vue'
@@ -67,6 +76,12 @@ const password = ref('')
 const isLoading = ref(false)
 const error = ref<string | null>(null)
 
+/**
+ * Handle login form submission
+ *
+ * Validates input, calls the auth store login action, and redirects
+ * to the home page on success. Displays server-side error on failure.
+ */
 async function handleLogin() {
   if (!email.value.trim() || !password.value) return
 

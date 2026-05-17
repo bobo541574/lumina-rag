@@ -9,15 +9,28 @@ use Modules\EmbeddingModule\Contracts\EmbeddingProviderInterface;
 /**
  * OpenAI embedding provider using raw cURL.
  *
- * Converts text strings to vector embeddings via the OpenAI Embeddings API.
- * Supports batched requests for cost efficiency.
+ * Converts text strings to vector embeddings via the OpenAI Embeddings API
+ * (https://api.openai.com/v1/embeddings). Supports batched requests for cost
+ * efficiency and implements exponential-backoff retry (3 attempts) for
+ * transient errors. Returns vectors sorted by the input index order.
+ *
+ * Authentication is via bearer token. The provider respects per-model
+ * configuration for model name, dimensions, timeout, and batch size.
+ *
+ * @param  string  $apiKey  OpenAI API key for authentication. Example: "sk-proj-..."
+ * @param  string  $model  Embedding model identifier. Example: "text-embedding-ada-002"
+ * @param  int  $dimensions  Output vector dimensionality. Example: 1536
+ * @param  int  $timeout  cURL request timeout in seconds. Example: 30
+ * @param  int  $batchSize  Maximum texts per API batch. Example: 100
+ *
+ * @throws \RuntimeException On API failure, empty response, or unexpected structure
  */
 class OpenAIEmbeddingProvider implements EmbeddingProviderInterface
 {
-    /** @var string OpenAI API key */
+    /** @var string OpenAI API key for bearer authentication */
     private string $apiKey;
 
-    /** @var string Embedding model name */
+    /** @var string Embedding model name (e.g. "text-embedding-ada-002") */
     private string $model;
 
     /** @var int Output vector dimensions */
@@ -26,15 +39,15 @@ class OpenAIEmbeddingProvider implements EmbeddingProviderInterface
     /** @var int cURL request timeout in seconds */
     private int $timeout;
 
-    /** @var int Maximum texts per API batch */
+    /** @var int Maximum number of texts per single API call */
     private int $batchSize;
 
     /**
-     * @param  string  $apiKey  OpenAI API key
-     * @param  string  $model  Model identifier
-     * @param  int  $dimensions  Vector dimensions
-     * @param  int  $timeout  Request timeout in seconds
-     * @param  int  $batchSize  Batch size for API calls
+     * @param  string  $apiKey  OpenAI API key. Example: "sk-proj-..."
+     * @param  string  $model  Model identifier. Example: "text-embedding-ada-002"
+     * @param  int  $dimensions  Vector dimensions. Example: 1536
+     * @param  int  $timeout  Request timeout in seconds. Example: 30
+     * @param  int  $batchSize  Batch size for API calls. Example: 100
      */
     public function __construct(
         string $apiKey,
@@ -51,12 +64,16 @@ class OpenAIEmbeddingProvider implements EmbeddingProviderInterface
     }
 
     /**
-     * Embed a single text string.
+     * Embed a single text string via the OpenAI API.
      *
-     * @param  string  $text  Input text
-     * @return array Float vector array
+     * Delegates to callApi with a single-element array and returns the
+     * first (and only) vector result.
      *
-     * @throws \RuntimeException On API failure or empty response
+     * @param  string  $text  Input text to embed. Example: "What is the capital of France?"
+     * @param  string|null  $model  Optional model override. Example: "text-embedding-3-small"
+     * @return array Float vector. Example: [0.012, -0.034, ..., 0.098]
+     *
+     * @throws \RuntimeException When the API returns an empty result or errors
      */
     public function embed(string $text, ?string $model = null): array
     {
@@ -65,15 +82,27 @@ class OpenAIEmbeddingProvider implements EmbeddingProviderInterface
         return $results[0] ?? throw new \RuntimeException('Embedding API returned empty result');
     }
 
+    /**
+     * Embed multiple texts in a single (or batched) API call.
+     *
+     * Texts are split into batches of batchSize and sent sequentially.
+     * Results from all batches are merged in input order.
+     *
+     * @param  array  $texts  Array of texts to embed. Example: ["text A", "text B", "text C"]
+     * @param  string|null  $model  Optional model override. Example: "text-embedding-3-small"
+     * @return array Array of float vectors in input order. Example: [[0.01, ...], [0.02, ...], [0.03, ...]]
+     *
+     * @throws \RuntimeException When any API call fails or returns unexpected data
+     */
     public function embedBatch(array $texts, ?string $model = null): array
     {
         return $this->callApi($texts, $model);
     }
 
     /**
-     * Get the vector dimension count for this model.
+     * Return the vector dimension count for the configured model.
      *
-     * @return int Dimension count
+     * @return int Number of dimensions. Example: 1536
      */
     public function getDimensions(): int
     {
@@ -81,9 +110,9 @@ class OpenAIEmbeddingProvider implements EmbeddingProviderInterface
     }
 
     /**
-     * Get the model name identifier.
+     * Return the configured model name identifier.
      *
-     * @return string Model name
+     * @return string Model name. Example: "text-embedding-ada-002"
      */
     public function getModelName(): string
     {
@@ -91,15 +120,21 @@ class OpenAIEmbeddingProvider implements EmbeddingProviderInterface
     }
 
     /**
-     * Send texts to the OpenAI API, splitting into batches.
+     * Send texts to the OpenAI Embeddings API, splitting into batches if needed.
      *
-     * @param  array  $texts  Texts to embed
-     * @return array Array of embedding vectors
+     * Iterates over array_chunk slices and merges all results sequentially.
+     *
+     * @param  array  $texts  Texts to embed. Example: ["text1", "text2"]
+     * @param  string|null  $model  Optional model override. Example: "text-embedding-3-small"
+     * @return array Array of embedding vectors in input order. Example: [[0.01, ...], [0.02, ...]]
+     *
+     * @throws \RuntimeException When any sendRequest call fails
      */
     private function callApi(array $texts, ?string $model = null): array
     {
         $chunks = array_chunk($texts, $this->batchSize);
         $allVectors = [];
+
         foreach ($chunks as $batch) {
             $response = $this->sendRequest($batch, $model);
             $allVectors = array_merge($allVectors, $response);
@@ -108,6 +143,18 @@ class OpenAIEmbeddingProvider implements EmbeddingProviderInterface
         return $allVectors;
     }
 
+    /**
+     * Execute a single HTTP request to the OpenAI Embeddings API.
+     *
+     * Implements retry with exponential backoff (1s, 5s, 25s) for
+     * transient server errors. Client errors (4xx) throw immediately.
+     *
+     * @param  array  $batch  Batch of texts to embed. Example: ["text1", "text2"]
+     * @param  string|null  $model  Optional model override. Example: "text-embedding-3-small"
+     * @return array Array of embedding vectors sorted by index. Example: [[0.01, ...], [0.02, ...]]
+     *
+     * @throws \RuntimeException On HTTP 4xx, repeated 5xx, cURL error, or malformed response
+     */
     private function sendRequest(array $batch, ?string $model = null): array
     {
         $maxAttempts = 3;
