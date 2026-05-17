@@ -12,8 +12,28 @@ use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
 use Modules\EmbeddingModule\Services\ProviderFactory;
 use Modules\LLMModule\Contracts\LLMResponseInterface;
 use Modules\LLMModule\Contracts\LLMServiceInterface;
+use Modules\SettingsModule\Contracts\TermAliasServiceInterface;
 use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
+use PHPUnit\Framework\MockObject\Exception;
 
+/**
+ * Create a RAG pipeline service with configurable options for edge-case testing
+ *
+ * Like makePipeline but accepts an optional $config array that merges over
+ * sensible defaults for topK, similarityThreshold, maxQuestionLength,
+ * maxMessagesPerSession, searchMode, queryExpansionEnabled, numExpansionQueries,
+ * mmrEnabled, and mmrLambda.
+ *
+ * @param  EmbeddingServiceInterface  $embedder  Mock embedding service. Example: mock(EmbeddingServiceInterface::class)
+ * @param  VectorStoreInterface  $vectorStore  Mock vector store. Example: mock(VectorStoreInterface::class)
+ * @param  LLMServiceInterface  $llm  Mock LLM service. Example: mock(LLMServiceInterface::class)
+ * @param  array<string, mixed>  $config  Optional overrides for pipeline configuration. Example: ['topK' => 10, 'similarityThreshold' => 0.5]
+ * @return RAGPipelineService A pipeline with customised settings
+ *                            Example: makeEdgePipeline($embedder, $vectorStore, $llm, ['mmrEnabled' => true])
+ *
+ * @throws Exception If mock creation fails
+ *                   Example: Called with an interface that cannot be mocked
+ */
 function makeEdgePipeline(
     EmbeddingServiceInterface $embedder,
     VectorStoreInterface $vectorStore,
@@ -22,6 +42,9 @@ function makeEdgePipeline(
 ): RAGPipelineService {
     $providerFactory = mock(ProviderFactory::class);
     $cache = mock(CacheRepository::class);
+    $termAliasService = mock(TermAliasServiceInterface::class);
+    $termAliasService->shouldReceive('expandText')->andReturnArg(0);
+    $termAliasService->shouldReceive('expandFtsQuery')->andReturnArg(0);
 
     $defaults = [
         'topK' => 5,
@@ -41,10 +64,20 @@ function makeEdgePipeline(
         $llm,
         $providerFactory,
         $cache,
+        $termAliasService,
         ...array_merge($defaults, $config),
     );
 }
 
+/**
+ * ask() returns a refusal message when no chunks are returned from the vector store
+ *
+ * Verifies the edge-case behaviour: when searchHybrid returns an empty array
+ * the pipeline produces a human-readable refusal with no sources, without
+ * ever calling the LLM.
+ *
+ * @return void
+ */
 test('ask_returns_refusal_when_no_chunks_found', function (): void {
     $embedder = mock(EmbeddingServiceInterface::class);
     $embedder->shouldReceive('embed')->andReturn([0.1, 0.2]);
@@ -61,6 +94,15 @@ test('ask_returns_refusal_when_no_chunks_found', function (): void {
     expect($result['message']['sources'])->toBe([]);
 });
 
+/**
+ * ask() returns the LLM response when only a single chunk is returned
+ *
+ * Verifies that even with minimal context (one chunk) the pipeline
+ * correctly passes the chunk to the LLM and surfaces the answer with
+ * one source attached.
+ *
+ * @return void
+ */
 test('ask_returns_low_confidence_with_few_chunks', function (): void {
     $embedder = mock(EmbeddingServiceInterface::class);
     $embedder->shouldReceive('embed')->andReturn([0.1, 0.2]);
@@ -89,6 +131,16 @@ test('ask_returns_low_confidence_with_few_chunks', function (): void {
     expect($result['message']['sources'])->toHaveCount(1);
 });
 
+/**
+ * ask() inherits user-context filters from the previous message in the session
+ *
+ * Creates a session with a prior user message containing the user's name,
+ * then sends a follow-up question. Verifies the pipeline recognises the
+ * session-level context correctly and still produces a refusal (since no
+ * documents match).
+ *
+ * @return void
+ */
 test('ask_inherits_filters_from_previous_message', function (): void {
     $user = User::create([
         'name' => 'Edge Test User',
@@ -123,6 +175,15 @@ test('ask_inherits_filters_from_previous_message', function (): void {
     expect($result['message']['content'])->toStartWith('I cannot answer this question based on the available documents.');
 });
 
+/**
+ * ask() includes an age note when all retrieved documents are older than one year
+ *
+ * Returns chunks with a document_created_at of two years ago and verifies
+ * the pipeline still invokes the LLM and returns the answer — the age
+ * disclaimer is injected into the prompt, not surfaced in the response assertion.
+ *
+ * @return void
+ */
 test('ask_includes_old_document_note', function (): void {
     $embedder = mock(EmbeddingServiceInterface::class);
     $embedder->shouldReceive('embed')->andReturn([0.1, 0.2]);

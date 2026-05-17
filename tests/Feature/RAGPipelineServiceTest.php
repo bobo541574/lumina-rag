@@ -8,8 +8,26 @@ use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
 use Modules\EmbeddingModule\Services\ProviderFactory;
 use Modules\LLMModule\Contracts\LLMResponseInterface;
 use Modules\LLMModule\Contracts\LLMServiceInterface;
+use Modules\SettingsModule\Contracts\TermAliasServiceInterface;
 use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
+use PHPUnit\Framework\MockObject\Exception;
 
+/**
+ * Create a RAG pipeline service with mocked dependencies and defaults
+ *
+ * Builds a fully injected RAGPipelineService using the provided mock
+ * services. TermAliasService is pre-configured to passthrough text and
+ * FTS queries unchanged. Cache and ProviderFactory are unconfigured mocks.
+ *
+ * @param  EmbeddingServiceInterface  $embedder  Mock embedding service. Example: mock(EmbeddingServiceInterface::class)
+ * @param  VectorStoreInterface  $vectorStore  Mock vector store. Example: mock(VectorStoreInterface::class)
+ * @param  LLMServiceInterface  $llm  Mock LLM service. Example: mock(LLMServiceInterface::class)
+ * @return RAGPipelineService A pipeline ready for testing
+ *                            Example: makePipeline($embedder, $vectorStore, $llm)
+ *
+ * @throws Exception If mock creation fails
+ *                   Example: Called with an interface that cannot be mocked
+ */
 function makePipeline(
     EmbeddingServiceInterface $embedder,
     VectorStoreInterface $vectorStore,
@@ -17,10 +35,21 @@ function makePipeline(
 ): RAGPipelineService {
     $providerFactory = mock(ProviderFactory::class);
     $cache = mock(CacheRepository::class);
+    $termAliasService = mock(TermAliasServiceInterface::class);
+    $termAliasService->shouldReceive('expandText')->andReturnArg(0);
+    $termAliasService->shouldReceive('expandFtsQuery')->andReturnArg(0);
 
-    return new RAGPipelineService($embedder, $vectorStore, $llm, $providerFactory, $cache);
+    return new RAGPipelineService($embedder, $vectorStore, $llm, $providerFactory, $cache, $termAliasService);
 }
 
+/**
+ * ask() throws InvalidArgumentException for an empty question
+ *
+ * Ensures the pipeline rejects empty input strings before
+ * any embedding or search work is performed.
+ *
+ * @return void
+ */
 test('test_ask_with_empty_question_throws_exception', function (): void {
     $embedder = mock(EmbeddingServiceInterface::class);
     $vectorStore = mock(VectorStoreInterface::class);
@@ -31,6 +60,14 @@ test('test_ask_with_empty_question_throws_exception', function (): void {
     expect(fn () => $service->ask(''))->toThrow(InvalidArgumentException::class);
 });
 
+/**
+ * ask() returns a refusal message when the vector search yields no chunks
+ *
+ * Mocks the search to return an empty array and verifies the pipeline
+ * produces a user-facing refusal without calling the LLM.
+ *
+ * @return void
+ */
 test('test_ask_returns_refusal_when_no_chunks_found', function (): void {
     $embedder = mock(EmbeddingServiceInterface::class);
     $embedder->shouldReceive('embed')->andReturn([0.1, 0.2]);
@@ -47,6 +84,15 @@ test('test_ask_returns_refusal_when_no_chunks_found', function (): void {
     expect($result['message']['sources'])->toBe([]);
 });
 
+/**
+ * ask() returns an answer with sources when relevant chunks are found
+ *
+ * Mocks the full pipeline — embedding, hybrid search returning one chunk,
+ * and LLM completing with an answer — then asserts the response content
+ * and attached source metadata.
+ *
+ * @return void
+ */
 test('test_ask_returns_answer_with_sources', function (): void {
     $embedder = mock(EmbeddingServiceInterface::class);
     $embedder->shouldReceive('embed')->andReturn([0.1, 0.2]);

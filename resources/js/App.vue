@@ -119,6 +119,7 @@ const navItems = [
   { to: '/', label: 'Chat' },
   { to: '/documents', label: 'Documents' },
   { to: '/settings/ai-models', label: 'AI Models' },
+  { to: '/settings/term-aliases', label: 'Aliases' },
 ]
 
 watch(() => route.fullPath, () => {

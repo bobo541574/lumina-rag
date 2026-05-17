@@ -8,6 +8,7 @@ use App\Models\User;
 use Carbon\Carbon;
 use Generator;
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -20,9 +21,50 @@ use Modules\EmbeddingModule\Services\EmbeddingService;
 use Modules\EmbeddingModule\Services\ProviderFactory;
 use Modules\LLMModule\Contracts\LLMServiceInterface;
 use Modules\LLMModule\Services\LLMService;
+use Modules\SettingsModule\Contracts\TermAliasServiceInterface;
 use Modules\SettingsModule\Models\AiModel;
 use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
 
+/**
+ * RAG Pipeline Service
+ *
+ * Orchestrates the full RAG flow: embedding → vector/hybrid search → dynamic
+ * threshold filtering → MMR diversity reranking → LLM completion. Supports
+ * both synchronous (ask) and streaming (askStream) question answering.
+ * Handles session lifecycle, message persistence, query expansion, time
+ * reference resolution, Burmese/Myanmar language support, follow-up
+ * context inheritance, and filter extraction from natural-language questions.
+ *
+ * All external dependencies (embedder, vector store, LLM, cache, provider
+ * factory, alias service) are injected via constructor. Configuration values
+ * are read from config/rag.php but can be overridden by active AiModel
+ * settings stored in the database.
+ *
+ * @param  EmbeddingServiceInterface  $embedder  Converts question text to vector embeddings. Example: mock(EmbeddingServiceInterface::class)
+ * @param  VectorStoreInterface  $vectorStore  Performs hybrid or pure vector search. Example: mock(VectorStoreInterface::class)
+ * @param  LLMServiceInterface  $llm  Generates natural-language answers from context. Example: mock(LLMServiceInterface::class)
+ * @param  ProviderFactory  $providerFactory  Creates provider instances per model config. Example: mock(ProviderFactory::class)
+ * @param  CacheRepository  $cache  Cache backend for embedding and lookup caching. Example: $app->make(CacheRepository::class)
+ * @param  TermAliasServiceInterface  $termAliasService  Expands aliases in search queries. Example: mock(TermAliasServiceInterface::class)
+ * @param  int  $topK  Number of top chunks to retrieve. Example: 5
+ * @param  float  $similarityThreshold  Minimum similarity for chunk inclusion. Example: 0.65
+ * @param  int  $maxQuestionLength  Truncation limit for long questions. Example: 1000
+ * @param  int  $maxMessagesPerSession  Hard limit per session. Example: 100
+ * @param  string  $searchMode  "hybrid" or "vector". Example: "hybrid"
+ * @param  bool  $queryExpansionEnabled  Enable LLM-based query reformulation. Example: false
+ * @param  int  $numExpansionQueries  Number of reformulated queries. Example: 3
+ * @param  bool  $mmrEnabled  Enable MMR diversity reranking. Example: true
+ * @param  float  $mmrLambda  MMR diversity/lambda trade-off (0=only diversity, 1=only relevance). Example: 0.7
+ * @param  int  $maxTokens  Max generation tokens. Example: 4096
+ * @param  string|null  $userId  Authenticated user ULID for session scoping. Example: "01J..."
+ * @param  string|null  $activeEmbeddingModelId  Override embedding model ULID. Example: "01J..."
+ * @param  string|null  $activeLlmModelId  Override LLM model ULID. Example: "01J..."
+ *
+ * @throws \InvalidArgumentException If question is empty or exceeds maxQuestionLength
+ *                                   Example: $service->ask('') → InvalidArgumentException("Question cannot be empty")
+ * @throws \RuntimeException If no documents found, session expired, or message limit reached
+ *                           Example: $service->ask('xyznonexistent') → RuntimeException
+ */
 class RAGPipelineService implements RAGPipelineServiceInterface
 {
     private EmbeddingServiceInterface $embedder;
@@ -61,12 +103,44 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
     private ?AiModel $activeLlmModel = null;
 
+    private TermAliasServiceInterface $termAliasService;
+
+    /**
+     * Create a new RAGPipelineService instance
+     *
+     * All scalar configuration values have defaults from config/rag.php.
+     * Active models are resolved from the AiModel registry; if explicit IDs
+     * are provided they are used, otherwise the first active model by
+     * sort_order is selected. Model-specific settings override the global
+     * configuration (e.g. embedding top_k overrides $topK).
+     *
+     * @param  EmbeddingServiceInterface  $embedder  Vector embedding service. Example: mock(EmbeddingServiceInterface::class)
+     * @param  VectorStoreInterface  $vectorStore  Vector store for similarity search. Example: mock(VectorStoreInterface::class)
+     * @param  LLMServiceInterface  $llm  LLM service for answer generation. Example: mock(LLMServiceInterface::class)
+     * @param  ProviderFactory  $providerFactory  Creates provider instances. Example: mock(ProviderFactory::class)
+     * @param  CacheRepository  $cache  Cache repository. Example: $app->make(CacheRepository::class)
+     * @param  TermAliasServiceInterface  $termAliasService  Term alias expansion. Example: mock(TermAliasServiceInterface::class)
+     * @param  int  $topK  Number of chunks to retrieve. Example: 5
+     * @param  float  $similarityThreshold  Minimum similarity. Example: 0.65
+     * @param  int  $maxQuestionLength  Max question length. Example: 1000
+     * @param  int  $maxMessagesPerSession  Max messages per session. Example: 100
+     * @param  string  $searchMode  "hybrid" or "vector". Example: "hybrid"
+     * @param  bool  $queryExpansionEnabled  Enable query expansion. Example: false
+     * @param  int  $numExpansionQueries  Number of expanded queries. Example: 3
+     * @param  bool  $mmrEnabled  Enable MMR reranking. Example: true
+     * @param  float  $mmrLambda  MMR lambda parameter. Example: 0.7
+     * @param  int  $maxTokens  Max tokens for LLM generation. Example: 4096
+     * @param  string|null  $userId  User ULID for session scoping. Example: "01J..."
+     * @param  string|null  $activeEmbeddingModelId  Override embedding model ULID. Example: null
+     * @param  string|null  $activeLlmModelId  Override LLM model ULID. Example: null
+     */
     public function __construct(
         EmbeddingServiceInterface $embedder,
         VectorStoreInterface $vectorStore,
         LLMServiceInterface $llm,
         ProviderFactory $providerFactory,
         CacheRepository $cache,
+        TermAliasServiceInterface $termAliasService,
         int $topK = 5,
         float $similarityThreshold = 0.65,
         int $maxQuestionLength = 1000,
@@ -86,6 +160,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $this->llm = $llm;
         $this->providerFactory = $providerFactory;
         $this->cache = $cache;
+        $this->termAliasService = $termAliasService;
         $this->topK = $topK;
         $this->similarityThreshold = $similarityThreshold;
         $this->maxQuestionLength = $maxQuestionLength;
@@ -155,6 +230,27 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         }
     }
 
+    /**
+     * Answer a question synchronously
+     *
+     * Embeds the question, searches for relevant chunks via vector or hybrid
+     * search, applies dynamic threshold (elbow method) and MMR reranking,
+     * then calls the LLM to generate an answer. Persists both user and
+     * assistant messages to the session. Supports filter inheritance from
+     * previous exchanges, query expansion, dynamic embedding model selection
+     * per document filter, and conversation history injection.
+     * Logs timing and token usage to the RAG log channel.
+     *
+     * @param  string  $question  The user's natural-language question. Example: "What is the revenue for Q3?"
+     * @param  array  $options  Optional overrides. Example: ["session_id" => "01J...", "document_filter" => ["project" => "Orion"], "user_id" => "01J...", "llm_model_id" => "01J..."]
+     * @return array{session_id: string, message: array} Response with session ID and assistant message
+     *                                                   Example: ["session_id" => "01J...", "message" => ["id" => "01J...", "role" => "assistant", "content" => "Revenue was...", "sources" => [...], "tokens_used" => 150, "created_at" => "2026-05-17T10:00:00Z"]]
+     *
+     * @throws \InvalidArgumentException When question is empty or exceeds max length
+     *                                   Example: $service->ask('') → InvalidArgumentException("Question cannot be empty")
+     * @throws \RuntimeException When session not found, expired, message limit reached, or no chunks found
+     *                           Example: $service->ask('question', ['session_id' => 'invalid']) → RuntimeException("Chat session not found.")
+     */
     public function ask(string $question, array $options = []): array
     {
         set_time_limit(120);
@@ -164,7 +260,12 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $this->checkMessageLimit($session);
 
         $autoFilters = $this->extractFiltersFromQuestion($question);
-        $ftsQuery = $this->refineFtsQuery($question, $autoFilters);
+
+        // Expand aliases for search: append canonical terms so both
+        // vector (via expandText) and FTS (via expandFtsQuery) find matches.
+        $searchQuestion = $this->termAliasService->expandText($question);
+        $ftsQuery = $this->refineFtsQuery($searchQuestion, $autoFilters);
+        $ftsQuery = $this->termAliasService->expandFtsQuery($ftsQuery);
 
         $this->saveUserMessage($session, $question);
 
@@ -277,7 +378,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             }
         }
 
-        $searchQueries = $this->expandQuery($question, $llm);
+        $searchQueries = $this->expandQuery($searchQuestion, $llm);
 
         $allChunks = [];
         $t0 = microtime(true);
@@ -396,6 +497,28 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         ];
     }
 
+    /**
+     * Answer a question with streaming SSE output
+     *
+     * Same RAG pipeline as ask() but yields JSON-encoded events for
+     * Server-Sent Event delivery. Events: status (embedding/searching/generating
+     * stages with bilingual messages), sources (document citations),
+     * chunk (individual content tokens), and done (final metadata with
+     * timing and token counts). Refusal responses are emitted as a
+     * single chunk followed by done. Bilingual status messages are
+     * provided in Burmese and English based on question content.
+     *
+     * @param  string  $question  The user's natural-language question. Example: "What is the revenue for Q3?"
+     * @param  array  $options  Optional overrides. Example: ["session_id" => "01J...", "document_filter" => [], "user_id" => "01J...", "llm_model_id" => "01J..."]
+     * @return Generator Yields JSON-encoded event strings for SSE delivery
+     *                   Example: yield json_encode(['type' => 'chunk', 'content' => 'Revenue'])
+     *                   Example: yield json_encode(['type' => 'done', 'session_id' => '01J...', 'search_time_ms' => 120.5, 'llm_time_ms' => 800.3])
+     *
+     * @throws \InvalidArgumentException When question is empty or exceeds max length
+     *                                   Example: $service->askStream('') → InvalidArgumentException
+     * @throws \RuntimeException When session not found, expired, or message limit reached
+     *                           Example: $service->askStream('question', ['session_id' => 'invalid']) → RuntimeException
+     */
     public function askStream(string $question, array $options = []): Generator
     {
         set_time_limit(120);
@@ -405,7 +528,10 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $this->checkMessageLimit($session);
 
         $autoFilters = $this->extractFiltersFromQuestion($question);
-        $ftsQuery = $this->refineFtsQuery($question, $autoFilters);
+
+        $searchQuestion = $this->termAliasService->expandText($question);
+        $ftsQuery = $this->refineFtsQuery($searchQuestion, $autoFilters);
+        $ftsQuery = $this->termAliasService->expandFtsQuery($ftsQuery);
 
         $this->saveUserMessage($session, $question);
 
@@ -525,7 +651,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             'message' => $isBurmese ? 'မေးခွန်းအား ထည့်သွင်းနေသည်...' : 'Embedding question...',
         ]);
 
-        $searchQueries = $this->expandQuery($question, $llm);
+        $searchQueries = $this->expandQuery($searchQuestion, $llm);
         $allChunks = [];
         $t0 = microtime(true);
 
@@ -662,7 +788,19 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         ]);
     }
 
-    public function listSessions(?string $userId = null): array
+    /**
+     * List chat sessions with pagination
+     *
+     * Returns sessions ordered by last_activity_at descending, 20 per page.
+     * Optionally scoped to a specific user via userId.
+     *
+     * @param  string|null  $userId  Filter to sessions owned by this user. Example: "01J..."
+     * @param  int  $page  Page number (1-based). Example: 1
+     * @return array{data: array, current_page: int, last_page: int, per_page: int, total: int, from: int|null, to: int|null}
+     *                                                                                                                        Paginated result matching Laravel's paginator toArray() format.
+     *                                                                                                                        Example: ["data" => [...], "current_page" => 1, "last_page" => 3, "total" => 50]
+     */
+    public function listSessions(?string $userId = null, int $page = 1): array
     {
         $query = ChatSession::orderByDesc('last_activity_at');
 
@@ -670,9 +808,23 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             $query->where('user_id', $userId);
         }
 
-        return $query->paginate(20)->toArray();
+        return $query->paginate(20, ['*'], 'page', $page)->toArray();
     }
 
+    /**
+     * Get a single session with all messages
+     *
+     * Retrieves the session by ULID with its messages relation eager-loaded.
+     * Optionally scoped to a specific user for ownership verification.
+     *
+     * @param  string  $id  The session ULID. Example: "01J..."
+     * @param  string|null  $userId  Optional user ULID for ownership check. Example: "01J..."
+     * @return array Session data with messages, as returned by Eloquent's toArray().
+     *               Example: ["id" => "01J...", "title" => "New Chat", "messages" => [["id" => "01J...", "role" => "user", "content" => "hi"]]]
+     *
+     * @throws ModelNotFoundException When session is not found or not owned by the user
+     *                                Example: $service->getSession('nonexistent') → ModelNotFoundException
+     */
     public function getSession(string $id, ?string $userId = null): array
     {
         $query = ChatSession::with('messages')->where('id', $id);
@@ -686,6 +838,18 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         return $session->toArray();
     }
 
+    /**
+     * Delete a session and its messages
+     *
+     * Soft-deletes both the session and all associated messages.
+     * Optionally scoped to a user for ownership verification.
+     *
+     * @param  string  $id  The session ULID to delete. Example: "01J..."
+     * @param  string|null  $userId  Optional user ULID for ownership check. Example: "01J..."
+     *
+     * @throws ModelNotFoundException When session is not found or not owned by the user
+     *                                Example: $service->deleteSession('nonexistent') → ModelNotFoundException
+     */
     public function deleteSession(string $id, ?string $userId = null): void
     {
         $query = ChatSession::where('id', $id);
@@ -699,6 +863,22 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $session->delete();
     }
 
+    /**
+     * Extract search filters from natural-language question text
+     *
+     * Parses the question for user names (matched against DB users table,
+     * cached 5 min), project names (matched against distinct document projects,
+     * cached 5 min), time periods (English and Myanmar: today, yesterday,
+     * this_week, this_month, this_year, last_week, last_month, last_year),
+     * Burmese month names (ဇန်နဝါရီ–ဒီဇင်ဘာ) with optional year, and date
+     * patterns (YYYY-MM-DD, YYYY-MM, YYYY-MonthName, MonthName DD, quarters,
+     * bare years). Burmese Unicode digits are normalised to ASCII for matching.
+     * Returns an associative array of extracted filter values.
+     *
+     * @param  string  $question  The raw question text. Example: "What reports did John file in April 2026?"
+     * @return array{user_ids?: array, project?: string, report_date_from?: string, report_date_to?: string}
+     *                                                                                                       Extracted filters keyed by type. Example: ["user_ids" => ["01J..."], "project" => "Orion", "report_date_from" => "2026-04-01", "report_date_to" => "2026-04-30"]
+     */
     private function extractFiltersFromQuestion(string $question): array
     {
         $filters = [];
@@ -891,6 +1071,20 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         return $filters;
     }
 
+    /**
+     * Refine a question string into a clean FTS query
+     *
+     * Strips user names, project names, date/time patterns, stopwords
+     * (English and Burmese conversational words), and short tokens from
+     * the question, returning a space-separated string suitable for
+     * PostgreSQL's plainto_tsquery. Handles Burmese Unicode by not using
+     * \b word boundaries. Falls back to a minimal query ("report") if
+     * all content words are stripped.
+     *
+     * @param  string  $question  The search question (may already be alias-expanded). Example: "Show me John's report for April"
+     * @param  array  $filters  Extracted filters (used to strip user/project names). Example: ["user_ids" => ["01J..."], "report_date_from" => "2026-04-01"]
+     * @return string Cleaned query string for plainto_tsquery. Example: "report April"
+     */
     private function refineFtsQuery(string $question, array $filters): string
     {
         static $stopwords = [
@@ -1026,6 +1220,20 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         return $result;
     }
 
+    /**
+     * Apply a named time period to the filter array
+     *
+     * Converts shorthand period names (today, yesterday, this_week,
+     * last_week, this_month, last_month, this_year, last_year) to
+     * concrete report_date_from/report_date_to date ranges using
+     * the provided reference date (today).
+     *
+     * @param  array  $filters  Current filter array (may be empty). Example: []
+     * @param  string  $period  Named time period. Example: "this_month"
+     * @param  Carbon  $today  Reference date for relative calculations. Example: now()->startOfDay()
+     * @return array Updated filters with report_date_from and report_date_to set.
+     *               Example: ["report_date_from" => "2026-05-01", "report_date_to" => "2026-05-31"]
+     */
     private function applyTimePeriod(array $filters, string $period, Carbon $today): array
     {
         $from = null;
@@ -1075,8 +1283,18 @@ class RAGPipelineService implements RAGPipelineServiceInterface
     }
 
     /**
-     * Replace relative time references (yesterday, today, this month, …)
-     * with their literal date so the LLM doesn't have to guess the current date.
+     * Replace relative time references with literal dates
+     *
+     * Substitutes relative time expressions (ဒီနေ့/today, မနေ့/yesterday,
+     * ဒီတစ်လ/this month, ပြီးခဲ့တဲ့အပတ်/last week, etc.) in both Burmese
+     * and English with their literal date ranges (e.g. "2026-05-17" or
+     * "2026-05-11 to 2026-05-17"). This prevents the LLM from having to
+     * guess the current date when answering time-sensitive questions.
+     *
+     * @param  string  $question  The question text potentially containing relative time references.
+     *                            Example: "What reports were filed yesterday?"
+     * @return string Question with relative times replaced by literal dates.
+     *                Example: "What reports were filed on 2026-05-16?"
      */
     private function resolveTimeReferences(string $question): string
     {
@@ -1120,6 +1338,20 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         return $question;
     }
 
+    /**
+     * Expand a search query into multiple reformulations
+     *
+     * When query expansion is enabled, asks the LLM to generate
+     * numExpansionQueries alternative reformulations of the question
+     * to improve document retrieval recall. The original question is
+     * prepended as the first query. If the LLM call fails, falls back
+     * to returning only the original question.
+     *
+     * @param  string  $question  The original search question. Example: "Q3 revenue report"
+     * @param  LLMServiceInterface  $llm  The LLM service to generate reformulations. Example: $this->llm
+     * @return array<string> Array of query strings, with the original first.
+     *                       Example: ["Q3 revenue report", "third quarter revenue", "Q3 financial results"]
+     */
     private function expandQuery(string $question, LLMServiceInterface $llm): array
     {
         if (! $this->queryExpansionEnabled) {
@@ -1154,6 +1386,19 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         }
     }
 
+    /**
+     * Reorder chunks using the "Lost in the Middle" strategy
+     *
+     * Places the highest-scoring chunk first and the lowest-scoring chunk
+     * last, with the remaining chunks interleaved in the middle. This
+     * mitigates the tendency of LLMs to lose information in the middle of
+     * long contexts. For 2 or fewer chunks, returns the original order.
+     *
+     * @param  array  $chunks  Sorted chunks with similarity_score property.
+     *                         Example: [['similarity_score' => 0.9, 'content' => '...'], ...]
+     * @return array Reordered chunks with best first, worst last.
+     *               Example: [best, mid1, worst, mid2] for 4 chunks
+     */
     private function reorderForLostInTheMiddle(array $chunks): array
     {
         if (count($chunks) <= 2) {
@@ -1173,6 +1418,24 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         return $ordered;
     }
 
+    /**
+     * Apply dynamic threshold using the elbow method
+     *
+     * Finds the largest gap between consecutive similarity scores and uses
+     * it as a natural cutoff point. Falls back to scaling from the top
+     * score (85%) when no significant gap exists (>0.15). When user/project/
+     * date filters are present, uses a lower base threshold (0.45 instead
+     * of the configured similarityThreshold) to account for narrower searches.
+     * Always caps results at topK. If all chunks are below threshold but the
+     * top score is >= 0.25, returns the single best chunk as a fallback.
+     *
+     * @param  array  $chunks  Sorted chunks with similarity_score property.
+     *                         Example: [['similarity_score' => 0.92, 'content' => '...'], ['similarity_score' => 0.45, 'content' => '...']]
+     * @param  array  $filters  Current filters that may lower the base threshold.
+     *                          Example: ["user_ids" => ["01J..."]]
+     * @return array Filtered chunks above the determined threshold.
+     *               Example: [['similarity_score' => 0.92, 'content' => '...']]
+     */
     private function applyDynamicThreshold(array $chunks, array $filters = []): array
     {
         if ($chunks === []) {
@@ -1222,6 +1485,21 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         return $filtered;
     }
 
+    /**
+     * Apply Maximal Marginal Relevance (MMR) reranking
+     *
+     * Selects a diverse subset of chunks by balancing relevance (similarity_score)
+     * against redundancy (same-document penalty). The first chunk is always the
+     * highest-scoring; subsequent selections maximise mmr_lambda * relevance -
+     * (1 - mmr_lambda) * max_similarity_to_selected. When two chunks share the
+     * same document_id, the redundancy penalty is 1.0 (fully penalised).
+     * Returns early (unchanged) when MMR is disabled or there is <= 1 chunk.
+     *
+     * @param  array  $chunks  Candidate chunks with document_id and similarity_score.
+     *                         Example: [['document_id' => '01J...', 'similarity_score' => 0.9, 'content' => '...']]
+     * @return array MMR-diversified chunks capped at topK.
+     *               Example: [best_chunk, diverse_chunk_from_other_doc, ...]
+     */
     private function applyMMR(array $chunks): array
     {
         if (! $this->mmrEnabled || count($chunks) <= 1) {
@@ -1268,6 +1546,21 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         return $selected;
     }
 
+    /**
+     * Build a human-readable filter description for the LLM context
+     *
+     * Converts the internal filters array into a text note listing
+     * users (by name), project, and date/date range that was applied
+     * during the search. This is prepended to the LLM context so the
+     * model knows the exact scope used (e.g. a specific date rather
+     * than the relative term "yesterday"). Returns empty string when
+     * no filters are active.
+     *
+     * @param  array  $filters  The active search filters.
+     *                          Example: ["user_ids" => ["01J..."], "project" => "Orion", "report_date_from" => "2026-04-01", "report_date_to" => "2026-04-30"]
+     * @return string Formatted filter description, or empty string.
+     *                Example: "Search scope:\n- Users: John Doe\n- Project: Orion\n- Date range: 2026-04-01 to 2026-04-30"
+     */
     private function buildFilterNote(array $filters): string
     {
         $lines = [];
@@ -1300,6 +1593,20 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         return "Search scope:\n".implode("\n", $lines);
     }
 
+    /**
+     * Normalise a question string
+     *
+     * Trims whitespace, validates non-empty, truncates to maxQuestionLength,
+     * and converts bare YYYY-MM patterns (without a following day) to
+     * YYYY-MonthName format so the LLM and date parser can recognise them
+     * as month references rather than generic numbers.
+     *
+     * @param  string  $question  Raw question text. Example: "  What is revenue for 2026-04?  "
+     * @return string Normalised question. Example: "What is revenue for 2026-April?"
+     *
+     * @throws \InvalidArgumentException When question is empty after trimming.
+     *                                   Example: normalizeQuestion('') → InvalidArgumentException("Question cannot be empty.")
+     */
     private function normalizeQuestion(string $question): string
     {
         $question = trim($question);
@@ -1320,6 +1627,23 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         return $question;
     }
 
+    /**
+     * Resolve a chat session from session ID or create a new one
+     *
+     * If a session_id is provided, looks up the existing session (scoped to
+     * userId for ownership), validates it is not soft-deleted or expired
+     * (>24h idle), updates last_activity_at, and returns it. If no session_id
+     * is given, creates a new session with default title "New Chat".
+     *
+     * @param  string|null  $sessionId  Optional session ULID to resume. Example: "01J..."
+     * @param  string|null  $userId  Optional user ULID for ownership scope. Example: "01J..."
+     * @return ChatSession The resolved or newly created session.
+     *                     Example: ChatSession instance with id, title, etc.
+     *
+     * @throws \RuntimeException When session not found, trashed, or expired (>24h inactive)
+     *                           Example: resolveSession('nonexistent') → RuntimeException("Chat session not found.")
+     *                           Example: resolveSession('expired-session') → RuntimeException("Chat session has expired.")
+     */
     private function resolveSession(?string $sessionId, ?string $userId = null): ChatSession
     {
         if ($sessionId !== null) {
@@ -1351,6 +1675,18 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         ]);
     }
 
+    /**
+     * Check whether the session has reached its message limit
+     *
+     * Counts the current messages in the session and throws if the count
+     * meets or exceeds maxMessagesPerSession. This prevents runaway sessions
+     * that could consume excessive LLM context window.
+     *
+     * @param  ChatSession  $session  The chat session to check. Example: $chatSession
+     *
+     * @throws \RuntimeException When message count >= maxMessagesPerSession
+     *                           Example: checkMessageLimit($fullSession) → RuntimeException("Session message limit reached.")
+     */
     private function checkMessageLimit(ChatSession $session): void
     {
         $count = $session->messages()->count();
@@ -1359,6 +1695,17 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         }
     }
 
+    /**
+     * Save a user message to the session
+     *
+     * Updates the session's last_activity_at, increments message_count,
+     * and creates a new ChatMessage with role "user" and the question content.
+     *
+     * @param  ChatSession  $session  The chat session to save to. Example: $resolvedSession
+     * @param  string  $question  The user's question text. Example: "What is Q3 revenue?"
+     * @return ChatMessage The newly created message instance.
+     *                     Example: ChatMessage instance with role="user", content="What is Q3 revenue?"
+     */
     private function saveUserMessage(ChatSession $session, string $question): ChatMessage
     {
         $session->update(['last_activity_at' => now()]);
@@ -1371,6 +1718,20 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         ]);
     }
 
+    /**
+     * Save an assistant message to the session
+     *
+     * If the session title is still "New Chat", derives the title from the
+     * first 50 characters of the assistant response. Updates last_activity_at,
+     * increments message_count, and creates a new ChatMessage with role
+     * "assistant", the LLM response content, and source citations.
+     *
+     * @param  ChatSession  $session  The chat session to save to. Example: $resolvedSession
+     * @param  string  $content  The LLM-generated response text. Example: "Revenue for Q3 was $45.2 million..."
+     * @param  array  $sources  Array of source document citations. Example: [["document_id" => "01J...", "document_title" => "Q3 Report.pdf", "similarity_score" => 0.89]]
+     * @return ChatMessage The newly created message instance.
+     *                     Example: ChatMessage instance with role="assistant", content="Revenue...", sources=[...]
+     */
     private function saveAssistantMessage(ChatSession $session, string $content, array $sources): ChatMessage
     {
         if ($session->title === 'New Chat') {
@@ -1389,6 +1750,22 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         ]);
     }
 
+    /**
+     * Build a refusal response when no relevant chunks are found
+     *
+     * Generates a polite refusal message in Burmese or English (detected from
+     * question content). When date filters are present, attempts to find the
+     * nearest available document date and provides a helpful hint. Also checks
+     * whether the nearest document has vector embeddings to explain whether
+     * it is indexed or not. Saves the refusal as an assistant message with
+     * empty sources.
+     *
+     * @param  ChatSession  $session  The chat session. Example: $resolvedSession
+     * @param  string  $question  The original question for language detection. Example: "What is the revenue?"
+     * @param  array  $filters  Applied filters for nearest-date hint logic. Example: ["report_date_from" => "2026-04-01", "report_date_to" => "2026-04-30"]
+     * @return array{session_id: string, message: array} Refusal response in standard format.
+     *                                                   Example: ["session_id" => "01J...", "message" => ["id" => "01J...", "role" => "assistant", "content" => "I cannot answer...", "sources" => []]]
+     */
     private function buildRefusalResponse(ChatSession $session, string $question = '', array $filters = []): array
     {
         $isBurmese = preg_match('/[\x{1000}-\x{109F}]/u', $question) === 1;
@@ -1473,6 +1850,18 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         ];
     }
 
+    /**
+     * Assess answer confidence based on chunk count
+     *
+     * Returns "high" (3+ chunks), "low" (1-2 chunks), or "none" (empty).
+     * Used by buildSystemPrompt to adjust the LLM's response tone — low
+     * confidence adds an instruction to acknowledge uncertainty.
+     *
+     * @param  array  $chunks  The filtered/re-ranked chunks to evaluate.
+     *                         Example: [['similarity_score' => 0.9, 'content' => '...']]
+     * @return string Confidence level: "high", "low", or "none".
+     *                Example: "high"
+     */
     private function assessConfidence(array $chunks): string
     {
         $aboveThreshold = count($chunks);
@@ -1484,6 +1873,20 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         };
     }
 
+    /**
+     * Build the system prompt for the LLM
+     *
+     * Constructs a context-only instruction set that tells the LLM to answer
+     * strictly from provided documents, cite sources, match the user's
+     * language, and use metadata headers (Report by, Project, Date) for
+     * attribution. Optionally appends low-confidence guidance and a note
+     * about old documents (>1 year) for time-sensitive information.
+     *
+     * @param  string  $confidence  "high", "low", or "none" from assessConfidence(). Example: "high"
+     * @param  bool  $hasOldDocuments  Whether any source document is >1 year old. Example: false
+     * @return string The system prompt string.
+     *                Example: "You are a precise document-answering assistant. Follow these rules strictly:\n\n1. Answer ONLY..."
+     */
     private function buildSystemPrompt(string $confidence, bool $hasOldDocuments = false): string
     {
         $prompt = 'You are a precise document-answering assistant. Follow these rules strictly:
@@ -1507,6 +1910,18 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         return $prompt;
     }
 
+    /**
+     * Check whether any source document is over a year old
+     *
+     * Inspects the document_created_at property of each chunk and returns
+     * true if any document is older than one year from the current date.
+     * Used by buildSystemPrompt to add a time-sensitivity advisory.
+     *
+     * @param  array  $chunks  The chunks to inspect, each with optional document_created_at.
+     *                         Example: [['document_created_at' => '2025-01-15', ...]]
+     * @return bool True if at least one document is over 1 year old.
+     *              Example: true
+     */
     private function hasOldDocuments(array $chunks): bool
     {
         $oneYearAgo = now()->subYear();
@@ -1528,6 +1943,19 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         return false;
     }
 
+    /**
+     * Resolve the LLM service for a specific request
+     *
+     * If the options contain a valid llm_model_id pointing to an active LLM
+     * AiModel, creates a new LLMService with the appropriate provider and
+     * context token limit. Otherwise returns the default LLM service that
+     * was injected at construction time.
+     *
+     * @param  array  $options  Request options, possibly containing 'llm_model_id'.
+     *                          Example: ["llm_model_id" => "01J..."]
+     * @return LLMServiceInterface The resolved LLM service (default or overridden).
+     *                             Example: $this->llm or new LLMService(...)
+     */
     private function resolveLLM(array $options): LLMServiceInterface
     {
         $modelId = $options['llm_model_id'] ?? null;
@@ -1550,6 +1978,20 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         );
     }
 
+    /**
+     * Build the sources array for the response
+     *
+     * Maps chunk objects to the standard source citation format with
+     * document_id, document_title, chunk_index, page_number, similarity_score
+     * (rounded to 4 decimals), and a 200-character content excerpt.
+     *
+     * @param  array  $chunks  The chunks used in the answer, each with document_id,
+     *                         document_title, chunk_index, page_number, similarity_score, and content.
+     *                         Example: [['document_id' => '01J...', 'document_title' => 'Report.pdf', 'similarity_score' => 0.8923, ...]]
+     * @return array<int, array{document_id: string, document_title: string, chunk_index: mixed, page_number: mixed, similarity_score: float, excerpt: string}>
+     *                                                                                                                                                          Standardised source citation array.
+     *                                                                                                                                                          Example: [['document_id' => '01J...', 'document_title' => 'Report.pdf', 'similarity_score' => 0.8923, 'excerpt' => 'Revenue reached...']]
+     */
     private function buildSources(array $chunks): array
     {
         return array_map(fn (object $chunk): array => [

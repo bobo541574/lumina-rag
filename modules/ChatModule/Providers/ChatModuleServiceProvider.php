@@ -12,10 +12,33 @@ use Modules\ChatModule\Services\RAGPipelineService;
 use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
 use Modules\EmbeddingModule\Services\ProviderFactory;
 use Modules\LLMModule\Contracts\LLMServiceInterface;
+use Modules\SettingsModule\Contracts\TermAliasServiceInterface;
 use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
 
+/**
+ * Chat Module Service Provider
+ *
+ * Registers the RAGPipelineService as a singleton bound to the
+ * RAGPipelineServiceInterface, wiring all required dependencies
+ * (embedder, vector store, LLM, cache, provider factory, term alias service)
+ * and reading configuration defaults from config/rag.php.
+ * In boot(), loads migrations and routes when the module is enabled,
+ * and registers the chat:cleanup Artisan command in console mode.
+ */
 class ChatModuleServiceProvider extends ServiceProvider
 {
+    /**
+     * Register module services
+     *
+     * Binds RAGPipelineServiceInterface to a RAGPipelineService singleton.
+     * All constructor dependencies are resolved from the container; scalar
+     * configuration values are read from config/rag.php with sensible defaults.
+     * Active embedding and LLM model IDs are initialised as null (resolved
+     * at runtime from the ai_models table by the service constructor).
+     *
+     *
+     * @example Automatically called by Laravel, no manual invocation needed.
+     */
     public function register(): void
     {
         $this->app->singleton(RAGPipelineServiceInterface::class, fn ($app): RAGPipelineService => new RAGPipelineService(
@@ -24,6 +47,7 @@ class ChatModuleServiceProvider extends ServiceProvider
             llm: $app->make(LLMServiceInterface::class),
             providerFactory: $app->make(ProviderFactory::class),
             cache: $app->make(CacheRepository::class),
+            termAliasService: $app->make(TermAliasServiceInterface::class),
             topK: (int) config('rag.search.top_k', 5),
             similarityThreshold: (float) config('rag.search.similarity_threshold', 0.65),
             maxQuestionLength: (int) config('rag.chat.max_question_length', 1000),
@@ -39,6 +63,16 @@ class ChatModuleServiceProvider extends ServiceProvider
         ));
     }
 
+    /**
+     * Bootstrap module services
+     *
+     * Loads database migrations and route files when the module is enabled
+     * (config/modules.php). In console mode, registers the CleanupExpiredSessions
+     * Artisan command so it is available via php artisan list.
+     *
+     *
+     * @example Automatically called by Laravel after all providers are registered.
+     */
     public function boot(): void
     {
         if (! config('modules.modules.chat.enabled', true)) {
