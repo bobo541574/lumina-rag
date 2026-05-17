@@ -1,6 +1,7 @@
 <?php
 
 declare(strict_types=1);
+use Modules\SettingsModule\Models\AiModel;
 
 /**
  * RAG Configuration
@@ -19,7 +20,7 @@ declare(strict_types=1);
  * - pagination: Per-page limits for API responses
  * - logging: Log channel for RAG-specific logging
  *
- * @see \Modules\SettingsModule\Models\AiModel For per-model overrides in the database
+ * @see AiModel For per-model overrides in the database
  */
 
 return [
@@ -53,6 +54,11 @@ return [
         'max_context_tokens' => (int) env('RAG_LLM_MAX_CONTEXT_TOKENS', 32768),
         'max_tokens' => (int) env('RAG_LLM_MAX_TOKENS', 4096),
         'timeout' => (int) env('RAG_LLM_TIMEOUT', 120),
+
+        // Provider-specific API keys (used by ProviderFactory fallback)
+        'gemini_api_key' => env('GEMINI_API_KEY'),
+        'claude_api_key' => env('CLAUDE_API_KEY'),
+        'deepseek_api_key' => env('DEEPSEEK_API_KEY'),
     ],
 
     /*

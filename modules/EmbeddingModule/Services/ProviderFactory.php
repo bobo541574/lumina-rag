@@ -7,6 +7,9 @@ namespace Modules\EmbeddingModule\Services;
 use Illuminate\Contracts\Cache\Repository;
 use Modules\EmbeddingModule\Contracts\EmbeddingProviderInterface;
 use Modules\LLMModule\Contracts\LLMProviderInterface;
+use Modules\LLMModule\Services\ClaudeLLMProvider;
+use Modules\LLMModule\Services\DeepSeekLLMProvider;
+use Modules\LLMModule\Services\GeminiLLMProvider;
 use Modules\LLMModule\Services\OllamaLLMProvider;
 use Modules\LLMModule\Services\OpenAILLMProvider;
 use Modules\SettingsModule\Models\AiModel;
@@ -50,6 +53,14 @@ class ProviderFactory
                 timeout: $model->timeout,
                 batchSize: $model->batch_size ?? 100,
             ),
+            'gemini' => new GeminiEmbeddingProvider(
+                apiKey: $model->api_key ?? (string) config('rag.embedding.gemini_api_key', ''),
+                model: $model->model,
+                dimensions: $model->dimensions ?? 768,
+                timeout: $model->timeout,
+                batchSize: $model->batch_size ?? 100,
+                baseUrl: $model->base_url ?? 'https://generativelanguage.googleapis.com/v1beta',
+            ),
             default => new OpenAIEmbeddingProvider(
                 apiKey: $model->api_key ?? (string) config('rag.embedding.api_key', ''),
                 model: $model->model,
@@ -78,6 +89,24 @@ class ProviderFactory
                 baseUrl: $model->base_url ?? 'http://localhost:11434',
                 model: $model->model,
                 timeout: $model->timeout,
+            ),
+            'gemini' => new GeminiLLMProvider(
+                apiKey: $model->api_key ?? (string) config('rag.llm.gemini_api_key', ''),
+                model: $model->model,
+                timeout: $model->timeout,
+                baseUrl: $model->base_url ?? 'https://generativelanguage.googleapis.com/v1beta',
+            ),
+            'claude' => new ClaudeLLMProvider(
+                apiKey: $model->api_key ?? (string) config('rag.llm.claude_api_key', ''),
+                model: $model->model,
+                timeout: $model->timeout,
+                baseUrl: $model->base_url ?? 'https://api.anthropic.com/v1',
+            ),
+            'deepseek' => new DeepSeekLLMProvider(
+                apiKey: $model->api_key ?? (string) config('rag.llm.deepseek_api_key', ''),
+                model: $model->model,
+                timeout: $model->timeout,
+                baseUrl: $model->base_url ?? 'https://api.deepseek.com/v1',
             ),
             default => new OpenAILLMProvider(
                 apiKey: $model->api_key ?? (string) config('rag.llm.api_key', ''),
