@@ -37,9 +37,9 @@ class ChatRequest extends FormRequest
      * Get the validation rules
      *
      * Validates: question (required, string, max:1000), session_id (nullable,
-     * exists:chat_sessions), stream (nullable, boolean), document_filter
-     * (nullable, array with nested document_ids and date_from/date_to), and
-     * llm_model_id (nullable, exists:ai_models).
+     * exists:chat_sessions), stream (nullable, boolean), think (nullable, boolean),
+     * document_filter (nullable, array with nested document_ids and
+     * date_from/date_to), and llm_model_id (nullable, exists:ai_models).
      *
      * @return array<string, array<int, mixed>> The validation rules keyed by field name.
      *                                          Example: ['question' => ['required', 'string', 'max:1000']]
@@ -80,6 +80,10 @@ class ChatRequest extends FormRequest
             'document_filter.date_to' => [
                 'nullable',
                 'date',
+            ],
+            'think' => [
+                'nullable',
+                'boolean',
             ],
             'llm_model_id' => [
                 'nullable',

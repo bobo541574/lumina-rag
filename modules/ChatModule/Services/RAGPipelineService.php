@@ -421,7 +421,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             }
         }
 
-        $searchQueries = $this->expandQuery($searchQuestion, $llm);
+        $searchQueries = $this->expandQuery($searchQuestion, $llm, $options);
 
         $allChunks = [];
         $t0 = microtime(true);
@@ -504,7 +504,7 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
             systemPrompt: $systemPrompt,
             userPrompt: $llmQuestion,
             context: $context,
-            options: $this->buildLlmOptions(['temperature' => $this->temperature, 'max_tokens' => $this->maxTokens]),
+            options: $this->buildLlmOptions(['temperature' => $this->temperature, 'max_tokens' => $this->maxTokens], $options),
         );
         $llmTime = (microtime(true) - $t0) * 1000;
 
@@ -695,7 +695,7 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
             'message' => $isBurmese ? 'မေးခွန်းအား ထည့်သွင်းနေသည်...' : 'Embedding question...',
         ]);
 
-        $searchQueries = $this->expandQuery($searchQuestion, $llm);
+        $searchQueries = $this->expandQuery($searchQuestion, $llm, $options);
         $allChunks = [];
         $t0 = microtime(true);
 
@@ -802,7 +802,7 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
         $stream = $llm->completeStream($systemPrompt, $llmQuestion, $context, $this->buildLlmOptions([
             'temperature' => $this->temperature,
             'max_tokens' => $this->maxTokens,
-        ]));
+        ], $options));
 
         foreach ($stream as $chunk) {
             $fullContent .= $chunk;
@@ -979,7 +979,7 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
      * @return array<string> Array of query strings, with the original first.
      *                       Example: ["Q3 revenue report", "third quarter revenue", "Q3 financial results"]
      */
-    private function expandQuery(string $question, LLMServiceInterface $llm): array
+    private function expandQuery(string $question, LLMServiceInterface $llm, array $requestOptions = []): array
     {
         if (! $this->queryExpansionEnabled) {
             return [$question];
@@ -992,7 +992,7 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
                 systemPrompt: '',
                 userPrompt: $prompt,
                 context: '',
-                options: $this->buildLlmOptions(['temperature' => $this->temperature, 'max_tokens' => 500]),
+                options: $this->buildLlmOptions(['temperature' => $this->temperature, 'max_tokens' => 500], $requestOptions),
             );
 
             $lines = array_filter(
@@ -1136,16 +1136,23 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
      * Build LLM options array
      *
      * Merges base parameters (temperature, max_tokens) with the optional
-     * `think` flag (for Ollama Qwen models) when set via AiModel settings.
+     * `think` flag (for Ollama Qwen models). Precedence:
+     * 1. Request-level `think` from $requestOptions (user toggles via API)
+     * 2. AiModel settings `think` (configured per-model in DB)
+     * 3. Auto-detect in OllamaLLMProvider (false for Qwen models)
      *
      * @param  array  $overrides  Base options (temperature, max_tokens, etc.).
      *   Example: ['temperature' => 0.3, 'max_tokens' => 4096]
+     * @param  array  $requestOptions  Pipeline-level options from the API request.
+     *   Example: ['session_id' => '01J...', 'think' => true]
      * @return array Options with `think` conditionally included.
      *   Example: ['temperature' => 0.3, 'max_tokens' => 4096, 'think' => false]
      */
-    private function buildLlmOptions(array $overrides): array
+    private function buildLlmOptions(array $overrides, array $requestOptions = []): array
     {
-        if ($this->think !== null) {
+        if (isset($requestOptions['think'])) {
+            $overrides['think'] = (bool) $requestOptions['think'];
+        } elseif ($this->think !== null) {
             $overrides['think'] = $this->think;
         }
 

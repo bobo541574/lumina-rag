@@ -66,6 +66,7 @@ class ChatController extends Controller
                     'document_filter' => $request->input('document_filter', []),
                     'user_id' => $user?->id,
                     'llm_model_id' => $request->input('llm_model_id'),
+                    'think' => $request->input('think'),
                 ],
             );
 
@@ -207,6 +208,7 @@ class ChatController extends Controller
                         'document_filter' => $request->input('document_filter', []),
                         'user_id' => $user?->id,
                         'llm_model_id' => $request->input('llm_model_id'),
+                        'think' => $request->input('think'),
                     ],
                 );
 
