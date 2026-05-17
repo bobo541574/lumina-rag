@@ -8,7 +8,7 @@ use Carbon\Carbon;
 
 class ChunkProcessor
 {
-public function applyDynamicThreshold (array $chunks, array $filters = []): array
+public function applyDynamicThreshold (array $chunks, array $filters = [], float $similarityThreshold = 0.65, int $topK = 5): array
     {
         if ($chunks === []) {
             return [];
@@ -56,7 +56,7 @@ public function applyDynamicThreshold (array $chunks, array $filters = []): arra
 
         return $filtered;
     }
-public function applyMMR (array $chunks): array
+public function applyMMR (array $chunks, bool $mmrEnabled = true, int $topK = 5, float $mmrLambda = 0.7): array
     {
         if (! $mmrEnabled || count($chunks) <= 1) {
             return $chunks;
