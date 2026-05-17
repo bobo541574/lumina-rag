@@ -88,6 +88,12 @@ class OllamaLLMProvider implements LLMProviderInterface
             $payload['options']['num_predict'] = $options['max_tokens'];
         }
 
+        if (isset($options['think'])) {
+            $payload['think'] = (bool) $options['think'];
+        } elseif ($this->isQwenModel()) {
+            $payload['think'] = false;
+        }
+
         $response = $this->sendRequest($payload);
 
         $message = $response['message'] ?? throw new \RuntimeException('Ollama API returned no message');
@@ -133,6 +139,12 @@ class OllamaLLMProvider implements LLMProviderInterface
 
         if (isset($options['max_tokens'])) {
             $payload['options']['num_predict'] = $options['max_tokens'];
+        }
+
+        if (isset($options['think'])) {
+            $payload['think'] = (bool) $options['think'];
+        } elseif ($this->isQwenModel()) {
+            $payload['think'] = false;
         }
 
         $url = $this->baseUrl.'/api/chat';
@@ -248,6 +260,21 @@ class OllamaLLMProvider implements LLMProviderInterface
     public function countTokens(string $text): int
     {
         return (int) ceil(mb_strlen($text) / 4);
+    }
+
+    /**
+     * Check whether the loaded model is a Qwen variant
+     *
+     * Qwen models (qwen3.5, qwen2.5, sorc/qwen*, etc.) ship with chain-of-thought
+     * reasoning enabled by default. This detection is used to automatically set
+     * think=false in the Ollama payload unless explicitly overridden via options.
+     *
+     * @return bool True if the model name contains "qwen" (case-insensitive).
+     *   Example: true for "qwen3.5:9b" or "sorc/qwen3.5-claude-4.6-opus:9b"
+     */
+    private function isQwenModel(): bool
+    {
+        return stripos($this->model, 'qwen') !== false;
     }
 
     /**

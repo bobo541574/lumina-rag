@@ -100,6 +100,8 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
     private float $temperature;
 
+    private ?bool $think;
+
     private ?string $userId;
 
     private ProviderFactory $providerFactory;
@@ -199,6 +201,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $this->mmrLambda = $mmrLambda;
         $this->maxTokens = $maxTokens;
         $this->temperature = (float) config('rag.llm.temperature', 0.3);
+        $this->think = null;
         $this->userId = $userId;
 
         try {
@@ -258,6 +261,12 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         }
         if ($this->activeLlmModel !== null && $this->activeLlmModel->temperature !== null) {
             $this->temperature = (float) $this->activeLlmModel->temperature;
+        }
+        if ($this->activeLlmModel !== null && $this->activeLlmModel->settings !== null) {
+            $s = $this->activeLlmModel->settings;
+            if (isset($s['think'])) {
+                $this->think = (bool) $s['think'];
+            }
         }
     }
 
@@ -495,7 +504,7 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
             systemPrompt: $systemPrompt,
             userPrompt: $llmQuestion,
             context: $context,
-            options: ['temperature' => $this->temperature, 'max_tokens' => $this->maxTokens],
+            options: $this->buildLlmOptions(['temperature' => $this->temperature, 'max_tokens' => $this->maxTokens]),
         );
         $llmTime = (microtime(true) - $t0) * 1000;
 
@@ -790,10 +799,10 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
 
         $fullContent = '';
         $t0 = microtime(true);
-        $stream = $llm->completeStream($systemPrompt, $llmQuestion, $context, [
+        $stream = $llm->completeStream($systemPrompt, $llmQuestion, $context, $this->buildLlmOptions([
             'temperature' => $this->temperature,
             'max_tokens' => $this->maxTokens,
-        ]);
+        ]));
 
         foreach ($stream as $chunk) {
             $fullContent .= $chunk;
@@ -980,10 +989,10 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
             $prompt = "You are a search query optimizer. Generate {$this->numExpansionQueries} different reformulations of the given question to improve document retrieval. Return ONE reformulation per line, no numbering, no extra text.\n\nQuestion: {$question}";
 
             $response = $llm->complete(
-                'You generate search queries. Return only the queries, one per line.',
-                $prompt,
-                [],
-                ['temperature' => $this->temperature, 'max_tokens' => 500],
+                systemPrompt: '',
+                userPrompt: $prompt,
+                context: '',
+                options: $this->buildLlmOptions(['temperature' => $this->temperature, 'max_tokens' => 500]),
             );
 
             $lines = array_filter(
@@ -1122,6 +1131,37 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
      *                          Example: ["llm_model_id" => "01J..."]
      * @return LLMServiceInterface The resolved LLM service (default or overridden).
      *                             Example: $this->llm or new LLMService(...)
+     */
+    /**
+     * Build LLM options array
+     *
+     * Merges base parameters (temperature, max_tokens) with the optional
+     * `think` flag (for Ollama Qwen models) when set via AiModel settings.
+     *
+     * @param  array  $overrides  Base options (temperature, max_tokens, etc.).
+     *   Example: ['temperature' => 0.3, 'max_tokens' => 4096]
+     * @return array Options with `think` conditionally included.
+     *   Example: ['temperature' => 0.3, 'max_tokens' => 4096, 'think' => false]
+     */
+    private function buildLlmOptions(array $overrides): array
+    {
+        if ($this->think !== null) {
+            $overrides['think'] = $this->think;
+        }
+
+        return $overrides;
+    }
+
+    /**
+     * Resolve LLM Service
+     *
+     * Resolves the LLM service to use for a request. If a specific model ID
+     * is provided in the options, it will create a new LLM service with that
+     * model's provider. Otherwise, returns the default LLM service.
+     *
+     * @param  array  $options  Request options. Example: ["session_id" => "01J...", "llm_model_id" => "01J..."]
+     * @return LLMServiceInterface The configured LLM service
+     *   Example: new LLMService(provider: new OllamaLLMProvider(...), maxContextTokens: 4000)
      */
     private function resolveLLM(array $options): LLMServiceInterface
     {
