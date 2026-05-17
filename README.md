@@ -249,7 +249,7 @@ See [PROJECT_RULES.md](PROJECT_RULES.md) for the full list.
 
 ## License
 
-See [LICENSE](LICENSE) (or contact the maintainers — there's no license file checked in yet).
+See [LICENSE](LICENSE).
 
 ---
 
