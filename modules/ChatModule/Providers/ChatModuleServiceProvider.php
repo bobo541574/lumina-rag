@@ -8,6 +8,11 @@ use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Support\ServiceProvider;
 use Modules\ChatModule\Commands\CleanupExpiredSessions;
 use Modules\ChatModule\Contracts\RAGPipelineServiceInterface;
+use Modules\ChatModule\Services\Pipeline\ChunkProcessor;
+use Modules\ChatModule\Services\Pipeline\FilterExtractor;
+use Modules\ChatModule\Services\Pipeline\FtsQueryBuilder;
+use Modules\ChatModule\Services\Pipeline\ResponseBuilder;
+use Modules\ChatModule\Services\Pipeline\SessionManager;
 use Modules\ChatModule\Services\RAGPipelineService;
 use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
 use Modules\EmbeddingModule\Services\ProviderFactory;
@@ -48,6 +53,11 @@ class ChatModuleServiceProvider extends ServiceProvider
             providerFactory: $app->make(ProviderFactory::class),
             cache: $app->make(CacheRepository::class),
             termAliasService: $app->make(TermAliasServiceInterface::class),
+            filterExtractor: $app->make(FilterExtractor::class),
+            ftsQueryBuilder: $app->make(FtsQueryBuilder::class),
+            chunkProcessor: $app->make(ChunkProcessor::class),
+            responseBuilder: $app->make(ResponseBuilder::class),
+            sessionManager: $app->make(SessionManager::class),
             topK: (int) config('rag.search.top_k', 5),
             similarityThreshold: (float) config('rag.search.similarity_threshold', 0.65),
             maxQuestionLength: (int) config('rag.chat.max_question_length', 1000),

@@ -8,6 +8,11 @@ use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
 use Modules\EmbeddingModule\Services\ProviderFactory;
 use Modules\LLMModule\Contracts\LLMResponseInterface;
 use Modules\LLMModule\Contracts\LLMServiceInterface;
+use Modules\ChatModule\Services\Pipeline\ChunkProcessor;
+use Modules\ChatModule\Services\Pipeline\FilterExtractor;
+use Modules\ChatModule\Services\Pipeline\FtsQueryBuilder;
+use Modules\ChatModule\Services\Pipeline\ResponseBuilder;
+use Modules\ChatModule\Services\Pipeline\SessionManager;
 use Modules\SettingsModule\Contracts\TermAliasServiceInterface;
 use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
 use PHPUnit\Framework\MockObject\Exception;
@@ -39,7 +44,33 @@ function makePipeline(
     $termAliasService->shouldReceive('expandText')->andReturnArg(0);
     $termAliasService->shouldReceive('expandFtsQuery')->andReturnArg(0);
 
-    return new RAGPipelineService($embedder, $vectorStore, $llm, $providerFactory, $cache, $termAliasService);
+    $filterExtractor = mock(FilterExtractor::class);
+    $filterExtractor->shouldReceive('extract')->andReturn([]);
+    $filterExtractor->shouldReceive('resolveTimeReferences')->andReturnArg(0);
+    $ftsQueryBuilder = mock(FtsQueryBuilder::class);
+    $ftsQueryBuilder->shouldReceive('refine')->andReturnArg(0);
+    $chunkProcessor = mock(ChunkProcessor::class);
+    $chunkProcessor->shouldReceive('applyDynamicThreshold')->andReturnArg(0);
+    $chunkProcessor->shouldReceive('applyMMR')->andReturnArg(0);
+    $chunkProcessor->shouldReceive('assessConfidence')->andReturn('high');
+    $chunkProcessor->shouldReceive('hasOldDocuments')->andReturn(false);
+    $chunkProcessor->shouldReceive('reorderForLostInTheMiddle')->andReturnArg(0);
+    $responseBuilder = mock(ResponseBuilder::class);
+    $responseBuilder->shouldReceive('buildSystemPrompt')->andReturn('system prompt');
+    $responseBuilder->shouldReceive('buildFilterNote')->andReturn('');
+    $responseBuilder->shouldReceive('buildRefusalResponse')->andReturn([
+        'message' => ['content' => 'I cannot answer this question based on the available documents.', 'sources' => []],
+    ]);
+    $responseBuilder->shouldReceive('buildSources')->andReturn([]);
+    $sessionManager = mock(SessionManager::class);
+    $sessionManager->shouldReceive('resolveSession')->andReturnUsing(function ($sessionId, $userId) {
+        return $sessionId ? (Modules\ChatModule\Models\ChatSession::find($sessionId) ?? new Modules\ChatModule\Models\ChatSession) : new Modules\ChatModule\Models\ChatSession;
+    });
+    $sessionManager->shouldReceive('checkMessageLimit')->andReturn();
+    $sessionManager->shouldReceive('saveUserMessage')->andReturn(new Modules\ChatModule\Models\ChatMessage);
+    $sessionManager->shouldReceive('saveAssistantMessage')->andReturn(new Modules\ChatModule\Models\ChatMessage);
+
+    return new RAGPipelineService($embedder, $vectorStore, $llm, $providerFactory, $cache, $termAliasService, $filterExtractor, $ftsQueryBuilder, $chunkProcessor, $responseBuilder, $sessionManager);
 }
 
 /**

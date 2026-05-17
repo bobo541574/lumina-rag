@@ -15,6 +15,11 @@ use Illuminate\Support\Facades\Log;
 use Modules\ChatModule\Contracts\RAGPipelineServiceInterface;
 use Modules\ChatModule\Models\ChatMessage;
 use Modules\ChatModule\Models\ChatSession;
+use Modules\ChatModule\Services\Pipeline\ChunkProcessor;
+use Modules\ChatModule\Services\Pipeline\FilterExtractor;
+use Modules\ChatModule\Services\Pipeline\FtsQueryBuilder;
+use Modules\ChatModule\Services\Pipeline\ResponseBuilder;
+use Modules\ChatModule\Services\Pipeline\SessionManager;
 use Modules\DocumentModule\Models\Document;
 use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
 use Modules\EmbeddingModule\Services\EmbeddingService;
@@ -105,6 +110,16 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
     private TermAliasServiceInterface $termAliasService;
 
+    private FilterExtractor $filterExtractor;
+
+    private FtsQueryBuilder $ftsQueryBuilder;
+
+    private ChunkProcessor $chunkProcessor;
+
+    private ResponseBuilder $responseBuilder;
+
+    private SessionManager $sessionManager;
+
     /**
      * Create a new RAGPipelineService instance
      *
@@ -141,6 +156,11 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         ProviderFactory $providerFactory,
         CacheRepository $cache,
         TermAliasServiceInterface $termAliasService,
+        FilterExtractor $filterExtractor,
+        FtsQueryBuilder $ftsQueryBuilder,
+        ChunkProcessor $chunkProcessor,
+        ResponseBuilder $responseBuilder,
+        SessionManager $sessionManager,
         int $topK = 5,
         float $similarityThreshold = 0.65,
         int $maxQuestionLength = 1000,
@@ -161,6 +181,11 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $this->providerFactory = $providerFactory;
         $this->cache = $cache;
         $this->termAliasService = $termAliasService;
+        $this->filterExtractor = $filterExtractor;
+        $this->ftsQueryBuilder = $ftsQueryBuilder;
+        $this->chunkProcessor = $chunkProcessor;
+        $this->responseBuilder = $responseBuilder;
+        $this->sessionManager = $sessionManager;
         $this->topK = $topK;
         $this->similarityThreshold = $similarityThreshold;
         $this->maxQuestionLength = $maxQuestionLength;
@@ -256,10 +281,10 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         set_time_limit(120);
         $start = microtime(true);
         $question = $this->normalizeQuestion($question);
-        $session = $this->resolveSession($options['session_id'] ?? null, $options['user_id'] ?? $this->userId);
-        $this->checkMessageLimit($session);
+        $session = $this->sessionManager->resolveSession($options['session_id'] ?? null, $options['user_id'] ?? $this->userId);
+        $this->sessionManager->checkMessageLimit($session, $this->maxMessagesPerSession);
 
-        $autoFilters = $this->extractFiltersFromQuestion($question);
+        $autoFilters = $this->filterExtractor->extract($question);
 
         // Expand aliases for search: append canonical terms so vector search
         // (via expandText and expandQuery in the LLM query expansion step)
@@ -267,14 +292,14 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         // original question (not alias-expanded) to avoid introducing canonical
         // terms that don't appear in document chunk content.
         $searchQuestion = $this->termAliasService->expandText($question);
-        $ftsQuery = $this->refineFtsQuery($question, $autoFilters);
+        $ftsQuery = $this->ftsQueryBuilder->refine($question, $autoFilters);
         $ftsQuery = $this->termAliasService->expandFtsQuery($ftsQuery);
 
-        $this->saveUserMessage($session, $question);
+        $this->sessionManager->saveUserMessage($session, $question);
 
         // Resolve relative time references (yesterday, today, …) to literal
         // dates so the LLM doesn't have to guess the current date.
-        $llmQuestion = $this->resolveTimeReferences($question);
+        $llmQuestion = $this->filterExtractor->resolveTimeReferences($question);
 
         // Inherit filters from the previous exchange when the current
         // question doesn't specify any user or project (e.g. follow-ups).
@@ -294,7 +319,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
                 ->first(['content']);
             if ($prevUserMsg !== null) {
                 $inherited = true;
-                $inheritedFilters = $this->extractFiltersFromQuestion($prevUserMsg->content);
+                $inheritedFilters = $this->filterExtractor->extract($prevUserMsg->content);
 
                 // Always inherit user and project
                 if (isset($inheritedFilters['user_ids'])) {
@@ -410,11 +435,11 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $searchTime = (microtime(true) - $t0) * 1000;
 
         usort($allChunks, fn (object $a, object $b): int => (float) $b->similarity_score <=> (float) $a->similarity_score);
-        $chunks = $this->applyDynamicThreshold(array_values($allChunks), $autoFilters);
-        $chunks = $this->applyMMR($chunks);
+        $chunks = $this->chunkProcessor->applyDynamicThreshold(array_values($allChunks), $autoFilters, $this->similarityThreshold, $this->topK);
+        $chunks = $this->chunkProcessor->applyMMR($chunks, $this->mmrEnabled, $this->topK, $this->mmrLambda);
 
         if ($chunks === []) {
-            $answer = $this->buildRefusalResponse($session, $question, $autoFilters);
+            $answer = $this->responseBuilder->buildRefusalResponse($session, $question, $autoFilters);
             $totalTime = (microtime(true) - $start) * 1000;
             Log::channel(config('rag.logging.channel', 'rag'))->info('RAG pipeline: refusal (no chunks)', [
                 'session_id' => $session->id,
@@ -426,10 +451,10 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             return $answer;
         }
 
-        $confidence = $this->assessConfidence($chunks);
-        $hasOldDocs = $this->hasOldDocuments($chunks);
-        $systemPrompt = $this->buildSystemPrompt($confidence, $hasOldDocs);
-        $context = $this->reorderForLostInTheMiddle($chunks);
+        $confidence = $this->chunkProcessor->assessConfidence($chunks);
+        $hasOldDocs = $this->chunkProcessor->hasOldDocuments($chunks);
+        $systemPrompt = $this->responseBuilder->buildSystemPrompt($confidence, $hasOldDocs);
+        $context = $this->chunkProcessor->reorderForLostInTheMiddle($chunks);
 
         // Inject conversation history so the LLM can resolve follow-up
         // references (e.g. "what about last week?").
@@ -450,7 +475,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         // Prepend search-scope metadata so the LLM knows which filters
         // were applied (e.g. date=2026-05-15, not its own guess of "yesterday").
-        $scope = $this->buildFilterNote($autoFilters);
+$scope = $this->responseBuilder->buildFilterNote($autoFilters);
         if ($scope !== '') {
             array_unshift($context, (object) [
                 'document_title' => 'Search Scope',
@@ -459,20 +484,17 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             ]);
         }
 
-        $t0 = microtime(true);
-        $response = $llm->complete($systemPrompt, $llmQuestion, $context, [
-            'temperature' => 0.3,
-            'max_tokens' => $this->maxTokens,
-        ]);
-        $llmTime = (microtime(true) - $t0) * 1000;
+        $response = $this->llm->complete(
+            systemPrompt: $systemPrompt,
+            context: $context,
+            question: $llmQuestion,
+            maxTokens: $this->maxTokens,
+            temperature: 0.3,
+        );
 
-        $content = $response->getContent();
-        if ($response->getFinishReason() === 'length') {
-            $content .= "\n\n*[မှတ်ချက်: အဖြေသည် သတ်မှတ်ထားသော token ကန့်သတ်ချက်ကို ကျော်လွန်နေသောကြောင့် ဖြတ်တောက်ထားပါသည်။ ထပ်မံမေးမြန်းနိုင်ပါသည်။]*";
-        }
-
-        $sources = $this->buildSources($chunks);
-        $message = $this->saveAssistantMessage($session, $content, $sources);
+        $content = $response['content'] ?? '';
+        $sources = $this->responseBuilder->buildSources($chunks);
+        $message = $this->sessionManager->saveAssistantMessage($session, $content, $sources);
 
         $totalTime = (microtime(true) - $start) * 1000;
         Log::channel(config('rag.logging.channel', 'rag'))->info('RAG pipeline: complete', [
@@ -560,7 +582,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
                 ->first(['content']);
             if ($prevUserMsg !== null) {
                 $inherited = true;
-                $inheritedFilters = $this->extractFiltersFromQuestion($prevUserMsg->content);
+                $inheritedFilters = $this->filterExtractor->extract($prevUserMsg->content);
 
                 // Always inherit user and project
                 if (isset($inheritedFilters['user_ids'])) {
@@ -688,11 +710,11 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $searchTime = (microtime(true) - $t0) * 1000;
 
         usort($allChunks, fn (object $a, object $b): int => (float) $b->similarity_score <=> (float) $a->similarity_score);
-        $chunks = $this->applyDynamicThreshold(array_values($allChunks), $autoFilters);
-        $chunks = $this->applyMMR($chunks);
+        $chunks = $this->chunkProcessor->applyDynamicThreshold(array_values($allChunks), $autoFilters, $this->similarityThreshold, $this->topK);
+        $chunks = $this->chunkProcessor->applyMMR($chunks, $this->mmrEnabled, $this->topK, $this->mmrLambda);
 
         if ($chunks === []) {
-            $refusal = $this->buildRefusalResponse($session, $question, $autoFilters);
+            $refusal = $this->responseBuilder->buildRefusalResponse($session, $question, $autoFilters);
             $totalTime = (microtime(true) - $start) * 1000;
             Log::channel(config('rag.logging.channel', 'rag'))->info('RAG pipeline (stream): refusal (no chunks)', [
                 'session_id' => $session->id,
@@ -714,10 +736,10 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             return;
         }
 
-        $confidence = $this->assessConfidence($chunks);
-        $hasOldDocs = $this->hasOldDocuments($chunks);
-        $systemPrompt = $this->buildSystemPrompt($confidence, $hasOldDocs);
-        $context = $this->reorderForLostInTheMiddle($chunks);
+        $confidence = $this->chunkProcessor->assessConfidence($chunks);
+        $hasOldDocs = $this->chunkProcessor->hasOldDocuments($chunks);
+        $systemPrompt = $this->responseBuilder->buildSystemPrompt($confidence, $hasOldDocs);
+        $context = $this->chunkProcessor->reorderForLostInTheMiddle($chunks);
 
         // Inject conversation history so the LLM can resolve follow-up
         // references (e.g. "what about last week?").
@@ -738,7 +760,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         // Prepend search-scope metadata so the LLM knows which filters
         // were applied (e.g. date=2026-05-15, not its own guess of "yesterday").
-        $scope = $this->buildFilterNote($autoFilters);
+        $scope = $this->responseBuilder->buildFilterNote($autoFilters);
         if ($scope !== '') {
             array_unshift($context, (object) [
                 'document_title' => 'Search Scope',
@@ -747,7 +769,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             ]);
         }
 
-        $sources = $this->buildSources($chunks);
+        $sources = $this->responseBuilder->buildSources($chunks);
         yield json_encode(['type' => 'sources', 'sources' => $sources]);
 
         yield json_encode([
@@ -769,7 +791,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         }
         $llmTime = (microtime(true) - $t0) * 1000;
 
-        $this->saveAssistantMessage($session, $fullContent, $sources);
+        $this->sessionManager->saveAssistantMessage($session, $fullContent, $sources);
 
         $totalTime = (microtime(true) - $start) * 1000;
         Log::channel(config('rag.logging.channel', 'rag'))->info('RAG pipeline (stream): complete', [
@@ -881,198 +903,6 @@ class RAGPipelineService implements RAGPipelineServiceInterface
      * @param  string  $question  The raw question text. Example: "What reports did John file in April 2026?"
      * @return array{user_ids?: array, project?: string, report_date_from?: string, report_date_to?: string}
      *                                                                                                       Extracted filters keyed by type. Example: ["user_ids" => ["01J..."], "project" => "Orion", "report_date_from" => "2026-04-01", "report_date_to" => "2026-04-30"]
-     */
-    private function extractFiltersFromQuestion(string $question): array
-    {
-        $filters = [];
-
-        // ── User name extraction ──────────────────────────────────────────
-        // Look up user names from the DB; match against the question
-        try {
-            $users = $this->cache->remember('rag:users', 300, fn (): Collection => User::select('id', 'name')->get());
-            $matchedUserIds = [];
-            foreach ($users as $user) {
-                $cleanName = preg_quote($user->name, '/');
-                if (preg_match('/'.$cleanName.'/iu', $question)) {
-                    $matchedUserIds[] = $user->id;
-
-                    continue;
-                }
-                // Try matching just the base name before any English parenthetical
-                $baseName = preg_replace('/\s*\([^)]*\)$/u', '', $user->name);
-                if ($baseName !== $user->name && preg_match('/'.preg_quote($baseName, '/').'/iu', $question)) {
-                    $matchedUserIds[] = $user->id;
-                }
-            }
-            if ($matchedUserIds !== []) {
-                $filters['user_ids'] = $matchedUserIds;
-            }
-        } catch (\Throwable) {
-            // DB not available — skip
-        }
-
-        // ── Project name extraction ───────────────────────────────────────
-        try {
-            $projects = $this->cache->remember('rag:projects', 300, fn (): Collection => Document::distinct()->whereNotNull('project')->where('project', '!=', '')->pluck('project'));
-
-            // Sort projects by length descending to match the most specific project name first
-            $sortedProjects = $projects->sortByDesc(fn ($p) => mb_strlen($p));
-
-            foreach ($sortedProjects as $project) {
-                $clean = preg_quote($project, '/');
-                if (preg_match('/'.$clean.'/iu', $question)) {
-                    $filters['project'] = $project;
-                    break;
-                }
-            }
-        } catch (\Throwable) {
-            // DB not available — skip
-        }
-
-        // ── Time period extraction (Myanmar + English) ────────────────────
-        $now = now();
-        $today = $now->copy()->startOfDay();
-        $timePeriods = [
-
-            // Myanmar: today
-            ['/ဒီနေ့/u',          'today'],
-            ['/ယနေ့/u',            'today'],
-            ['/မနေ့/u',            'yesterday'],
-            ['/မနေ့က/u',           'yesterday'],
-
-            // Myanmar: this week/month/year
-            ['/ဒီတစ်ပတ်/u',        'this_week'],
-            ['/ဒီတစ်လ/u',          'this_month'],
-            ['/ဒီလ/u',              'this_month'],
-            ['/ဒီတစ်နှစ်/u',       'this_year'],
-
-            // Myanmar: last week/month/year (ပြီးခဲ့တဲ့ = last/past)
-            ['/ပြီးခဲ့တဲ့\s*အပတ်/u',  'last_week'],
-            ['/ပြီးခဲ့တဲ့\s*လ/u',     'last_month'],
-            ['/ပြီးခဲ့တဲ့\s*နှစ်/u',  'last_year'],
-
-            // English
-            ['/\bthis\s*day\b/i',    'today'],
-            ['/\btoday\b/i',         'today'],
-            ['/\byesterday\b/i',     'yesterday'],
-            ['/\blast\s*night\b/i',  'yesterday'],
-            ['/\bthis\s*week\b/i',   'this_week'],
-            ['/\bthis\s*month\b/i',  'this_month'],
-            ['/\bthis\s*year\b/i',   'this_year'],
-        ];
-
-        foreach ($timePeriods as [$pattern, $period]) {
-            if (preg_match($pattern, $question)) {
-                $filters = $this->applyTimePeriod($filters, $period, $today);
-                break;
-            }
-        }
-
-        // ── Burmese month names + digit conversion ──────────────────────
-        $burmeseDigitMap = ['၀' => '0', '၁' => '1', '၂' => '2', '၃' => '3', '၄' => '4', '၅' => '5', '၆' => '6', '၇' => '7', '၈' => '8', '၉' => '9'];
-        $hasBurmeseDigits = strtr($question, $burmeseDigitMap) !== $question;
-        // Normalized copy with digits converted (for number matching)
-        $qDigits = strtr($question, $burmeseDigitMap);
-
-        $burmeseMonths = [
-            'ဇန်နဝါရီ' => 1, 'ဖေဖော်ဝါရီ' => 2, 'မတ်' => 3, 'ဧပြီ' => 4,
-            'မေ' => 5, 'ဇွန်' => 6, 'ဇူလိုင်' => 7, 'ဩဂုတ်' => 8,
-            'စက်တင်ဘာ' => 9, 'အောက်တိုဘာ' => 10, 'နိုဝင်ဘာ' => 11, 'ဒီဇင်ဘာ' => 12,
-        ];
-
-        foreach ($burmeseMonths as $mmName => $mmNum) {
-            $monthPtn = preg_quote($mmName, '/');
-            $mmPad = str_pad((string) $mmNum, 2, '0', STR_PAD_LEFT);
-
-            // "၂၀၂၆ ခုနှစ် ဧပြီလ" or "2026 ခုနှစ် ဧပြီလ"
-            if (preg_match('/(\d{4})\s*ခုနှစ်\s*'.$monthPtn.'လ/u', $qDigits, $m)) {
-                $filters['report_date_from'] = "{$m[1]}-{$mmPad}-01";
-                $filters['report_date_to'] = "{$m[1]}-{$mmPad}-".now()->create((int) $m[1], $mmNum)->endOfMonth()->format('d');
-                break;
-            }
-            // "ဧပြီလ ၂၀၂၆" or "ဧပြီလ 2026"
-            if (preg_match('/'.$monthPtn.'လ\s*(\d{4})/u', $qDigits, $m)) {
-                $filters['report_date_from'] = "{$m[1]}-{$mmPad}-01";
-                $filters['report_date_to'] = "{$m[1]}-{$mmPad}-".now()->create((int) $m[1], $mmNum)->endOfMonth()->format('d');
-                break;
-            }
-            // "ဧပြီလ" alone → current year
-            if (preg_match('/'.$monthPtn.'လ/u', $question)) {
-                $year = now()->year;
-                $filters['report_date_from'] = "{$year}-{$mmPad}-01";
-                $filters['report_date_to'] = "{$year}-{$mmPad}-".now()->create($year, $mmNum)->endOfMonth()->format('d');
-                break;
-            }
-        }
-
-        // ── Date patterns (most specific first) ──────────────────────────
-        // Use digit-normalized question for number patterns so Burmese
-        // digits like "၂၀၂၆-၀၄" also match as "2026-04".
-        $dateSrc = $hasBurmeseDigits ? $qDigits : $question;
-
-        // YYYY-MM-DD (e.g. 2026-04-07)
-        if (preg_match('/\b(\d{4})-(\d{2})-(\d{2})\b/', $dateSrc, $m)) {
-            $filters['report_date_from'] = "{$m[1]}-{$m[2]}-{$m[3]}";
-            $filters['report_date_to'] = "{$m[1]}-{$m[2]}-{$m[3]}";
-        } elseif (preg_match('/\b(\d{4})-(\d{2})\b/', $question, $m)) {
-            // YYYY-MM (e.g. 2026-04)
-            $filters['report_date_from'] = "{$m[1]}-{$m[2]}-01";
-            $filters['report_date_to'] = "{$m[1]}-{$m[2]}-".now()->create($m[1], $m[2])->endOfMonth()->format('d');
-        } elseif (preg_match('/\b(\d{4})-(January|February|March|April|May|June|July|August|September|October|November|December)\b/i', $question, $m)) {
-            // YYYY-MonthName (e.g. 2026-April) — may come from normalizeQuestion()
-            $monthMap = [
-                'January' => '01', 'February' => '02', 'March' => '03',
-                'April' => '04', 'May' => '05', 'June' => '06',
-                'July' => '07', 'August' => '08', 'September' => '09',
-                'October' => '10', 'November' => '11', 'December' => '12',
-            ];
-            $monthNum = $monthMap[$m[2]];
-            $filters['report_date_from'] = "{$m[1]}-{$monthNum}-01";
-            $filters['report_date_to'] = "{$m[1]}-{$monthNum}-".now()->create((int) $m[1], (int) $monthNum)->endOfMonth()->format('d');
-        } elseif (preg_match('/\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})\b/i', $question, $m)) {
-            // MonthName DD (e.g. "April 15") — no year, use current year
-            $monthMap = [
-                'January' => '01', 'February' => '02', 'March' => '03',
-                'April' => '04', 'May' => '05', 'June' => '06',
-                'July' => '07', 'August' => '08', 'September' => '09',
-                'October' => '10', 'November' => '11', 'December' => '12',
-            ];
-            $monthNum = $monthMap[$m[1]];
-            $day = str_pad($m[2], 2, '0', STR_PAD_LEFT);
-            $year = now()->year;
-            $filters['report_date_from'] = "{$year}-{$monthNum}-{$day}";
-            $filters['report_date_to'] = "{$year}-{$monthNum}-{$day}";
-        } else {
-            // Quarter / year / month-name patterns
-            $datePatterns = [
-                '/\b(Q[1-4]\s*\d{4})\b/i',
-                '/\b(\d{4})\b/',
-                '/\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}\b/i',
-            ];
-
-            foreach ($datePatterns as $pattern) {
-                if (preg_match($pattern, $question, $matches)) {
-                    $dateStr = $matches[1];
-                    if (preg_match('/^Q[1-4]/i', $dateStr)) {
-                        $quarter = (int) substr($dateStr, 1, 1);
-                        $year = (int) trim(substr($dateStr, strpos($dateStr, ' ') + 1));
-                        $filters['report_date_from'] = "{$year}-".str_pad((string) (($quarter - 1) * 3 + 1), 2, '0', STR_PAD_LEFT).'-01';
-                        $filters['report_date_to'] = "{$year}-".str_pad((string) ($quarter * 3), 2, '0', STR_PAD_LEFT).'-31';
-                    } elseif (preg_match('/^\d{4}$/', $dateStr)) {
-                        // Use digit-normalized $dateSrc so Burmese
-                        // digits like "၂၀၂၆" → "2026"
-                        preg_match('/\b(\d{4})\b/', $dateSrc, $m2);
-                        $year = $m2[1] ?? $dateStr;
-                        $filters['report_date_from'] = "{$year}-01-01";
-                        $filters['report_date_to'] = "{$year}-12-31";
-                    }
-                    break;
-                }
-            }
-        }
-
-        return $filters;
-    }
 
     /**
      * Refine a question string into a clean FTS query
@@ -1087,150 +917,6 @@ class RAGPipelineService implements RAGPipelineServiceInterface
      * @param  string  $question  The search question (may already be alias-expanded). Example: "Show me John's report for April"
      * @param  array  $filters  Extracted filters (used to strip user/project names). Example: ["user_ids" => ["01J..."], "report_date_from" => "2026-04-01"]
      * @return string Cleaned query string for plainto_tsquery. Example: "report April"
-     */
-    private function refineFtsQuery(string $question, array $filters): string
-    {
-        static $stopwords = [
-            'show', 'list', 'tell', 'give', 'find', 'does', 'have', 'has',
-            'from', 'this', 'that', 'what', 'when', 'where', 'which', 'who',
-            'will', 'would', 'could', 'should', 'can', 'need', 'want',
-            'there', 'their', 'with', 'about', 'into', 'over', 'than',
-            'then', 'also', 'just', 'very', 'been', 'were', 'been', 'being',
-            'more', 'some', 'any', 'each', 'every', 'both', 'most',
-            'first', 'last', 'next', 'other', 'after', 'before', 'between',
-            'your', 'yours', 'ours', 'theirs', 'mine', 'his', 'hers', 'its',
-            'make', 'made', 'done', 'get', 'got', 'see', 'saw', 'use', 'used',
-            'like', 'good', 'well', 'way', 'know', 'take', 'think',
-            'yesterday', 'today', 'tomorrow',
-            // Burmese/Myanmar conversational framing words
-            'ရှိ', 'ရှိလား', 'ရှိပါ', 'ရှိပါတယ်', 'ပါ', 'ပါတယ်',
-            'တယ်', 'သည်', 'ကို', 'မှာ', 'မှ', 'တွင်', 'အတွက်',
-            'အား', 'ဖြင့်', 'နှင့်', 'အကြောင်း', 'ကြောင်း',
-            'လား', 'ဟုတ်', 'မဟုတ်', 'ဖူး', 'ဘူး',
-            'ဒီနေ့', 'ယနေ့', 'မနေ့', 'မနေ့က',
-            'တင်ထားတဲ့', 'တင်သွင်းတဲ့', 'တင်ပြထားတဲ့',
-            'ရေးသားတဲ့', 'ရေးထားတဲ့', 'ပြုလုပ်တဲ့',
-            'ဆိုင်ရာ', 'ပတ်သက်', 'ပေးပါ', 'ပေးပါဦး',
-            'ဆိုရင်', 'ဆိုရင်လည်း', 'ဆိုတာ', 'ဆိုတာလဲ',
-            'ဘယ်', 'ဘယ်လို', 'ဘယ်ရက်', 'ဘယ်အချိန်',
-            'ရှိတယ်ဆို', 'ရှိသလား', 'ရှိခဲ့လား', 'ရှိနေလား',
-            'ဘာတွေ', 'ဘာလဲ', 'လဲ', 'လဲဆိုတာ',
-            'အဲ့ဒါဆို', 'ဒါဆို', 'အဲ့ဒီ', 'အဲဒီ', 'ရှိတဲ့', 'ဆို', 'ရက်',
-        ];
-
-        // Strip matched user names
-        if (isset($filters['user_ids'])) {
-            try {
-                $users = User::whereIn('id', $filters['user_ids'])->pluck('name');
-                foreach ($users as $name) {
-                    // Use a more robust pattern for Burmese names (not relying on \b)
-                    $question = preg_replace('/'.preg_quote($name, '/').'/iu', '', $question);
-                    // Also try stripping just the base name before English parenthetical
-                    $baseName = preg_replace('/\s*\([^)]*\)$/u', '', $name);
-                    if ($baseName !== $name && $baseName !== '') {
-                        $question = preg_replace('/'.preg_quote($baseName, '/').'/iu', '', $question);
-                    }
-                }
-            } catch (\Throwable) {
-                // skip
-            }
-        }
-
-        // Strip matched project name
-        if (isset($filters['project'])) {
-            $question = preg_replace('/'.preg_quote($filters['project'], '/').'/iu', '', $question);
-        }
-
-        // Strip date patterns (YYYY-MM-DD or YYYY-MM) before individual
-        // year components to avoid leaving bare "-MM" tokens that PostgreSQL
-        // plainto_tsquery would interpret as a negation operator.
-        $question = preg_replace('/\b\d{4}[-\.\/]\d{1,2}([-\.\/]\d{1,2})?\b/', '', $question);
-
-        // Strip YYYY-MonthName patterns (e.g. "2026-April") before individual
-        // year/month stripping so they don't leave a bare "-" token.
-        $question = preg_replace('/\b\d{4}[-\.\/](January|February|March|April|May|June|July|August|September|October|November|December)\b/i', '', $question);
-
-        // Strip MonthName DD patterns (e.g. "April 15") before individual
-        // month stripping so they don't leave a bare day number.
-        $question = preg_replace('/\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}\b/i', '', $question);
-
-        // Strip year and quarter patterns
-        $question = preg_replace('/\b\d{4}\b/', '', $question);
-        $question = preg_replace('/\bQ[1-4]\b/i', '', $question);
-
-        // Strip month names
-        $question = preg_replace('/\b(January|February|March|April|May|June|July|August|September|October|November|December)\b/i', '', $question);
-
-        // Strip common stopwords
-        foreach ($stopwords as $word) {
-            $quoted = preg_quote($word, '/');
-            // If it's a Burmese word (contains Burmese characters), don't use \b
-            if (preg_match('/[\x{1000}-\x{109F}]/u', $word)) {
-                $question = preg_replace('/'.$quoted.'/iu', '', $question);
-            } else {
-                $question = preg_replace('/\b'.$quoted.'\b/iu', '', $question);
-            }
-        }
-
-        // Keep meaningful content words:
-        // - ASCII words: must be > 2 chars, not just punctuation
-        // - Non-ASCII words (Burmese, etc.): must be > 1 char, not in
-        //   stopwords list. The pg 'english' FTS parser keeps non-ASCII
-        //   tokens as-is so they can match document content.
-        $words = preg_split('/\s+/', $question);
-        $words = array_filter($words, function (string $w) use ($stopwords): bool {
-            $w = trim($w);
-            if ($w === '') {
-                return false;
-            }
-
-            // Check if it's a stopword (for cases where preg_replace missed it)
-            if (in_array(mb_strtolower($w), $stopwords)) {
-                return false;
-            }
-
-            if (preg_match('/[a-zA-Z0-9]/', $w)) {
-                return mb_strlen($w) > 2;
-            }
-
-            return mb_strlen($w) > 1;
-        });
-        $words = array_map(fn (string $w): string => preg_replace('/[^a-zA-Z0-9\p{L}\-\.]/u', '', $w), $words);
-        $words = array_filter($words, fn (string $w): bool => $w !== '');
-        // Clean up tokens: strip leading/trailing hyphens, and remove
-        // tokens that are purely hyphens or hyphen-prefixed numbers
-        // (leftover date fragments like "-04" that FTS would treat as NOT)
-        $words = array_filter($words, fn (string $w): bool => ! preg_match('/^-+\d*$/', $w));
-        $words = array_map(fn (string $w): string => trim($w, '-'), $words);
-        $words = array_filter($words, fn (string $w): bool => $w !== '');
-        $words = array_udiff($words, $stopwords, fn (string $a, string $b): int => mb_strtolower($a) <=> mb_strtolower($b));
-        // Keep only ASCII tokens for the English FTS parser. Burmese and
-        // other non-ASCII tokens produce fragments from stopword removal
-        // that don't match the tsvector (which stores contiguous Burmese
-        // text as single tokens). Rely on the vector search for non-English
-        // queries.
-        $words = array_filter($words, fn (string $w): bool => ! preg_match('/[^\x00-\x7F]/', $w));
-
-        $result = implode(' ', array_unique($words));
-        $result = trim(preg_replace('/\s+/', ' ', $result));
-
-        if ($result === '') {
-            // Fallback: extract only ASCII content words from the original
-            // question. Skip non-ASCII text — the English FTS parser cannot
-            // handle Burmese/Unicode tokens and AND-matching fragments would
-            // never match the tsvector.
-            $fallback = preg_replace('/[^\x00-\x7F]/u', '', $question);
-            $fallback = preg_replace('/\b\d{4}[-\.\/]\d{1,2}([-\.\/]\d{1,2})?\b/', '', $fallback, -1);
-            $fallback = preg_replace('/\b\d{4}\b/', '', $fallback, -1);
-            $fallback = preg_replace('/-+/', ' ', $fallback, -1);
-            $fallback = trim(preg_replace('/\s+/', ' ', $fallback, -1));
-            $fallback = implode(' ', array_filter(explode(' ', $fallback), fn (string $w): bool => mb_strlen($w) > 2));
-
-            return $fallback !== '' ? $fallback : 'report';
-        }
-
-        return $result;
-    }
 
     /**
      * Apply a named time period to the filter array
@@ -1245,54 +931,6 @@ class RAGPipelineService implements RAGPipelineServiceInterface
      * @param  Carbon  $today  Reference date for relative calculations. Example: now()->startOfDay()
      * @return array Updated filters with report_date_from and report_date_to set.
      *               Example: ["report_date_from" => "2026-05-01", "report_date_to" => "2026-05-31"]
-     */
-    private function applyTimePeriod(array $filters, string $period, Carbon $today): array
-    {
-        $from = null;
-        $to = null;
-
-        switch ($period) {
-            case 'today':
-                $from = $today->copy();
-                $to = $today->copy()->endOfDay();
-                break;
-            case 'yesterday':
-                $from = $today->copy()->subDay();
-                $to = $from->copy()->endOfDay();
-                break;
-            case 'this_week':
-                $from = $today->copy()->startOfWeek(Carbon::MONDAY);
-                $to = $from->copy()->endOfWeek(Carbon::SUNDAY);
-                break;
-            case 'last_week':
-                $from = $today->copy()->subWeek()->startOfWeek(Carbon::MONDAY);
-                $to = $from->copy()->endOfWeek(Carbon::SUNDAY);
-                break;
-            case 'this_month':
-                $from = $today->copy()->startOfMonth();
-                $to = $today->copy()->endOfMonth();
-                break;
-            case 'last_month':
-                $from = $today->copy()->subMonth()->startOfMonth();
-                $to = $from->copy()->endOfMonth();
-                break;
-            case 'this_year':
-                $from = $today->copy()->startOfYear();
-                $to = $today->copy()->endOfYear();
-                break;
-            case 'last_year':
-                $from = $today->copy()->subYear()->startOfYear();
-                $to = $from->copy()->endOfYear();
-                break;
-        }
-
-        if ($from !== null) {
-            $filters['report_date_from'] = $from->format('Y-m-d');
-            $filters['report_date_to'] = $to->format('Y-m-d');
-        }
-
-        return $filters;
-    }
 
     /**
      * Replace relative time references with literal dates
@@ -1307,48 +945,6 @@ class RAGPipelineService implements RAGPipelineServiceInterface
      *                            Example: "What reports were filed yesterday?"
      * @return string Question with relative times replaced by literal dates.
      *                Example: "What reports were filed on 2026-05-16?"
-     */
-    private function resolveTimeReferences(string $question): string
-    {
-        $now = now();
-        $today = $now->copy()->startOfDay();
-
-        $dateRanges = [
-
-            // Myanmar: today
-            ['/ဒီနေ့/u',     $today->format('Y-m-d')],
-            ['/ယနေ့/u',       $today->format('Y-m-d')],
-
-            // Myanmar: yesterday
-            ['/မနေ့/u',       $today->copy()->subDay()->format('Y-m-d')],
-
-            // Myanmar: this week/month/year
-            ['/ဒီတစ်ပတ်/u',   $today->copy()->startOfWeek(Carbon::MONDAY)->format('Y-m-d').' to '.$today->copy()->endOfWeek(Carbon::SUNDAY)->format('Y-m-d')],
-            ['/ဒီတစ်လ/u',     $today->copy()->startOfMonth()->format('Y-m-d').' to '.$today->copy()->endOfMonth()->format('Y-m-d')],
-            ['/ဒီလ/u',         $today->copy()->startOfMonth()->format('Y-m-d').' to '.$today->copy()->endOfMonth()->format('Y-m-d')],
-            ['/ဒီတစ်နှစ်/u',  $today->copy()->startOfYear()->format('Y-m-d').' to '.$today->copy()->endOfYear()->format('Y-m-d')],
-
-            // Myanmar: last week/month/year
-            ['/ပြီးခဲ့တဲ့\s*အပတ်/u', $today->copy()->subWeek()->startOfWeek(Carbon::MONDAY)->format('Y-m-d').' to '.$today->copy()->subWeek()->endOfWeek(Carbon::SUNDAY)->format('Y-m-d')],
-            ['/ပြီးခဲ့တဲ့\s*လ/u',    $today->copy()->subMonth()->startOfMonth()->format('Y-m-d').' to '.$today->copy()->subMonth()->endOfMonth()->format('Y-m-d')],
-            ['/ပြီးခဲ့တဲ့\s*နှစ်/u', $today->copy()->subYear()->startOfYear()->format('Y-m-d').' to '.$today->copy()->subYear()->endOfYear()->format('Y-m-d')],
-
-            // English: today / yesterday
-            ['/\btoday\b/i',      $today->format('Y-m-d')],
-            ['/\byesterday\b/i',  $today->copy()->subDay()->format('Y-m-d')],
-
-            // English: this week/month/year
-            ['/\bthis\s*week\b/i',  $today->copy()->startOfWeek(Carbon::MONDAY)->format('Y-m-d').' to '.$today->copy()->endOfWeek(Carbon::SUNDAY)->format('Y-m-d')],
-            ['/\bthis\s*month\b/i', $today->copy()->startOfMonth()->format('Y-m-d').' to '.$today->copy()->endOfMonth()->format('Y-m-d')],
-            ['/\bthis\s*year\b/i',  $today->copy()->startOfYear()->format('Y-m-d').' to '.$today->copy()->endOfYear()->format('Y-m-d')],
-        ];
-
-        foreach ($dateRanges as [$pattern, $replacement]) {
-            $question = preg_replace($pattern, $replacement, $question, -1);
-        }
-
-        return $question;
-    }
 
     /**
      * Expand a search query into multiple reformulations
@@ -1410,25 +1006,6 @@ class RAGPipelineService implements RAGPipelineServiceInterface
      *                         Example: [['similarity_score' => 0.9, 'content' => '...'], ...]
      * @return array Reordered chunks with best first, worst last.
      *               Example: [best, mid1, worst, mid2] for 4 chunks
-     */
-    private function reorderForLostInTheMiddle(array $chunks): array
-    {
-        if (count($chunks) <= 2) {
-            return $chunks;
-        }
-
-        $remaining = array_slice($chunks, 1);
-        $middle = (int) ceil(count($remaining) / 2);
-
-        $ordered = array_merge(
-            [$chunks[0]],
-            array_slice($remaining, 0, $middle - 1),
-            [$chunks[count($chunks) - 1]],
-            array_slice($remaining, $middle - 1),
-        );
-
-        return $ordered;
-    }
 
     /**
      * Apply dynamic threshold using the elbow method
@@ -1447,55 +1024,6 @@ class RAGPipelineService implements RAGPipelineServiceInterface
      *                          Example: ["user_ids" => ["01J..."]]
      * @return array Filtered chunks above the determined threshold.
      *               Example: [['similarity_score' => 0.92, 'content' => '...']]
-     */
-    private function applyDynamicThreshold(array $chunks, array $filters = []): array
-    {
-        if ($chunks === []) {
-            return [];
-        }
-
-        $scores = array_map(fn (object $c): float => (float) $c->similarity_score, $chunks);
-        rsort($scores);
-
-        if (count($scores) <= 1) {
-            return array_slice($chunks, 0, $this->topK);
-        }
-
-        $maxGap = 0.0;
-        $gapIndex = 0;
-        for ($i = 0; $i < count($scores) - 1; $i++) {
-            $gap = $scores[$i] - $scores[$i + 1];
-            if ($gap > $maxGap) {
-                $maxGap = $gap;
-                $gapIndex = $i;
-            }
-        }
-
-        $baseThreshold = $this->similarityThreshold;
-        if (! empty($filters['user_ids']) || ! empty($filters['project']) || ! empty($filters['report_date_from'])) {
-            $baseThreshold = 0.45;
-        }
-
-        $cutoff = $baseThreshold;
-        if ($maxGap > 0.15) {
-            $cutoff = max($cutoff, $scores[$gapIndex + 1]);
-        } else {
-            $scaled = (float) $scores[0] * 0.85;
-            $cutoff = max($cutoff, $scaled);
-        }
-
-        $filtered = array_values(
-            array_filter($chunks, fn (object $c): bool => (float) $c->similarity_score >= $cutoff)
-        );
-
-        $filtered = array_slice($filtered, 0, $this->topK);
-
-        if ($filtered === [] && $chunks !== [] && $scores[0] >= 0.25) {
-            return array_slice($chunks, 0, min(1, $this->topK));
-        }
-
-        return $filtered;
-    }
 
     /**
      * Apply Maximal Marginal Relevance (MMR) reranking
@@ -1511,52 +1039,6 @@ class RAGPipelineService implements RAGPipelineServiceInterface
      *                         Example: [['document_id' => '01J...', 'similarity_score' => 0.9, 'content' => '...']]
      * @return array MMR-diversified chunks capped at topK.
      *               Example: [best_chunk, diverse_chunk_from_other_doc, ...]
-     */
-    private function applyMMR(array $chunks): array
-    {
-        if (! $this->mmrEnabled || count($chunks) <= 1) {
-            return $chunks;
-        }
-
-        $topK = min($this->topK, count($chunks));
-        $selected = [];
-        $candidates = $chunks;
-
-        $selected[] = array_shift($candidates);
-
-        while (count($selected) < $topK && $candidates !== []) {
-            $bestIdx = -1;
-            $bestScore = -INF;
-
-            foreach ($candidates as $i => $cand) {
-                $simScore = (float) $cand->similarity_score;
-                $maxSimToSelected = 0.0;
-
-                foreach ($selected as $sel) {
-                    $penalty = $cand->document_id === $sel->document_id ? 1.0 : 0.0;
-                    if ($penalty > $maxSimToSelected) {
-                        $maxSimToSelected = $penalty;
-                    }
-                }
-
-                $mmr = $this->mmrLambda * $simScore - (1.0 - $this->mmrLambda) * $maxSimToSelected;
-
-                if ($mmr > $bestScore) {
-                    $bestScore = $mmr;
-                    $bestIdx = $i;
-                }
-            }
-
-            if ($bestIdx !== -1) {
-                $selected[] = $candidates[$bestIdx];
-                array_splice($candidates, $bestIdx, 1);
-            } else {
-                break;
-            }
-        }
-
-        return $selected;
-    }
 
     /**
      * Build a human-readable filter description for the LLM context
@@ -1572,38 +1054,6 @@ class RAGPipelineService implements RAGPipelineServiceInterface
      *                          Example: ["user_ids" => ["01J..."], "project" => "Orion", "report_date_from" => "2026-04-01", "report_date_to" => "2026-04-30"]
      * @return string Formatted filter description, or empty string.
      *                Example: "Search scope:\n- Users: John Doe\n- Project: Orion\n- Date range: 2026-04-01 to 2026-04-30"
-     */
-    private function buildFilterNote(array $filters): string
-    {
-        $lines = [];
-
-        if (! empty($filters['user_ids'])) {
-            $names = User::whereIn('id', (array) $filters['user_ids'])->pluck('name')->toArray();
-            $lines[] = '- Users: '.implode(', ', $names);
-        }
-
-        if (! empty($filters['project'])) {
-            $lines[] = '- Project: '.$filters['project'];
-        }
-
-        $from = $filters['report_date_from'] ?? null;
-        $to = $filters['report_date_to'] ?? null;
-        if ($from !== null && $to !== null) {
-            $lines[] = $from === $to
-                ? '- Date: '.$from
-                : "- Date range: {$from} to {$to}";
-        } elseif ($from !== null) {
-            $lines[] = "- From: {$from}";
-        } elseif ($to !== null) {
-            $lines[] = "- Until: {$to}";
-        }
-
-        if ($lines === []) {
-            return '';
-        }
-
-        return "Search scope:\n".implode("\n", $lines);
-    }
 
     /**
      * Normalise a question string
@@ -1650,332 +1100,6 @@ class RAGPipelineService implements RAGPipelineServiceInterface
      * @param  string|null  $sessionId  Optional session ULID to resume. Example: "01J..."
      * @param  string|null  $userId  Optional user ULID for ownership scope. Example: "01J..."
      * @return ChatSession The resolved or newly created session.
-     *                     Example: ChatSession instance with id, title, etc.
-     *
-     * @throws \RuntimeException When session not found, trashed, or expired (>24h inactive)
-     *                           Example: resolveSession('nonexistent') → RuntimeException("Chat session not found.")
-     *                           Example: resolveSession('expired-session') → RuntimeException("Chat session has expired.")
-     */
-    private function resolveSession(?string $sessionId, ?string $userId = null): ChatSession
-    {
-        if ($sessionId !== null) {
-            $query = ChatSession::where('id', $sessionId);
-
-            if ($userId !== null) {
-                $query->where('user_id', $userId);
-            }
-
-            $session = $query->first();
-            if ($session === null) {
-                throw new \RuntimeException('Chat session not found.');
-            }
-            if ($session->trashed()) {
-                throw new \RuntimeException('Chat session has been deleted.');
-            }
-            if ($session->last_activity_at < now()->subHours(24)) {
-                throw new \RuntimeException('Chat session has expired. Please start a new chat.');
-            }
-            $session->update(['last_activity_at' => now()]);
-
-            return $session;
-        }
-
-        return ChatSession::create([
-            'title' => 'New Chat',
-            'last_activity_at' => now(),
-            'user_id' => $userId,
-        ]);
-    }
-
-    /**
-     * Check whether the session has reached its message limit
-     *
-     * Counts the current messages in the session and throws if the count
-     * meets or exceeds maxMessagesPerSession. This prevents runaway sessions
-     * that could consume excessive LLM context window.
-     *
-     * @param  ChatSession  $session  The chat session to check. Example: $chatSession
-     *
-     * @throws \RuntimeException When message count >= maxMessagesPerSession
-     *                           Example: checkMessageLimit($fullSession) → RuntimeException("Session message limit reached.")
-     */
-    private function checkMessageLimit(ChatSession $session): void
-    {
-        $count = $session->messages()->count();
-        if ($count >= $this->maxMessagesPerSession) {
-            throw new \RuntimeException('Session message limit reached. Please start a new chat.');
-        }
-    }
-
-    /**
-     * Save a user message to the session
-     *
-     * Updates the session's last_activity_at, increments message_count,
-     * and creates a new ChatMessage with role "user" and the question content.
-     *
-     * @param  ChatSession  $session  The chat session to save to. Example: $resolvedSession
-     * @param  string  $question  The user's question text. Example: "What is Q3 revenue?"
-     * @return ChatMessage The newly created message instance.
-     *                     Example: ChatMessage instance with role="user", content="What is Q3 revenue?"
-     */
-    private function saveUserMessage(ChatSession $session, string $question): ChatMessage
-    {
-        $session->update(['last_activity_at' => now()]);
-        $session->increment('message_count');
-
-        return ChatMessage::create([
-            'session_id' => $session->id,
-            'role' => 'user',
-            'content' => $question,
-        ]);
-    }
-
-    /**
-     * Save an assistant message to the session
-     *
-     * If the session title is still "New Chat", derives the title from the
-     * first 50 characters of the assistant response. Updates last_activity_at,
-     * increments message_count, and creates a new ChatMessage with role
-     * "assistant", the LLM response content, and source citations.
-     *
-     * @param  ChatSession  $session  The chat session to save to. Example: $resolvedSession
-     * @param  string  $content  The LLM-generated response text. Example: "Revenue for Q3 was $45.2 million..."
-     * @param  array  $sources  Array of source document citations. Example: [["document_id" => "01J...", "document_title" => "Q3 Report.pdf", "similarity_score" => 0.89]]
-     * @return ChatMessage The newly created message instance.
-     *                     Example: ChatMessage instance with role="assistant", content="Revenue...", sources=[...]
-     */
-    private function saveAssistantMessage(ChatSession $session, string $content, array $sources): ChatMessage
-    {
-        if ($session->title === 'New Chat') {
-            $session->update([
-                'title' => mb_substr($content, 0, 50),
-            ]);
-        }
-        $session->update(['last_activity_at' => now()]);
-        $session->increment('message_count');
-
-        return ChatMessage::create([
-            'session_id' => $session->id,
-            'role' => 'assistant',
-            'content' => $content,
-            'sources' => $sources,
-        ]);
-    }
-
-    /**
-     * Build a refusal response when no relevant chunks are found
-     *
-     * Generates a polite refusal message in Burmese or English (detected from
-     * question content). When date filters are present, attempts to find the
-     * nearest available document date and provides a helpful hint. Also checks
-     * whether the nearest document has vector embeddings to explain whether
-     * it is indexed or not. Saves the refusal as an assistant message with
-     * empty sources.
-     *
-     * @param  ChatSession  $session  The chat session. Example: $resolvedSession
-     * @param  string  $question  The original question for language detection. Example: "What is the revenue?"
-     * @param  array  $filters  Applied filters for nearest-date hint logic. Example: ["report_date_from" => "2026-04-01", "report_date_to" => "2026-04-30"]
-     * @return array{session_id: string, message: array} Refusal response in standard format.
-     *                                                   Example: ["session_id" => "01J...", "message" => ["id" => "01J...", "role" => "assistant", "content" => "I cannot answer...", "sources" => []]]
-     */
-    private function buildRefusalResponse(ChatSession $session, string $question = '', array $filters = []): array
-    {
-        $isBurmese = preg_match('/[\x{1000}-\x{109F}]/u', $question) === 1;
-
-        // When the question had date filters, try to find the nearest
-        // available date for a helpful hint.
-        $hint = '';
-        $from = $filters['report_date_from'] ?? null;
-        $to = $filters['report_date_to'] ?? null;
-        if ($from !== null || $to !== null) {
-            $target = $to ?? $from;
-            $query = Document::query()->whereNotNull('report_date');
-            if (! empty($filters['user_ids'])) {
-                $query->whereIn('user_id', (array) $filters['user_ids']);
-            }
-            if (! empty($filters['project'])) {
-                $query->where('project', $filters['project']);
-            }
-            $nearest = $query->orderByRaw('ABS(report_date - CAST(? AS DATE))', [$target])->value('report_date');
-            $nearestStr = $nearest instanceof Carbon
-                ? $nearest->toDateString()
-                : (string) $nearest;
-
-            if ($nearest !== null) {
-                // Check if the document actually has vectors
-                $targetDoc = (clone $query)->where('report_date', $nearest)->first();
-                $hasVectors = false;
-                if ($targetDoc) {
-                    $hasVectors = DB::table('vector_embeddings')
-                        ->whereIn('chunk_id', function ($q) use ($targetDoc) {
-                            $q->select('id')->from('document_chunks')->where('document_id', $targetDoc->id);
-                        })->exists();
-                }
-
-                if ($nearestStr === ($from ?? $to)) {
-                    if (! $hasVectors) {
-                        if ($isBurmese) {
-                            $hint = "\n\n{$nearestStr} ရက်စွဲအတွက် အစီရင်ခံစာရှိသော်လည်း ရှာဖွေမှုအတွက် အဆင်သင့်မဖြစ်သေးပါ။ (Re-embed ပြုလုပ်ရန် လိုအပ်နိုင်ပါသည်)";
-                        } else {
-                            $hint = "\n\nA report for {$nearestStr} exists but is not ready for search. (Re-embedding may be required)";
-                        }
-                    } else {
-                        // Exact date found but no chunks above threshold.
-                        // Likely a model mismatch or low similarity.
-                        if ($isBurmese) {
-                            $hint = "\n\n{$nearestStr} ရက်စွဲအတွက် အစီရင်ခံစာရှိသော်လည်း ရှာဖွေမှုရလဒ်တွင် မတွေ့ပါ။ အချက်အလက်များ မပြည့်စုံခြင်း သို့မဟုတ် ရှာဖွေမှုစံနှုန်းနှင့် မကိုက်ညီခြင်းကြောင့် ဖြစ်နိုင်ပါသည်။";
-                        } else {
-                            $hint = "\n\nA report for {$nearestStr} exists but was not found in search results. This may be due to incomplete indexing or low similarity.";
-                        }
-                    }
-                } else {
-                    if ($isBurmese) {
-                        $hint = "\n\nအနီးစပ်ဆုံးရှိသော အစီရင်ခံစာများမှာ {$nearestStr} ရက်စွဲတွင် ရှိပါသည်။";
-                        if (! $hasVectors) {
-                            $hint .= ' (သို့သော် ရှာဖွေမှုအတွက် အဆင်သင့်မဖြစ်သေးပါ)';
-                        }
-                    } else {
-                        $hint = "\n\nThe closest available reports are dated {$nearestStr}.";
-                        if (! $hasVectors) {
-                            $hint .= ' (But it is not yet ready for search)';
-                        }
-                    }
-                }
-            }
-        }
-
-        $content = $isBurmese
-            ? 'မေးထားသော မေးခွန်းအတွက် အဖြေရှာမတွေ့ပါ။'.$hint
-            : 'I cannot answer this question based on the available documents.'.$hint;
-
-        $message = $this->saveAssistantMessage($session, $content, []);
-
-        return [
-            'session_id' => $session->id,
-            'message' => [
-                'id' => $message->id,
-                'role' => 'assistant',
-                'content' => $content,
-                'sources' => [],
-                'created_at' => $message->created_at->toIso8601String(),
-            ],
-        ];
-    }
-
-    /**
-     * Assess answer confidence based on chunk count
-     *
-     * Returns "high" (3+ chunks), "low" (1-2 chunks), or "none" (empty).
-     * Used by buildSystemPrompt to adjust the LLM's response tone — low
-     * confidence adds an instruction to acknowledge uncertainty.
-     *
-     * @param  array  $chunks  The filtered/re-ranked chunks to evaluate.
-     *                         Example: [['similarity_score' => 0.9, 'content' => '...']]
-     * @return string Confidence level: "high", "low", or "none".
-     *                Example: "high"
-     */
-    private function assessConfidence(array $chunks): string
-    {
-        $aboveThreshold = count($chunks);
-
-        return match (true) {
-            $aboveThreshold >= 3 => 'high',
-            $aboveThreshold >= 1 => 'low',
-            default => 'none',
-        };
-    }
-
-    /**
-     * Build the system prompt for the LLM
-     *
-     * Constructs a context-only instruction set that tells the LLM to answer
-     * strictly from provided documents, cite sources, match the user's
-     * language, and use metadata headers (Report by, Project, Date) for
-     * attribution. Optionally appends low-confidence guidance and a note
-     * about old documents (>1 year) for time-sensitive information.
-     *
-     * @param  string  $confidence  "high", "low", or "none" from assessConfidence(). Example: "high"
-     * @param  bool  $hasOldDocuments  Whether any source document is >1 year old. Example: false
-     * @return string The system prompt string.
-     *                Example: "You are a precise document-answering assistant. Follow these rules strictly:\n\n1. Answer ONLY..."
-     */
-    private function buildSystemPrompt(string $confidence, bool $hasOldDocuments = false): string
-    {
-        $prompt = 'You are a precise document-answering assistant. Follow these rules strictly:
-
---- CORE RULES ---
-
-1. **Grounding**: Answer ONLY using the provided context below. Do NOT use prior knowledge or training data. Pretend your training data does not exist.
-
-2. **Completeness**: If the context fully answers the question, provide a complete cite-sourced answer. If it partially answers, state what you know and clearly mark what information is missing. If it does not answer at all, say: "I cannot answer this based on the available documents." Do not guess.
-
-3. **No Hallucination**: NEVER make up facts, names, dates, or figures that are not in the context. If uncertain, say so. Fabrication is strictly forbidden.
-
-4. **Citation**: Cite the source document title for every factual claim. Use the format [Source: Document Title]. When multiple chunks from the same document support a claim, cite the document once.
-
-5. **Language**: Respond in the SAME LANGUAGE as the user\'s question (Burmese/English/mixed). Match the user\'s tone — formal for professional queries, concise for direct questions.
-
-6. **Metadata Awareness**: DOCUMENTS contain metadata headers at the top of each chunk:
-   - "Report by: {author_name}" — Use for WHO questions.
-   - "Project: {project_name}" — Use for WHICH PROJECT questions.
-   - "Date: {report_date}" — Use for WHEN questions.
-   Look for these markers when the user asks about authors, projects, or dates.
-
-7. **Structure**: Answer directly using paragraphs or bullet points as appropriate. Group related information under logical sections when answering multi-part questions.
-
---- BEHAVIOR ---
-
-8. **Tone**: Be professional, concise, and factual. Avoid opinion, speculation, or unsolicited advice.
-
-9. **Formatting**: Use Markdown for readability — **bold** for key terms, `code` for technical terms, and bullet lists for enumerations. Do not use emojis unless the user used them first.
-
-10. **Conciseness**: Prefer short, direct answers. Do not repeat the question back. Do not add disclaimers beyond what the rules require.';
-
-        if ($confidence === 'low') {
-            $prompt .= "\n\n--- LOW CONFIDENCE ---\n\n11. The available information is limited (fewer than 3 relevant chunks). Acknowledge uncertainty clearly. Start with: \"Based on limited available information...\" and suggest what additional information or documents would help provide a better answer.";
-        }
-
-        if ($hasOldDocuments) {
-            $index = $confidence === 'low' ? 12 : 11;
-            $prompt .= "\n\n--- OLD DOCUMENTS ---\n\n{$index}. Some source documents are over a year old. When your answer depends on time-sensitive information from these documents, note the document date. Use: \"According to a document from [date]...\"";
-        }
-
-        return $prompt;
-    }
-
-    /**
-     * Check whether any source document is over a year old
-     *
-     * Inspects the document_created_at property of each chunk and returns
-     * true if any document is older than one year from the current date.
-     * Used by buildSystemPrompt to add a time-sensitivity advisory.
-     *
-     * @param  array  $chunks  The chunks to inspect, each with optional document_created_at.
-     *                         Example: [['document_created_at' => '2025-01-15', ...]]
-     * @return bool True if at least one document is over 1 year old.
-     *              Example: true
-     */
-    private function hasOldDocuments(array $chunks): bool
-    {
-        $oneYearAgo = now()->subYear();
-
-        foreach ($chunks as $chunk) {
-            if (! isset($chunk->document_created_at)) {
-                continue;
-            }
-
-            try {
-                if (Carbon::parse($chunk->document_created_at)->lt($oneYearAgo)) {
-                    return true;
-                }
-            } catch (\Throwable) {
-                continue;
-            }
-        }
-
-        return false;
-    }
-
     /**
      * Resolve the LLM service for a specific request
      *
@@ -2009,31 +1133,5 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             provider: $provider,
             maxContextTokens: $aiModel->max_context_tokens ?? (int) config('rag.llm.max_context_tokens', 4000),
         );
-    }
-
-    /**
-     * Build the sources array for the response
-     *
-     * Maps chunk objects to the standard source citation format with
-     * document_id, document_title, chunk_index, page_number, similarity_score
-     * (rounded to 4 decimals), and a 200-character content excerpt.
-     *
-     * @param  array  $chunks  The chunks used in the answer, each with document_id,
-     *                         document_title, chunk_index, page_number, similarity_score, and content.
-     *                         Example: [['document_id' => '01J...', 'document_title' => 'Report.pdf', 'similarity_score' => 0.8923, ...]]
-     * @return array<int, array{document_id: string, document_title: string, chunk_index: mixed, page_number: mixed, similarity_score: float, excerpt: string}>
-     *                                                                                                                                                          Standardised source citation array.
-     *                                                                                                                                                          Example: [['document_id' => '01J...', 'document_title' => 'Report.pdf', 'similarity_score' => 0.8923, 'excerpt' => 'Revenue reached...']]
-     */
-    private function buildSources(array $chunks): array
-    {
-        return array_map(fn (object $chunk): array => [
-            'document_id' => $chunk->document_id,
-            'document_title' => $chunk->document_title,
-            'chunk_index' => $chunk->chunk_index,
-            'page_number' => $chunk->page_number ?? null,
-            'similarity_score' => round((float) $chunk->similarity_score, 4),
-            'excerpt' => mb_substr((string) $chunk->content, 0, 200),
-        ], $chunks);
     }
 }

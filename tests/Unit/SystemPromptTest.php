@@ -2,18 +2,14 @@
 
 declare(strict_types=1);
 
-use Illuminate\Contracts\Cache\Repository as CacheRepository;
-use Modules\ChatModule\Services\RAGPipelineService;
-use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
-use Modules\EmbeddingModule\Services\ProviderFactory;
-use Modules\LLMModule\Contracts\LLMServiceInterface;
-use Modules\SettingsModule\Contracts\TermAliasServiceInterface;
-use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
+use Modules\ChatModule\Services\Pipeline\ResponseBuilder;
+use Modules\ChatModule\Services\Pipeline\SessionManager;
 
 /**
- * Call the private buildSystemPrompt method on RAGPipelineService
+ * Call buildSystemPrompt on ResponseBuilder
  *
- * Uses reflection to invoke the private method and return the prompt string.
+ * Instantiates ResponseBuilder with a mock SessionManager and
+ * invokes buildSystemPrompt directly.
  *
  * @param  string  $confidence  "high" or "low". Example: "high"
  * @param  bool  $hasOldDocuments  Whether source documents are >1 year old. Example: false
@@ -21,21 +17,10 @@ use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
  */
 function callBuildSystemPrompt(string $confidence, bool $hasOldDocuments = false): string
 {
-    $embedder = mock(EmbeddingServiceInterface::class);
-    $vectorStore = mock(VectorStoreInterface::class);
-    $llm = mock(LLMServiceInterface::class);
-    $providerFactory = mock(ProviderFactory::class);
-    $cache = mock(CacheRepository::class);
-    $termAliasService = mock(TermAliasServiceInterface::class);
+    $sessionManager = mock(SessionManager::class);
+    $responseBuilder = new ResponseBuilder($sessionManager);
 
-    $service = new RAGPipelineService(
-        $embedder, $vectorStore, $llm, $providerFactory, $cache, $termAliasService,
-    );
-
-    $reflection = new ReflectionMethod(RAGPipelineService::class, 'buildSystemPrompt');
-    $reflection->setAccessible(true);
-
-    return $reflection->invoke($service, $confidence, $hasOldDocuments);
+    return $responseBuilder->buildSystemPrompt($confidence, $hasOldDocuments);
 }
 
 test('high_confidence_prompt_contains_grounding_rules', function (): void {
