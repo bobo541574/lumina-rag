@@ -125,16 +125,21 @@ LIMIT 5;
 // Filter by minimum chunk index
 ['chunk_index_min' => 10]
 
+// Filter by JSONB metadata fields (document_chunks.metadata)
+['meta' => ['project' => 'Orion', 'user_name' => 'John']]
+
 // Combined filters
 [
     'document_ids' => [1, 2],
     'date_from' => '2024-06-01',
+    'meta' => ['project' => 'Orion'],
 ]
 ```
 
 ### Filter Implementation
-- pgvector: WHERE clauses on JOINed metadata
-- Pinecone: Metadata filtering in query parameters
+- pgvector: WHERE clauses on JOINed metadata + `jsonb @>` operator for `meta` filter
+- SQLite: `json_extract()` for `meta` filter
+- Pinecone: Not implemented
 
 ## Batch Operations
 

@@ -86,7 +86,7 @@ Auxiliary Laravel tables: `users`, `password_reset_tokens`, `sessions` (HTTP ses
 
 ### `documents`
 
-`modules/DocumentModule/database/migrations/2026_01_01_000001_create_documents_table.php` + later add-column migrations.
+`modules/DocumentModule/database/migrations/2026_01_01_000001_create_documents_table.php` (consolidated — includes `embedding_model`, `embedding_model_id`, `report_date`, `project` columns that were previously added via separate migrations).
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
@@ -116,13 +116,14 @@ Auxiliary Laravel tables: `users`, `password_reset_tokens`, `sessions` (HTTP ses
 **Indexes**:
 - `idx_documents_status` on `status`
 - `idx_documents_file_hash` on `file_hash` (also unique)
+- `idx_documents_project` on `project`
+- `idx_documents_report_date` on `report_date`
 
 ---
 
 ### `document_chunks`
 
-`modules/DocumentModule/database/migrations/2026_01_01_000002_create_document_chunks_table.php`
-+ `2026_01_01_000003_add_fts_index_to_document_chunks.php` (Postgres-only)
+`modules/DocumentModule/database/migrations/2026_01_01_000002_create_document_chunks_table.php` (consolidated — includes `tsv_content` and `metadata` columns that were previously added via separate migrations).
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
@@ -134,14 +135,15 @@ Auxiliary Laravel tables: `users`, `password_reset_tokens`, `sessions` (HTTP ses
 | `char_start` | integer | not null | Offset within original text |
 | `char_end` | integer | not null | Offset within original text |
 | `token_count` | integer | nullable | Best-effort token count |
-| `metadata` | json | nullable | Free-form per-chunk metadata |
-| `tsv_content` | tsvector | nullable | **Postgres only** — generated from `content` for FTS. Auto-populated by `ProcessDocumentJob` on insert (migration does a one-time backfill using `simple` config; job uses `english` config). `ReportDemoSeeder` also populates it. |
+| `metadata` | jsonb | default `'{}'` | Free-form per-chunk metadata. Populated with `user_id`, `user_name`, `project`, `report_date`, `document_title`, `chunk_index`, `section`, `page_number`. |
+| `tsv_content` | tsvector | nullable | **Postgres only** — generated from `content` for FTS. Auto-populated by `ProcessDocumentJob` on insert (migration backfills with `english` config). |
 | `created_at` | timestamptz | default `NOW()` | (no `updated_at` — chunks are immutable) |
 
 **Indexes**:
 - `idx_document_chunks_document_id` on `document_id`
 - `idx_document_chunks_doc_chunk` on `(document_id, chunk_index)` — uniqueness enforced at app layer
 - `idx_chunks_tsv` GIN index on `tsv_content` — **Postgres only**, used by hybrid search
+- `idx_document_chunks_metadata_gin` GIN index on `metadata` using `jsonb_path_ops` — **Postgres only**, used by metadata filtering
 
 The `tsv_content` column and its GIN index are skipped on SQLite (test environment).
 
@@ -210,7 +212,7 @@ Registry of available embedding + LLM endpoints. Each row is a complete provider
 | `id` | ULID | PK | |
 | `name` | varchar(255) | not null | Friendly name shown in UI |
 | `type` | varchar(20) | not null | `embedding` or `llm` |
-| `provider` | varchar(50) | not null | `openai` or `ollama` |
+| `provider` | varchar(50) | not null | `openai`, `ollama`, `gemini`, `claude`, or `deepseek` |
 | `model` | varchar(255) | not null | Provider's model identifier (e.g. `gpt-4o`) |
 | `api_key` | text | nullable | Required for OpenAI; optional for Ollama |
 | `base_url` | varchar(500) | nullable | Required for Ollama; optional for OpenAI proxy |

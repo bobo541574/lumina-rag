@@ -40,14 +40,14 @@ Implemented in [TextChunkingService.php](modules/DocumentModule/Services/TextChu
 - **Chunk size**: 1 000 characters (`config('rag.chunking.chunk_size')`).
 - **Overlap**: 200 characters (`config('rag.chunking.overlap')`).
 - **Separator priority**: paragraph break (`\n\n`) → line break (`\n`) → sentence end (`.`) → comma → space → character.
-- **Per-chunk metadata stored**: `chunk_index`, `page_number` (PDF only), `char_start`, `char_end`. Unique index on `(document_id, chunk_index)`.
+- **Per-chunk metadata stored**: `chunk_index`, `section` (from heading hierarchy), `page_number` (PDF only), `char_start`, `char_end`. Document-level metadata (`user_id`, `user_name`, `project`, `report_date`, `document_title`) merged into each chunk's `metadata` JSONB. Unique index on `(document_id, chunk_index)`.
 
 ### Embedding generation
 
 Implemented in [EmbeddingService.php](modules/EmbeddingModule/Services/EmbeddingService.php).
 
 - **Default model**: Ollama `nomic-embed-text:latest` (768 dims) or the AiModel registry's active embedding model. Override per-upload via `embedding_model_id`.
-- **Provider**: Ollama (default seeder) or OpenAI. Both implemented behind `EmbeddingProviderInterface`.
+- **Provider**: Ollama (default seeder), OpenAI, or Gemini. All implemented behind `EmbeddingProviderInterface`.
 - **Batch size**: 100 texts per provider call (`config('rag.embedding.batch_size')`).
 - **Cache**: MD5 hash of `(model + text)` → vector, TTL 24 h (`config('rag.embedding.cache_ttl')`).
 - **Job retries**: `ProcessDocumentJob` has `tries = 3` with exponential backoff (Laravel default).
@@ -82,7 +82,7 @@ Orchestrated in [RAGPipelineService.php](modules/ChatModule/Services/RAGPipeline
    - Question > `config('rag.chat.max_question_length')` (1 000 chars) → truncated.
 2. **Auto-filters**: `extractFiltersFromQuestion()` detects user names, project names, date ranges (including `YYYY-MonthName` and `MonthName DD` patterns) from the question text and applies them as SQL filters (user_id, project, report_date range) to both vector and FTS queries — not as FTS search terms.
 3. **Question embedding**: same model the matching documents were embedded with (per-document override falls back to AiModel registry or config default).
-4. **FTS query refinement**: `refineFtsQuery()` strips detected filter terms (user, project, date) and stopwords from the FTS query so they don't compete with content terms. Date patterns (`YYYY-MM-DD`, `YYYY-MM`, `YYYY-MonthName`) are stripped before individual year removal to avoid bare `-MM` fragments being interpreted as PostgreSQL FTS negation operators.
+4. **FTS query refinement**: `refineFtsQuery()` strips detected filter terms (user, project, date) and stopwords from the FTS query so they don't compete with content terms. Date patterns (`YYYY-MM-DD`, `YYYY-MM`, `YYYY-MonthName`) are stripped before individual year removal to avoid bare `-MM` fragments being interpreted as PostgreSQL FTS negation operators. Non-ASCII tokens (Burmese/Unicode) are filtered out — the English `tsvector` parser cannot handle them. Pure Burmese queries fall back to ASCII-only content words from the original question.
 5. **Vector search**: top-K (default 5) chunks via cosine distance. Initial threshold lowered to `min(0.65, 0.20)` to cast a wider net; final threshold applied post-fusion.
 6. **Search modes** (`config('rag.search.mode')`):
    - `vector` — pure cosine similarity.
@@ -92,7 +92,7 @@ Orchestrated in [RAGPipelineService.php](modules/ChatModule/Services/RAGPipeline
 8. **Query expansion** (`config('rag.search.query_expansion.enabled')`, default `false`): generates additional query variants via the LLM, runs each, merges results.
 9. **Threshold handling** (`applyDynamicThreshold()`): starts from a low floor (`0.20`) and applies an elbow-detection method to find the natural drop-off point in similarity scores, capped at the configured `similarity_threshold` (default 0.65). If all chunks score below the floor, a single best chunk survives as a safety valve.
 10. **Context assembly**: chunks sorted by score desc, concatenated with source labels, truncated to `config('rag.llm.max_context_tokens')` (4 000 tokens default).
-11. **LLM completion**: provider per AiModel registry (Ollama default). Temperature 0.3 default.
+11. **LLM completion**: provider per AiModel registry (Ollama default, also OpenAI, Gemini, Claude, DeepSeek). Temperature 0.3 default.
 12. **Streaming**: SSE with `chunk`, `sources`, `status` (embedding/searching/generating), and `done` (with tokens_used/search_time_ms/llm_time_ms/total_time_ms metadata) events. Frontend uses `fetch` with `ReadableStream` reader and automatic retry (up to 3 attempts with exponential backoff). The **Stop** button calls `store.abortStream()`.
 13. **Persistence**: user message + assistant message saved to `chat_messages`; `sources[]` stored as jsonb on the assistant message.
 
@@ -120,6 +120,7 @@ Optional fields on `POST /api/chat`:
 | `document_ids[]` | Restrict search to specific documents |
 | `date_from`, `date_to` | Restrict to documents uploaded in date range |
 | `llm_model_id` | ULID of an `ai_models` row of `type = llm` to use for this query |
+| `meta` | Object of `{key: value}` pairs filtered against `document_chunks.metadata` JSONB via `@>` operator |
 
 The frontend ChatInterface filter chips bind these. Active filter count appears next to the "Search Filters" toggle button.
 
@@ -182,7 +183,7 @@ Both `/register` and `/login` return Laravel's standard `errors: { field: [messa
 
 The `ai_models` table is a registry of available embedding + LLM endpoints. Each row encapsulates a complete provider configuration: provider type, model name, API key, base URL, dimensions/timeout/etc.
 
-- Multiple models can be registered. `is_active` marks the default for that type.
+- Multiple models can be registered. `is_active` marks the default for that type. Seeded models now include Gemini embedding (`text-embedding-004`), Claude Sonnet 4.5, DeepSeek Chat, Gemini 2.5 Flash, and GPT-4o alongside existing OpenAI/Ollama models.
 - **Per-document embedding selection**: on upload, user picks an `embedding_model_id` (or accepts the default).
 - **Per-query LLM selection**: on chat, user picks an `llm_model_id` (or accepts the default).
 - **Documents stay linked to the model that embedded them** (`embedding_model_id` foreign key). Deleting a model from the registry **does not** remove the embeddings — existing documents continue to work.

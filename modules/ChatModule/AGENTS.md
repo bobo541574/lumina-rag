@@ -32,7 +32,8 @@ Submit a question for RAG-based answering.
   "document_filter": {
     "document_ids": [1, 2, 3],
     "date_from": "2024-01-01",
-    "date_to": "2024-12-31"
+    "date_to": "2024-12-31",
+    "meta": {"project": "Orion"}
   }
 }
 ```
@@ -95,7 +96,7 @@ Soft-delete session and mark for archival.
 - Context window: 4000 tokens max
 
 ### Response Generation
-- System prompt: Strict context-only instruction
+- System prompt: Strict context-only instruction with rules for grounding, completeness, no hallucination, citation, language matching, metadata awareness, structure, tone, markdown formatting, conciseness. Low-confidence and old-document warnings appended when applicable.
 - Temperature: 0.3 for factual accuracy
 - Always include source citations
 - Streaming enabled by default

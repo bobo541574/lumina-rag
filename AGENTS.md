@@ -31,7 +31,7 @@ Tests: SQLite `:memory:`, `QUEUE_CONNECTION=sync`. `tests/Pest.php` applies `Ref
 - **Backend**: Laravel 13 monolith, PHP 8.3+
 - **Database**: PostgreSQL 16 + pgvector 0.6+ (vectors in same DB)
 - **Cache/Session/Queue**: Redis recommended; queue defaults to `database`
-- **AI**: OpenAI (`gpt-4o`, `text-embedding-3-small`) **or** Ollama (`nomic-embed-text:latest`) via raw curl — no official SDK. Interchangeable per-document via AiModel registry.
+- **AI**: OpenAI (`gpt-4o`, `text-embedding-3-small`), Ollama (`nomic-embed-text:latest`), **Gemini** (`text-embedding-004`, `gemini-2.5-flash`), **Claude** (`claude-sonnet-4-5-20250929`), **DeepSeek** (`deepseek-chat`) via raw curl — no official SDK. Interchangeable per-document via AiModel registry.
 - **Frontend**: Vue 3 + Pinia + vue-router + Tailwind v4 + TypeScript, built with Vite. Single SPA from `resources/js/app.js`.
 
 ### Module layout (PSR-4 → `Modules\{Name}Module\` → `modules/{Name}Module/`)
@@ -95,7 +95,7 @@ All PKs are **ULIDs** (`HasUlids` trait, `->whereUlid()` route binding). **No DB
 | `chat_sessions` | `user_id`, soft deletes |
 | `chat_messages` | `session_id`, `role`, `content`, `sources` (jsonb), soft deletes |
 | `documents` | `user_id`, `file_hash` (unique), `status`, `chunks_count`, `report_date` (date), `project` (varchar), `embedding_model_id` (ULID → ai_models), `embedding_model` (string), soft deletes |
-| `document_chunks` | `document_id`, `content`, `chunk_index`, unique `(document_id, chunk_index)`, `tsv_content` (tsvector, `english` config) |
+| `document_chunks` | `document_id`, `content`, `chunk_index`, `metadata` (jsonb, with `@>` GIN index), unique `(document_id, chunk_index)`, `tsv_content` (tsvector, `english` config, GIN index) |
 | `vector_embeddings` | Metadata only on pgvector (no embedding column); `embedding` column exists only on SQLite fallback |
 | `ve_{dims}` (shard tables) | `chunk_id`, `embedding` `vector(N)`, `model_name`, `content_hash`. IVFFlat `vector_cosine_ops` index. Shards: `ve_{384,768,1024,1536,3072}` |
 | `ai_models` | Embedding/LLM model registry with per-model config (provider, credentials, dims, temperature, timeout, settings JSONB for pipeline overrides). Active model determined by `is_active` + `sort_order`. |
@@ -122,11 +122,11 @@ Response envelope: `{ success, message, data, errors }`.
 ## Configuration
 
 `config/rag.php` is the central knob — all RAG params read via `env()` with sensible defaults:
-- `RAG_EMBEDDING_PROVIDER` / `RAG_LLM_PROVIDER` — `openai` or `ollama`
+- `RAG_EMBEDDING_PROVIDER` / `RAG_LLM_PROVIDER` — `openai`, `ollama`, `gemini`, `claude`, or `deepseek`
 - `RAG_VECTOR_DRIVER` — only `pgsql` is implemented
 - Provider-specific model, dimensions, batch size, cache TTL, timeouts, search mode, chunk params
 
-**Either** `OPENAI_API_KEY` (for OpenAI provider) **or** a local Ollama instance is required, depending on the provider setting. The AiModel registry (`ai_models` table) can override the global provider per-document.
+**Either** `OPENAI_API_KEY` (OpenAI), `GEMINI_API_KEY` (Gemini), `CLAUDE_API_KEY` (Claude), `DEEPSEEK_API_KEY` (DeepSeek), **or** a local Ollama instance is required, depending on the provider setting. The AiModel registry (`ai_models` table) can override the global provider per-document.
 
 ---
 
@@ -135,7 +135,7 @@ Response envelope: `{ success, message, data, errors }`.
 - `declare(strict_types=1);` at top of every PHP file.
 - ULID PKs everywhere — use `HasUlids` on new models.
 - No DB-level FK constraints; enforce in service code.
-- OpenAI/Ollama calls go through raw curl in provider classes — keep new providers behind `EmbeddingProviderInterface` / `LLMProviderInterface`.
+- All provider calls (OpenAI, Ollama, Gemini, Claude, DeepSeek) go through raw curl in provider classes — keep new providers behind `EmbeddingProviderInterface` / `LLMProviderInterface`.
 - Embeddings are MD5-cached (24h). Always go through `EmbeddingService`.
 - Documents have `embedding_model_id` (FK to `ai_models`) and `embedding_model` (model name string). `ReEmbedDocumentJob` respects these per-document settings.
 - FTS uses `plainto_tsquery('english', ...)` and `to_tsvector('english', ...)`. The `simple` config was replaced because it lacks stopword removal and stemming.

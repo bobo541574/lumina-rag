@@ -26,6 +26,8 @@ Upload a new document for processing.
 **Request**: multipart/form-data
 - `file`: Document file (required)
 - `title`: Custom title (optional, defaults to filename)
+- `embedding_model`: Free-form embedding model name override (optional)
+- `embedding_model_id`: ULID of an `ai_models` row of `type = embedding` (optional)
 
 **Validation**:
 - MIME types: PDF, DOCX, TXT, CSV, MD
@@ -70,8 +72,8 @@ Soft delete document, chunks, and associated vectors.
 
 ### Upload Validation
 - SHA-256 hash computed on upload
-- Compared against existing file_hash column
-- Duplicate returns existing document record
+- Compared against existing file_hash column (unique index)
+- Duplicate returns HTTP 409 with existing document record
 
 ### Text Extraction
 - PDF: Extract text stream, preserve paragraphs
@@ -84,7 +86,7 @@ Soft delete document, chunks, and associated vectors.
 - Separator priority: \n\n → \n → . → , → space → char
 - Chunk size: 1000 characters (configurable)
 - Overlap: 200 characters (configurable)
-- Metadata captured per chunk: position, page, character range
+- Metadata captured per chunk: position, page, character range, section (heading), document-level fields (user_id, user_name, project, report_date, document_title) stored in JSONB `metadata` column
 
 ### Processing Pipeline (Async)
 1. Text extraction
@@ -148,7 +150,7 @@ Status indicator with color coding.
 
 ## Database Tables
 - `documents` - Document metadata and status
-- `document_chunks` - Text chunks with position metadata
+- `document_chunks` - Text chunks with position metadata + JSONB metadata + tsvector FTS column
 
 ## Seeder
 `DocumentModuleSeeder` — creates 1 document ("Sample Report") with 3 chunks. Idempotent (skips if document exists). Called automatically by `DatabaseSeeder`.

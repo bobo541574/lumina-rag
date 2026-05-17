@@ -29,9 +29,9 @@ The Laravel app is monolithic; "modules" are an internal organization, not separ
 | Module | Purpose | Key contracts (interface → implementation) |
 |--------|---------|--------------------------------------------|
 | **UserModule** | Registration, login, API token auth | `AuthServiceInterface` → `AuthService` |
-| **EmbeddingModule** | Text → vector, batched, cached | `EmbeddingProviderInterface` → `OpenAIEmbeddingProvider` / `OllamaEmbeddingProvider`<br>`EmbeddingServiceInterface` → `EmbeddingService` |
+| **EmbeddingModule** | Text → vector, batched, cached | `EmbeddingProviderInterface` → `OpenAIEmbeddingProvider` / `OllamaEmbeddingProvider` / `GeminiEmbeddingProvider`<br>`EmbeddingServiceInterface` → `EmbeddingService` |
 | **VectorStoreModule** | Vector storage + similarity search | `VectorStoreInterface` → `VectorStoreService` (wraps `PgvectorDriver`) |
-| **LLMModule** | LLM completions with streaming | `LLMProviderInterface` → `OpenAILLMProvider` / `OllamaLLMProvider`<br>`LLMServiceInterface` → `LLMService` |
+| **LLMModule** | LLM completions with streaming | `LLMProviderInterface` → `OpenAILLMProvider` / `OllamaLLMProvider` / `GeminiLLMProvider` / `ClaudeLLMProvider` / `DeepSeekLLMProvider`<br>`LLMServiceInterface` → `LLMService` |
 | **DocumentModule** | Upload → extract → chunk → embed pipeline | `TextExtractionServiceInterface` → `TextExtractionService`<br>`TextChunkingServiceInterface` → `TextChunkingService` |
 | **ChatModule** | Session management + RAG orchestration | `RAGPipelineServiceInterface` → `RAGPipelineService` |
 | **SettingsModule** | Runtime settings + AI model registry + term aliases | `AiModelServiceInterface` → `AiModelService`<br>`TermAliasServiceInterface` → `TermAliasService` |
@@ -103,7 +103,7 @@ PostgreSQL 16 + pgvector extension. Vectors live in the same database as relatio
 | `chat_sessions` | ULID | `user_id`, `title`, `is_archived`, `last_activity_at`, soft deletes |
 | `chat_messages` | ULID | `session_id`, `role`, `content`, `sources` (jsonb), soft deletes |
 | `documents` | ULID | `user_id`, `title`, `description`, `original_filename`, `file_path`, `file_size`, `mime_type`, `file_hash` (unique), `status`, `chunks_count`, `token_count`, `embedding_model`, `embedding_model_id`, `report_date` (date), `project` (varchar), `is_public` (boolean), `error_message`, soft deletes |
-| `document_chunks` | ULID | `document_id`, `content`, `chunk_index`, `page_number`, `token_count`, `char_start`, `char_end`; unique on `(document_id, chunk_index)` |
+| `document_chunks` | ULID | `document_id`, `content`, `chunk_index`, `page_number`, `token_count`, `char_start`, `char_end`, `metadata` (jsonb), `tsv_content` (tsvector); unique on `(document_id, chunk_index)` |
 | `vector_embeddings` | ULID | **Metadata only**: `chunk_id`, `dimensions`, `model_name`, `content_hash` (+ `embedding` JSON column on SQLite). Actual vectors live in per-dimension shard tables. |
 | `ve_384` / `ve_768` / `ve_1024` / `ve_1536` / `ve_3072` | ULID | **Postgres + pgvector only.** `chunk_id`, `embedding` (`vector(N)`), `model_name`, `content_hash`. IVFFlat index with `vector_cosine_ops` (skipped for `ve_3072` — pgvector IVFFlat caps at 2000 dims). |
 | `ai_models` | ULID | `name`, `type` (embedding/llm), `provider`, `model`, `api_key`, `base_url`, `collection`, `dimensions`, `batch_size`, `cache_ttl`, `temperature`, `max_context_tokens`, `timeout`, `description`, `settings` (jsonb, e.g. `{"max_tokens":4096}`), `is_active`, `sort_order` |
@@ -212,7 +212,7 @@ The codebase consistently uses these semantic tokens — raw Tailwind palette na
 | Database | PostgreSQL 16 + pgvector 0.6+ |
 | Cache / sessions | Redis (recommended); database fallback |
 | Queue | Database (default), Redis (production); `sync` in test |
-| AI providers | OpenAI (default) + Ollama (self-hosted alternative) — both implemented for embedding + LLM |
+| AI providers | OpenAI, Ollama, Gemini, Claude, DeepSeek — all implemented for embedding (OpenAI/Ollama/Gemini) and LLM (all five) via raw curl |
 | PDF / DOCX extraction | `smalot/pdfparser` + `phpoffice/phpword` (composer deps) |
 | Frontend framework | Vue 3 (Composition API + `<script setup lang="ts">`) |
 | State | Pinia 3 |

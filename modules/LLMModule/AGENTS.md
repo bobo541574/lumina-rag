@@ -6,7 +6,7 @@ Manages communication with Large Language Model APIs. Provides a provider-agnost
 ## Responsibility Boundaries
 
 ### This Module OWNS:
-- LLM provider abstraction (OpenAI, Anthropic)
+- LLM provider abstraction (OpenAI, Ollama, Gemini, Claude, DeepSeek)
 - Prompt template rendering
 - Text completion (streaming and non-streaming)
 - Response parsing and token counting
@@ -53,16 +53,34 @@ Orchestrates provider calls with prompt management.
 ## Supported Providers
 
 ### OpenAI
-- Models: gpt-4o, gpt-4-turbo, gpt-3.5-turbo
-- Streaming: Native SSE support
-- Token limit: 128K (gpt-4o), 4K/16K (gpt-3.5)
-- Temperature: 0.3 default (configurable)
-
-### Anthropic Claude
-- Models: claude-3-opus, claude-3-sonnet
-- Streaming: Server-Sent Events
-- Token limit: 200K (claude-3)
+- Models: gpt-4o (default)
+- Streaming: Native SSE support via raw curl
+- Token limit: 128K
 - Temperature: 0.3 default
+
+### Ollama
+- Models: qwen3.5:9b, gemma4:e4b, qwen2.5-coder (local)
+- Streaming: SSE via raw curl
+- Token limit: depends on model
+- Base URL: http://localhost:11434
+
+### Gemini
+- Models: gemini-2.5-flash (default)
+- Streaming: SSE via raw curl
+- Token limit: 1M
+- Base URL: https://generativelanguage.googleapis.com/v1beta
+
+### Claude
+- Models: claude-sonnet-4-5-20250929 (default)
+- Streaming: SSE via raw curl
+- Token limit: 200K
+- Base URL: https://api.anthropic.com/v1
+
+### DeepSeek
+- Models: deepseek-chat (default)
+- Streaming: SSE via raw curl
+- Token limit: 128K
+- Base URL: https://api.deepseek.com/v1
 
 ## Prompt Template System
 
@@ -170,9 +188,8 @@ data: {"finish_reason": "stop", "total_tokens": 150}
 4. Timeout → Fail with partial response if streamed
 
 ### Fallback Chain
-1. Primary provider (OpenAI gpt-4o)
-2. If unavailable, try same provider with gpt-3.5-turbo
-3. If still failed, return error to ChatModule
+1. Primary provider (per AiModel registry)
+2. If unavailable, return error to ChatModule (no automatic cross-provider fallback)
 
 ### Graceful Degradation
 - If streaming fails → Fall back to non-streaming response

@@ -32,7 +32,7 @@ Tests use SQLite `:memory:` and `QUEUE_CONNECTION=sync` — see `phpunit.xml`. `
 - **Backend**: Laravel 13 monolith, PHP 8.3+
 - **Database**: PostgreSQL 16 + pgvector 0.6+ (vectors live in the same DB as relational data)
 - **Cache/Session/Queue**: Redis recommended; queue defaults to `database`
-- **AI**: Ollama (`nomic-embed-text:latest`, `all-MiniLM-L6-v2`, `mxbai-embed-large` for embedding; `qwen3.5:9b`, `gemma4:e4b`, `qwen2.5-coder` for LLM) via raw curl — no official SDK. OpenAI is supported but no longer the default; the AiModel registry in the DB is the source of truth.
+- **AI**: OpenAI (`gpt-4o`, `text-embedding-3-small`), Ollama (`nomic-embed-text:latest`), **Gemini** (`text-embedding-004`, `gemini-2.5-flash`), **Claude** (`claude-sonnet-4-5-20250929`), **DeepSeek** (`deepseek-chat`) via raw curl — no official SDK. Interchangeable per-document via AiModel registry.
 - **Frontend**: Vue 3 + Pinia + vue-router + Tailwind v4 + TypeScript, built with Vite. Single SPA mounted from `resources/js/app.js`.
 
 ### Module layout (PSR-4 → `Modules\{Name}Module\` → `modules/{Name}Module/`)
@@ -70,8 +70,8 @@ modules/{Name}Module/
 |--------|--------------------------|
 | ChatModule | `RAGPipelineServiceInterface` → `RAGPipelineService` |
 | DocumentModule | `TextExtractionServiceInterface` → `TextExtractionService`, `TextChunkingServiceInterface` → `TextChunkingService` |
-| EmbeddingModule | `EmbeddingProviderInterface` → `OpenAIEmbeddingProvider`, `EmbeddingServiceInterface` → `EmbeddingService` |
-| LLMModule | `LLMProviderInterface` → `OpenAILLMProvider`, `LLMServiceInterface` → `LLMService` |
+| EmbeddingModule | `EmbeddingProviderInterface` → `OpenAIEmbeddingProvider` / `OllamaEmbeddingProvider` / `GeminiEmbeddingProvider`, `EmbeddingServiceInterface` → `EmbeddingService` |
+| LLMModule | `LLMProviderInterface` → `OpenAILLMProvider` / `OllamaLLMProvider` / `GeminiLLMProvider` / `ClaudeLLMProvider` / `DeepSeekLLMProvider`, `LLMServiceInterface` → `LLMService` |
 | UserModule | `AuthServiceInterface` → `AuthService` |
 | VectorStoreModule | `VectorStoreInterface` → `VectorStoreService` (wraps `PgvectorDriver` — only driver implemented) |
 | SettingsModule | `SettingsService`, `AiModelService`, `TermAliasServiceInterface` → `TermAliasService` |
@@ -166,7 +166,7 @@ Vite builds via `vite.config.js` with `@vitejs/plugin-vue`, `@tailwindcss/vite`,
 - ULID PKs everywhere — use `HasUlids` on new models and `->whereUlid('id')` on routes.
 - No DB-level FKs; declare relationships in models, enforce existence in services.
 - Both facades (`Storage`, `Log`, `Response`) and constructor-injected config are used in practice — don't refactor one style to the other without a reason.
-- OpenAI calls go through raw curl in `OpenAIEmbeddingProvider` / `OpenAILLMProvider` — keep new providers behind the same interface (`EmbeddingProviderInterface`, `LLMProviderInterface`) rather than calling APIs from services directly.
+- All provider calls (OpenAI, Ollama, Gemini, Claude, DeepSeek) go through raw curl in provider classes — keep new providers behind the same interface (`EmbeddingProviderInterface`, `LLMProviderInterface`) rather than calling APIs from services directly.
 - Embeddings are MD5-cached (24h). Don't bypass the cache layer when adding new embedding call sites — go through `EmbeddingService`.
 - New modules: create the directory under `modules/`, add the PSR-4 entry in [composer.json](composer.json), register the `ServiceProvider` in [config/app.php](config/app.php), and run `composer dump-autoload`.
 

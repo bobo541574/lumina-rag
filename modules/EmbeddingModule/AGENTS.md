@@ -7,7 +7,7 @@ Converts text into dense vector representations. Provides a provider-agnostic in
 
 ### This Module OWNS:
 - Text-to-vector conversion
-- Embedding provider abstraction (OpenAI, Voyage AI, etc.)
+- Embedding provider abstraction (OpenAI, Ollama, Gemini)
 - Request batching and optimization
 - Embedding caching
 - Provider configuration management
@@ -52,23 +52,30 @@ interface EmbeddingProviderInterface
 ## Supported Providers
 
 ### OpenAI
-- Model: text-embedding-ada-002
-- Dimensions: 1536
+- Models: text-embedding-3-small (default), text-embedding-3-large
+- Dimensions: 1536 (3-small), 3072 (3-large)
 - Batch limit: 100 texts per request
 - Authentication: API key
 
-### Voyage AI
-- Model: voyage-2 (configurable)
-- Dimensions: 1024
-- Batch limit: 128 texts per request
+### Ollama
+- Models: nomic-embed-text:latest (default)
+- Dimensions: 768
+- Batch limit: 100 texts per request
+- Authentication: none (local)
+
+### Gemini
+- Models: text-embedding-004 (default)
+- Dimensions: 768
+- Batch limit: 100 texts per request
 - Authentication: API key
+- Base URL: https://generativelanguage.googleapis.com/v1beta
 
 ### Provider Configuration
 Configured in `config/rag.php`:
 ```php
 'embedding' => [
-    'provider' => 'openai',  // or 'voyage'
-    'model' => 'text-embedding-ada-002',
+    'provider' => 'openai',  // or 'ollama', 'gemini'
+    'model' => 'text-embedding-3-small',
     'dimensions' => 1536,
     'batch_size' => 100,
     'cache_ttl' => 86400,    // 24 hours
