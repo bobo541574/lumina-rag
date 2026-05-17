@@ -2,7 +2,7 @@
 
 > **Self-hosted document Q&A.** Upload PDFs, DOCX, TXT, CSV, or Markdown — ask questions in natural language — get answers with citations to the exact source passages.
 
-Built as a single Laravel monolith with a Vue 3 single-page frontend. Stores both relational data and vector embeddings in **PostgreSQL + pgvector** (no separate vector database). Supports **OpenAI** and **Ollama** as interchangeable embedding + LLM providers — bring your own API key, or run everything locally.
+Built as a single Laravel monolith with a Vue 3 single-page frontend. Stores both relational data and vector embeddings in **PostgreSQL + pgvector** (no separate vector database). Supports **5 interchangeable providers** (OpenAI, Ollama, Gemini, Claude, DeepSeek) for both embedding and LLM — bring your own API key, or run everything locally.
 
 ---
 
@@ -14,15 +14,16 @@ Most RAG systems are notebooks, scripts, or thin wrappers around a vendor API. L
 
 ## Features
 
-- 📄 **Document ingestion pipeline** — upload → text extraction (PDF / DOCX / TXT / CSV / MD) → chunking → batch embedding → vector store. Async via Laravel queue, automatically retried on failure.
+- 📄 **Document ingestion pipeline** — upload → text extraction (PDF / DOCX / TXT / CSV / MD) → recursive chunking with metadata embedding (author, project, date, section) → batch embedding → vector store. Async via Laravel queue, automatically retried on failure.
 - 💬 **Chat with sources** — every answer comes with the chunks it was based on, including document title, page number, and similarity score. Streaming responses with a Stop button.
-- 🔍 **Hybrid search by default** — combines vector cosine similarity with PostgreSQL full-text search, optionally re-ranked by Maximal Marginal Relevance (MMR) to reduce redundancy. Optional LLM-based query expansion.
-- 🎛️ **Runtime-tunable** — every RAG knob (chunk size, similarity threshold, top-K, search mode, etc.) is configurable per-model via the AI Models registry's `settings` JSONB without redeploying.
-- 🤖 **Pluggable AI providers** — OpenAI and Ollama both implemented for embedding and LLM independently. Mix and match per-document via the AI Models registry.
+- 🔍 **Hybrid search by default** — combines vector cosine similarity with PostgreSQL full-text search (tsvector with English config), optionally re-ranked by Maximal Marginal Relevance (MMR) to reduce redundancy. Optional LLM-based query expansion. Filter by document metadata (project, date, author, etc.).
+- 🎛️ **Runtime-tunable** — every RAG knob (chunk size, similarity threshold, top-K, search mode, max tokens, etc.) is configurable per-model via the AI Models registry's `settings` JSONB without redeploying.
+- 🤖 **5 pluggable AI providers** — OpenAI, Ollama, Gemini, Claude, and DeepSeek implemented for embedding and/or LLM independently. Mix and match per-document via the AI Models registry.
 - 👥 **Multi-user with API tokens** — register, login, per-user document and session ownership. Tokens are 80-char hex, sent as `Authorization: Bearer`.
 - 🧹 **Real-world UI** — search, sort, filter, pagination, bulk select, optimistic confirms, toast notifications, skeleton loaders, full keyboard accessibility, mobile-responsive header.
 - 🔤 **Term alias registry** — maps alternative names (Burmese/English) to canonical terms, auto-expanding search queries.
-- 📋 **Report date and project metadata on documents** — sort, filter, and edit document metadata fields.
+- 📋 **Report date and project metadata on documents** — sort, filter, and edit document metadata fields (project, date, author). Metadata embedded into every chunk for precision filtering.
+- 📝 **Document template generation** — `php artisan rag:generate-templates` produces 5 role-specific report templates (general, finance, customer-service, software-developer, project-coordinator) in .md, .txt, .csv, and .docx formats.
 
 ---
 
@@ -33,7 +34,7 @@ Most RAG systems are notebooks, scripts, or thin wrappers around a vendor API. L
 | Backend | **Laravel 13** (PHP 8.3+) — 7 internal modules with strict service contracts |
 | Database | **PostgreSQL 16** + **pgvector 0.6+** — relational data and vectors in the same store |
 | Cache / queue / sessions | **Redis** (recommended); database fallback |
-| AI | **Ollama** (`nomic-embed-text:latest`, `mxbai-embed-large`, `all-MiniLM-L6-v2` for embedding; `qwen3.5:9b`, `gemma4:e4b`, `qwen2.5-coder` for LLM) and optionally **OpenAI** (configurable via AiModel registry). Term aliasing enables cross-language search (Burmese ↔ English). |
+| AI | **5 interchangeable providers** — OpenAI, Ollama (local), Gemini, Claude, DeepSeek — configurable per-document via AiModel registry. Term aliasing enables cross-language search (Burmese ↔ English). |
 | Document parsing | `smalot/pdfparser`, `phpoffice/phpword` |
 | Frontend | **Vue 3** (Composition API + TypeScript) + **Pinia** + **vue-router** |
 | Styling | **Tailwind v4** with a centralized `@theme` design-token system |
@@ -44,12 +45,12 @@ Most RAG systems are notebooks, scripts, or thin wrappers around a vendor API. L
 
 ## Quick start
 
-Prerequisites: PHP 8.3+, Composer, Node 20+, PostgreSQL 16 + pgvector, Redis (recommended), Ollama running locally (or OpenAI API key).
+Prerequisites: PHP 8.3+, Composer, Node 20+, PostgreSQL 16 + pgvector, Redis (recommended), at least one AI provider (Ollama running locally, or an API key for OpenAI / Gemini / Claude / DeepSeek).
 
 ```bash
 git clone <repo-url> && cd rag
 composer run setup                       # install + .env + key + migrate + npm install + build
-# Edit .env — at minimum set DB_PASSWORD and OPENAI_API_KEY
+# Edit .env — set DB_PASSWORD and at least one AI provider key
 composer run dev                         # serves Laravel + queue + logs + Vite
 ```
 
@@ -85,9 +86,9 @@ flowchart TB
 
         ChatMod["ChatModule\n• RAG pipeline orchestrator\n• Alias expansion → Embed\n• Hybrid search → RRF fusion\n• Threshold → MMR → LLM\n• SSE streaming · Source citations"]:::module
 
-        EmbedMod["EmbeddingModule\n• EmbeddingService\n• MD5-cached 24h\n• OpenAI / Ollama providers"]:::module
+        EmbedMod["EmbeddingModule\n• EmbeddingService\n• MD5-cached 24h\n• OpenAI / Ollama / Gemini"]:::module
 
-        LLMMod["LLMModule\n• LLMService::complete()\n• Streaming via SSE\n• Temperature 0.3\n• OpenAI / Ollama providers"]:::module
+        LLMMod["LLMModule\n• LLMService::complete()\n• Streaming via SSE\n• Temperature 0.3\n• 5 providers (OpenAI / Ollama\n  Gemini / Claude / DeepSeek)"]:::module
 
         VectorMod["VectorStoreModule\n• pgvector shard tables\n• IVFFlat indexes\n• Hybrid search (cosine + FTS)\n• Reciprocal rank fusion"]:::module
 
@@ -101,7 +102,10 @@ flowchart TB
 
     subgraph AI["AI Providers"]
         OpenAI["OpenAI\ntext-embedding-3-small\ngpt-4o"]:::external
-        Ollama["Ollama (local)\nnomic-embed-text\nqwen3.5:9b · gemma4:e4b"]:::external
+        Ollama["Ollama (local)\nnomic-embed-text\nqwen3.5:9b"]:::external
+        Gemini["Gemini\ntext-embedding-004\ngemini-2.5-flash"]:::external
+        Claude["Claude\nclaude-sonnet-4-5"]:::external
+        DeepSeek["DeepSeek\ndeepseek-chat"]:::external
     end
 
     subgraph Infra["Infrastructure"]
@@ -129,8 +133,12 @@ flowchart TB
 
     EmbedMod --> OpenAI
     EmbedMod --> Ollama
+    EmbedMod --> Gemini
     LLMMod --> OpenAI
     LLMMod --> Ollama
+    LLMMod --> Gemini
+    LLMMod --> Claude
+    LLMMod --> DeepSeek
 ```
 
 **flow diagram:**
@@ -230,6 +238,7 @@ flowchart TD
 | [docs/DATABASE_SCHEMA.md](docs/DATABASE_SCHEMA.md) | Per-table column reference |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Production deployment notes |
 | [CLAUDE.md](CLAUDE.md) / [AGENTS.md](AGENTS.md) | AI-agent reference for working in this codebase |
+| [LEARNING.md](LEARNING.md) | Tutorial-style walkthrough of the codebase for new developers |
 
 ---
 
@@ -239,6 +248,8 @@ flowchart TD
 - **ULIDs everywhere** as primary keys (no auto-increment integers).
 - **No DB-level FK constraints** — relationships enforced in application code (intentional; supports module isolation).
 - **Service layer is the only thing that touches Models** — controllers validate and dispatch; repositories don't bypass services.
+- **Chunk metadata JSONB** — every document chunk carries structured metadata (user_id, user_name, project, report_date, document_title, section, page_number) enabling precision filtering via `@>` jsonb operators.
+- **Migrations consolidated into base** — no standalone "add column" migrations; all columns defined in the initial create-table migrations to keep migration history clean.
 - **One Resource per route** — never share API resources between endpoints.
 - **Design tokens, not raw colors** — every Vue component uses `brand-*` / `surface-*` / `success-*` / `warning-*` / `danger-*` semantic classes; raw Tailwind palette names (`blue-`, `gray-`, `red-`) don't appear in `resources/`.
 - **No raw `<button>` elements** — every clickable element is a reusable component (`AppButton`, `AppConfirm`, etc.).
