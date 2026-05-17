@@ -68,14 +68,29 @@ function makeEdgePipeline(
     $responseBuilder->shouldReceive('buildRefusalResponse')->andReturn([
         'message' => ['content' => 'I cannot answer this question based on the available documents.', 'sources' => []],
     ]);
-    $responseBuilder->shouldReceive('buildSources')->andReturn([]);
+    $responseBuilder->shouldReceive('buildSources')->andReturnUsing(function (array $chunks): array {
+        return array_map(fn (object $chunk): array => [
+            'document_id' => $chunk->document_id,
+            'document_title' => $chunk->document_title,
+            'chunk_index' => $chunk->chunk_index ?? 0,
+            'page_number' => $chunk->page_number ?? null,
+            'similarity_score' => round((float) $chunk->similarity_score, 4),
+            'excerpt' => mb_substr((string) $chunk->content, 0, 200),
+        ], $chunks);
+    });
     $sessionManager = mock(SessionManager::class);
     $sessionManager->shouldReceive('resolveSession')->andReturnUsing(function ($sessionId, $userId) {
         return $sessionId ? (Modules\ChatModule\Models\ChatSession::find($sessionId) ?? new Modules\ChatModule\Models\ChatSession) : new Modules\ChatModule\Models\ChatSession;
     });
     $sessionManager->shouldReceive('checkMessageLimit')->andReturn();
     $sessionManager->shouldReceive('saveUserMessage')->andReturn(new Modules\ChatModule\Models\ChatMessage);
-    $sessionManager->shouldReceive('saveAssistantMessage')->andReturn(new Modules\ChatModule\Models\ChatMessage);
+    $sessionManager->shouldReceive('saveAssistantMessage')->andReturnUsing(function () {
+        $msg = new Modules\ChatModule\Models\ChatMessage;
+        $msg->setAttribute('id', '01J');
+        $msg->setAttribute('created_at', now());
+
+        return $msg;
+    });
 
     $defaults = [
         'topK' => 5,

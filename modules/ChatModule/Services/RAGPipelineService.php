@@ -484,15 +484,19 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
             ]);
         }
 
+        $t0 = microtime(true);
         $response = $this->llm->complete(
             systemPrompt: $systemPrompt,
+            userPrompt: $llmQuestion,
             context: $context,
-            question: $llmQuestion,
-            maxTokens: $this->maxTokens,
-            temperature: 0.3,
+            options: ['temperature' => 0.3, 'max_tokens' => $this->maxTokens],
         );
+        $llmTime = (microtime(true) - $t0) * 1000;
 
-        $content = $response['content'] ?? '';
+        $content = $response->getContent();
+        if ($response->getFinishReason() === 'length') {
+            $content .= "\n\n*[မှတ်ချက်: အဖြေသည် သတ်မှတ်ထားသော token ကန့်သတ်ချက်ကို ကျော်လွန်နေသောကြောင့် ဖြတ်တောက်ထားပါသည်။ ထပ်မံမေးမြန်းနိုင်ပါသည်။]*";
+        }
         $sources = $this->responseBuilder->buildSources($chunks);
         $message = $this->sessionManager->saveAssistantMessage($session, $content, $sources);
 

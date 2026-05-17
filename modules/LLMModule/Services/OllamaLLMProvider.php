@@ -139,6 +139,8 @@ class OllamaLLMProvider implements LLMProviderInterface
 
         $queue = [];
         $lineBuffer = '';
+        $errorBody = '';
+        $httpChecked = false;
 
         $ch = curl_init($url);
         curl_setopt_array($ch, [
@@ -149,7 +151,23 @@ class OllamaLLMProvider implements LLMProviderInterface
             CURLOPT_POSTFIELDS => json_encode($payload),
             CURLOPT_RETURNTRANSFER => false,
             CURLOPT_TIMEOUT => $this->timeout,
-            CURLOPT_WRITEFUNCTION => function ($ch, $data) use (&$queue, &$lineBuffer): int {
+            CURLOPT_WRITEFUNCTION => function ($ch, $data) use (&$queue, &$lineBuffer, &$errorBody, &$httpChecked): int {
+                if (! $httpChecked) {
+                    $httpChecked = true;
+                    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                    if ($httpCode !== 200) {
+                        $errorBody .= $data;
+
+                        return strlen($data);
+                    }
+                }
+
+                if ($errorBody !== '') {
+                    $errorBody .= $data;
+
+                    return strlen($data);
+                }
+
                 $lineBuffer .= $data;
                 $lines = explode("\n", $lineBuffer);
                 $lineBuffer = array_pop($lines);
@@ -200,6 +218,12 @@ class OllamaLLMProvider implements LLMProviderInterface
 
         curl_multi_remove_handle($mh, $ch);
         curl_multi_close($mh);
+
+        if ($errorBody !== '') {
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+            throw new \RuntimeException("Ollama streaming request failed (HTTP {$httpCode}): {$errorBody}");
+        }
     }
 
     /**
