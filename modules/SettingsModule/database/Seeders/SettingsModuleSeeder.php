@@ -69,6 +69,7 @@ class SettingsModuleSeeder extends Seeder
                 'is_active' => true,
                 'sort_order' => 1,
                 'description' => 'Strong general-purpose 9B model with 32K context. Good reasoning and instruction following.',
+                'settings' => ['max_tokens' => 4096],
             ],
             [
                 'name' => 'Qwen 3.5 Claude Opus (9B)',
@@ -82,6 +83,7 @@ class SettingsModuleSeeder extends Seeder
                 'is_active' => true,
                 'sort_order' => 2,
                 'description' => 'Qwen 3.5 finetuned with Claude-style responses. Creative and detailed answers.',
+                'settings' => ['max_tokens' => 4096],
             ],
             [
                 'name' => 'Gemma 4 (e4b)',
@@ -95,6 +97,7 @@ class SettingsModuleSeeder extends Seeder
                 'is_active' => true,
                 'sort_order' => 3,
                 'description' => 'Google Gemma 4 — efficient 16K context. Great for concise Q&A and summarization.',
+                'settings' => ['max_tokens' => 4096],
             ],
             [
                 'name' => 'Qwen 2.5 Coder',
@@ -108,6 +111,7 @@ class SettingsModuleSeeder extends Seeder
                 'is_active' => true,
                 'sort_order' => 4,
                 'description' => 'Code-specialized 32K context model. Best for technical documents and code analysis.',
+                'settings' => ['max_tokens' => 4096],
             ],
         ];
 

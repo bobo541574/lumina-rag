@@ -89,7 +89,7 @@
       <!-- LLM-specific -->
       <div v-if="form.type === 'llm'" class="pt-4 border-t border-surface-200">
         <h4 class="text-sm font-semibold text-surface-700 mb-3">LLM Settings</h4>
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
             <label for="model-temp" class="block text-sm font-medium text-surface-700 mb-1">Temperature</label>
             <AppInput id="model-temp" type="number" v-model.number="form.temperature" step="0.1" min="0" max="2" />
@@ -97,6 +97,10 @@
           <div>
             <label for="model-max-ctx" class="block text-sm font-medium text-surface-700 mb-1">Max Context Tokens</label>
             <AppInput id="model-max-ctx" type="number" v-model.number="form.max_context_tokens" />
+          </div>
+          <div>
+            <label for="model-max-tokens" class="block text-sm font-medium text-surface-700 mb-1">Max Output Tokens</label>
+            <AppInput id="model-max-tokens" type="number" v-model.number="form.max_tokens" />
           </div>
         </div>
       </div>
@@ -177,6 +181,7 @@ interface FormState {
   cache_ttl: number | null
   temperature: number | null
   max_context_tokens: number | null
+  max_tokens: number | null
   timeout: number
   description: string
   settingsStr: string
@@ -219,6 +224,7 @@ function buildBlankForm(): FormState {
     cache_ttl: null,
     temperature: null,
     max_context_tokens: null,
+    max_tokens: null,
     timeout: 30,
     description: '',
     settingsStr: '',
@@ -248,6 +254,7 @@ function applyInitialValues(m: AiModel | null | undefined) {
     cache_ttl: m.cache_ttl ?? null,
     temperature: m.temperature ?? null,
     max_context_tokens: m.max_context_tokens ?? null,
+    max_tokens: (m.settings?.max_tokens as number | undefined) ?? null,
     timeout: m.timeout ?? 30,
     description: m.description || '',
     settingsStr: m.settings ? JSON.stringify(m.settings, null, 2) : '',
@@ -315,11 +322,23 @@ function buildPayload(): Record<string, unknown> | null {
 
   if (f.settingsStr.trim()) {
     try {
-      payload.settings = JSON.parse(f.settingsStr)
+      payload.settings = { ...JSON.parse(f.settingsStr) }
     } catch {
       settingsJsonError.value = 'Invalid JSON in settings'
       return null
     }
+  } else {
+    payload.settings = {}
+  }
+
+  if (f.max_tokens !== null) {
+    (payload.settings as Record<string, unknown>).max_tokens = f.max_tokens
+  } else {
+    delete (payload.settings as Record<string, unknown>).max_tokens
+  }
+
+  if (Object.keys(payload.settings as Record<string, unknown>).length === 0) {
+    payload.settings = null
   }
 
   return payload
