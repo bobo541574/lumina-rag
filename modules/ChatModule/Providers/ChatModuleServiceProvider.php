@@ -33,6 +33,7 @@ class ChatModuleServiceProvider extends ServiceProvider
             numExpansionQueries: (int) config('rag.search.query_expansion.num_queries', 3),
             mmrEnabled: (bool) config('rag.search.mmr.enabled', true),
             mmrLambda: (float) config('rag.search.mmr.lambda', 0.7),
+            maxTokens: (int) config('rag.llm.max_tokens', 4096),
             activeEmbeddingModelId: null,
             activeLlmModelId: null,
         ));

@@ -77,6 +77,7 @@ test('ask_returns_low_confidence_with_few_chunks', function (): void {
     $response->shouldReceive('getTotalTokens')->andReturn(10);
     $response->shouldReceive('getPromptTokens')->andReturn(5);
     $response->shouldReceive('getCompletionTokens')->andReturn(5);
+    $response->shouldReceive('getFinishReason')->andReturn(null);
 
     $llm = mock(LLMServiceInterface::class);
     $llm->shouldReceive('complete')->andReturn($response);
@@ -139,6 +140,7 @@ test('ask_includes_old_document_note', function (): void {
     $response->shouldReceive('getTotalTokens')->andReturn(10);
     $response->shouldReceive('getPromptTokens')->andReturn(5);
     $response->shouldReceive('getCompletionTokens')->andReturn(5);
+    $response->shouldReceive('getFinishReason')->andReturn(null);
 
     $llm = mock(LLMServiceInterface::class);
     $llm->shouldReceive('complete')->andReturn($response);

@@ -41,6 +41,10 @@ class OllamaLLMProvider implements LLMProviderInterface
             ],
         ];
 
+        if (isset($options['max_tokens'])) {
+            $payload['options']['num_predict'] = $options['max_tokens'];
+        }
+
         $response = $this->sendRequest($payload);
 
         $message = $response['message'] ?? throw new \RuntimeException('Ollama API returned no message');
@@ -70,6 +74,10 @@ class OllamaLLMProvider implements LLMProviderInterface
                 'temperature' => $temperature,
             ],
         ];
+
+        if (isset($options['max_tokens'])) {
+            $payload['options']['num_predict'] = $options['max_tokens'];
+        }
 
         $url = $this->baseUrl.'/api/chat';
 

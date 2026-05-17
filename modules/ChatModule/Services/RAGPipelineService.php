@@ -9,12 +9,14 @@ use Carbon\Carbon;
 use Generator;
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Modules\ChatModule\Contracts\RAGPipelineServiceInterface;
 use Modules\ChatModule\Models\ChatMessage;
 use Modules\ChatModule\Models\ChatSession;
 use Modules\DocumentModule\Models\Document;
 use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
+use Modules\EmbeddingModule\Services\EmbeddingService;
 use Modules\EmbeddingModule\Services\ProviderFactory;
 use Modules\LLMModule\Contracts\LLMServiceInterface;
 use Modules\LLMModule\Services\LLMService;
@@ -47,6 +49,8 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
     private float $mmrLambda;
 
+    private int $maxTokens;
+
     private ?string $userId;
 
     private ProviderFactory $providerFactory;
@@ -72,6 +76,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         int $numExpansionQueries = 3,
         bool $mmrEnabled = true,
         float $mmrLambda = 0.7,
+        int $maxTokens = 4096,
         ?string $userId = null,
         ?string $activeEmbeddingModelId = null,
         ?string $activeLlmModelId = null,
@@ -90,6 +95,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $this->numExpansionQueries = $numExpansionQueries;
         $this->mmrEnabled = $mmrEnabled;
         $this->mmrLambda = $mmrLambda;
+        $this->maxTokens = $maxTokens;
         $this->userId = $userId;
 
         try {
@@ -143,6 +149,9 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             if (isset($s['max_messages_per_session'])) {
                 $this->maxMessagesPerSession = (int) $s['max_messages_per_session'];
             }
+            if (isset($s['max_tokens'])) {
+                $this->maxTokens = (int) $s['max_tokens'];
+            }
         }
     }
 
@@ -169,7 +178,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             ->where('role', 'assistant')
             ->orderBy('created_at', 'desc')
             ->first();
-        
+
         $wasRefusal = $prevAssistantMsg !== null && empty($prevAssistantMsg->sources);
 
         $inherited = false;
@@ -182,7 +191,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             if ($prevUserMsg !== null) {
                 $inherited = true;
                 $inheritedFilters = $this->extractFiltersFromQuestion($prevUserMsg->content);
-                
+
                 // Always inherit user and project
                 if (isset($inheritedFilters['user_ids'])) {
                     $autoFilters['user_ids'] = $inheritedFilters['user_ids'];
@@ -190,12 +199,12 @@ class RAGPipelineService implements RAGPipelineServiceInterface
                 if (isset($inheritedFilters['project'])) {
                     $autoFilters['project'] = $inheritedFilters['project'];
                 }
-                
+
                 // Inherit dates ONLY if the previous answer was successful.
                 // If it was a refusal, the previous dates likely caused the failure,
                 // and the user is asking for alternatives (e.g. "what do you have then?").
-                if (!$wasRefusal) {
-                    if (isset($inheritedFilters['report_date_from']) && !isset($autoFilters['report_date_from'])) {
+                if (! $wasRefusal) {
+                    if (isset($inheritedFilters['report_date_from']) && ! isset($autoFilters['report_date_from'])) {
                         $autoFilters['report_date_from'] = $inheritedFilters['report_date_from'];
                         $autoFilters['report_date_to'] = $inheritedFilters['report_date_to'];
                     }
@@ -206,7 +215,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         // When the question had no filters of its own, also restrict the
         // search to the same documents cited in the previous answer. This
         // keeps follow-ups like "ဘာတွေတင်ထားလဲ?" on the exact same report.
-        if ($inherited && !$wasRefusal && $prevAssistantMsg !== null) {
+        if ($inherited && ! $wasRefusal && $prevAssistantMsg !== null) {
             $sources = $prevAssistantMsg->sources;
             $ids = [];
             if (is_array($sources)) {
@@ -255,7 +264,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
                         $targetModel = AiModel::find($requiredId);
                         if ($targetModel !== null) {
                             $provider = $this->providerFactory->createEmbeddingProvider($targetModel);
-                            $embedder = new \Modules\EmbeddingModule\Services\EmbeddingService(
+                            $embedder = new EmbeddingService(
                                 $provider,
                                 $this->cache,
                                 (int) ($targetModel->settings['cache_ttl'] ?? 86400)
@@ -349,11 +358,17 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $t0 = microtime(true);
         $response = $llm->complete($systemPrompt, $llmQuestion, $context, [
             'temperature' => 0.3,
+            'max_tokens' => $this->maxTokens,
         ]);
         $llmTime = (microtime(true) - $t0) * 1000;
 
+        $content = $response->getContent();
+        if ($response->getFinishReason() === 'length') {
+            $content .= "\n\n*[မှတ်ချက်: အဖြေသည် သတ်မှတ်ထားသော token ကန့်သတ်ချက်ကို ကျော်လွန်နေသောကြောင့် ဖြတ်တောက်ထားပါသည်။ ထပ်မံမေးမြန်းနိုင်ပါသည်။]*";
+        }
+
         $sources = $this->buildSources($chunks);
-        $message = $this->saveAssistantMessage($session, $response->getContent(), $sources);
+        $message = $this->saveAssistantMessage($session, $content, $sources);
 
         $totalTime = (microtime(true) - $start) * 1000;
         Log::channel(config('rag.logging.channel', 'rag'))->info('RAG pipeline: complete', [
@@ -404,7 +419,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             ->where('role', 'assistant')
             ->orderBy('created_at', 'desc')
             ->first();
-        
+
         $wasRefusal = $prevAssistantMsg !== null && empty($prevAssistantMsg->sources);
 
         $inherited = false;
@@ -417,7 +432,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             if ($prevUserMsg !== null) {
                 $inherited = true;
                 $inheritedFilters = $this->extractFiltersFromQuestion($prevUserMsg->content);
-                
+
                 // Always inherit user and project
                 if (isset($inheritedFilters['user_ids'])) {
                     $autoFilters['user_ids'] = $inheritedFilters['user_ids'];
@@ -425,12 +440,12 @@ class RAGPipelineService implements RAGPipelineServiceInterface
                 if (isset($inheritedFilters['project'])) {
                     $autoFilters['project'] = $inheritedFilters['project'];
                 }
-                
+
                 // Inherit dates ONLY if the previous answer was successful.
                 // If it was a refusal, the previous dates likely caused the failure,
                 // and the user is asking for alternatives (e.g. "what do you have then?").
-                if (!$wasRefusal) {
-                    if (isset($inheritedFilters['report_date_from']) && !isset($autoFilters['report_date_from'])) {
+                if (! $wasRefusal) {
+                    if (isset($inheritedFilters['report_date_from']) && ! isset($autoFilters['report_date_from'])) {
                         $autoFilters['report_date_from'] = $inheritedFilters['report_date_from'];
                         $autoFilters['report_date_to'] = $inheritedFilters['report_date_to'];
                     }
@@ -440,7 +455,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         // When the question had no filters of its own, also restrict the
         // search to the same documents cited in the previous answer.
-        if ($inherited && !$wasRefusal && $prevAssistantMsg !== null) {
+        if ($inherited && ! $wasRefusal && $prevAssistantMsg !== null) {
             $sources = $prevAssistantMsg->sources;
             $ids = [];
             if (is_array($sources)) {
@@ -489,7 +504,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
                         $targetModel = AiModel::find($requiredId);
                         if ($targetModel !== null) {
                             $provider = $this->providerFactory->createEmbeddingProvider($targetModel);
-                            $embedder = new \Modules\EmbeddingModule\Services\EmbeddingService(
+                            $embedder = new EmbeddingService(
                                 $provider,
                                 $this->cache,
                                 (int) ($targetModel->settings['cache_ttl'] ?? 86400)
@@ -614,7 +629,10 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         $fullContent = '';
         $t0 = microtime(true);
-        $stream = $llm->completeStream($systemPrompt, $llmQuestion, $context, ['temperature' => 0.3]);
+        $stream = $llm->completeStream($systemPrompt, $llmQuestion, $context, [
+            'temperature' => 0.3,
+            'max_tokens' => $this->maxTokens,
+        ]);
 
         foreach ($stream as $chunk) {
             $fullContent .= $chunk;
@@ -713,10 +731,10 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         // ── Project name extraction ───────────────────────────────────────
         try {
             $projects = $this->cache->remember('rag:projects', 300, fn (): Collection => Document::distinct()->whereNotNull('project')->where('project', '!=', '')->pluck('project'));
-            
+
             // Sort projects by length descending to match the most specific project name first
-            $sortedProjects = $projects->sortByDesc(fn($p) => mb_strlen($p));
-            
+            $sortedProjects = $projects->sortByDesc(fn ($p) => mb_strlen($p));
+
             foreach ($sortedProjects as $project) {
                 $clean = preg_quote($project, '/');
                 if (preg_match('/'.$clean.'/iu', $question)) {
@@ -817,6 +835,17 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             // YYYY-MM (e.g. 2026-04)
             $filters['report_date_from'] = "{$m[1]}-{$m[2]}-01";
             $filters['report_date_to'] = "{$m[1]}-{$m[2]}-".now()->create($m[1], $m[2])->endOfMonth()->format('d');
+        } elseif (preg_match('/\b(\d{4})-(January|February|March|April|May|June|July|August|September|October|November|December)\b/i', $question, $m)) {
+            // YYYY-MonthName (e.g. 2026-April) — may come from normalizeQuestion()
+            $monthMap = [
+                'January' => '01', 'February' => '02', 'March' => '03',
+                'April' => '04', 'May' => '05', 'June' => '06',
+                'July' => '07', 'August' => '08', 'September' => '09',
+                'October' => '10', 'November' => '11', 'December' => '12',
+            ];
+            $monthNum = $monthMap[$m[2]];
+            $filters['report_date_from'] = "{$m[1]}-{$monthNum}-01";
+            $filters['report_date_to'] = "{$m[1]}-{$monthNum}-".now()->create((int) $m[1], (int) $monthNum)->endOfMonth()->format('d');
         } else {
             // Quarter / year / month-name patterns
             $datePatterns = [
@@ -907,6 +936,10 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         // year components to avoid leaving bare "-MM" tokens that PostgreSQL
         // plainto_tsquery would interpret as a negation operator.
         $question = preg_replace('/\b\d{4}[-\.\/]\d{1,2}([-\.\/]\d{1,2})?\b/', '', $question);
+
+        // Strip YYYY-MonthName patterns (e.g. "2026-April") before individual
+        // year/month stripping so they don't leave a bare "-" token.
+        $question = preg_replace('/\b\d{4}[-\.\/](January|February|March|April|May|June|July|August|September|October|November|December)\b/i', '', $question);
 
         // Strip year and quarter patterns
         $question = preg_replace('/\b\d{4}\b/', '', $question);
@@ -1147,7 +1180,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         }
 
         $baseThreshold = $this->similarityThreshold;
-        if (!empty($filters['user_ids']) || !empty($filters['project']) || !empty($filters['report_date_from'])) {
+        if (! empty($filters['user_ids']) || ! empty($filters['project']) || ! empty($filters['report_date_from'])) {
             $baseThreshold = 0.45;
         }
 
@@ -1260,6 +1293,13 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             $question = mb_substr($question, 0, $this->maxQuestionLength);
         }
 
+        $question = preg_replace_callback('/\b(\d{4})-(0[1-9]|1[0-2])\b(?!\s*-?\s*\d{1,2}\b)/', function ($m) {
+            $months = ['January', 'February', 'March', 'April', 'May', 'June',
+                'July', 'August', 'September', 'October', 'November', 'December'];
+
+            return $m[1].'-'.$months[(int) $m[2] - 1];
+        }, $question);
+
         return $question;
     }
 
@@ -1360,14 +1400,14 @@ class RAGPipelineService implements RAGPipelineServiceInterface
                 $targetDoc = (clone $query)->where('report_date', $nearest)->first();
                 $hasVectors = false;
                 if ($targetDoc) {
-                    $hasVectors = \Illuminate\Support\Facades\DB::table('vector_embeddings')
+                    $hasVectors = DB::table('vector_embeddings')
                         ->whereIn('chunk_id', function ($q) use ($targetDoc) {
                             $q->select('id')->from('document_chunks')->where('document_id', $targetDoc->id);
                         })->exists();
                 }
 
                 if ($nearestStr === ($from ?? $to)) {
-                    if (!$hasVectors) {
+                    if (! $hasVectors) {
                         if ($isBurmese) {
                             $hint = "\n\n{$nearestStr} ရက်စွဲအတွက် အစီရင်ခံစာရှိသော်လည်း ရှာဖွေမှုအတွက် အဆင်သင့်မဖြစ်သေးပါ။ (Re-embed ပြုလုပ်ရန် လိုအပ်နိုင်ပါသည်)";
                         } else {
@@ -1385,13 +1425,13 @@ class RAGPipelineService implements RAGPipelineServiceInterface
                 } else {
                     if ($isBurmese) {
                         $hint = "\n\nအနီးစပ်ဆုံးရှိသော အစီရင်ခံစာများမှာ {$nearestStr} ရက်စွဲတွင် ရှိပါသည်။";
-                        if (!$hasVectors) {
-                            $hint .= " (သို့သော် ရှာဖွေမှုအတွက် အဆင်သင့်မဖြစ်သေးပါ)";
+                        if (! $hasVectors) {
+                            $hint .= ' (သို့သော် ရှာဖွေမှုအတွက် အဆင်သင့်မဖြစ်သေးပါ)';
                         }
                     } else {
                         $hint = "\n\nThe closest available reports are dated {$nearestStr}.";
-                        if (!$hasVectors) {
-                            $hint .= " (But it is not yet ready for search)";
+                        if (! $hasVectors) {
+                            $hint .= ' (But it is not yet ready for search)';
                         }
                     }
                 }

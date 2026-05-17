@@ -31,6 +31,7 @@ return [
         'base_url' => env('RAG_LLM_BASE_URL', 'http://localhost:11434'),
         'model' => env('RAG_LLM_MODEL', 'qwen3.5:9b'),
         'max_context_tokens' => (int) env('RAG_LLM_MAX_CONTEXT_TOKENS', 32768),
+        'max_tokens' => (int) env('RAG_LLM_MAX_TOKENS', 4096),
         'timeout' => (int) env('RAG_LLM_TIMEOUT', 120),
     ],
 

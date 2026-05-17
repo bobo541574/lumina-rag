@@ -71,6 +71,7 @@ test('test_ask_returns_answer_with_sources', function (): void {
     $response->shouldReceive('getTotalTokens')->andReturn(50);
     $response->shouldReceive('getPromptTokens')->andReturn(20);
     $response->shouldReceive('getCompletionTokens')->andReturn(30);
+    $response->shouldReceive('getFinishReason')->andReturn(null);
 
     $llm = mock(LLMServiceInterface::class);
     $llm->shouldReceive('complete')->andReturn($response);
