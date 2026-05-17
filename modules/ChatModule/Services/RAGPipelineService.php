@@ -553,20 +553,20 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
         set_time_limit(120);
         $start = microtime(true);
         $question = $this->normalizeQuestion($question);
-        $session = $this->resolveSession($options['session_id'] ?? null, $options['user_id'] ?? $this->userId);
-        $this->checkMessageLimit($session);
+        $session = $this->sessionManager->resolveSession($options['session_id'] ?? null, $options['user_id'] ?? $this->userId);
+        $this->sessionManager->checkMessageLimit($session, $this->maxMessagesPerSession);
 
-        $autoFilters = $this->extractFiltersFromQuestion($question);
+        $autoFilters = $this->filterExtractor->extract($question);
 
         $searchQuestion = $this->termAliasService->expandText($question);
-        $ftsQuery = $this->refineFtsQuery($question, $autoFilters);
+        $ftsQuery = $this->ftsQueryBuilder->refine($question, $autoFilters);
         $ftsQuery = $this->termAliasService->expandFtsQuery($ftsQuery);
 
-        $this->saveUserMessage($session, $question);
+        $this->sessionManager->saveUserMessage($session, $question);
 
         // Resolve relative time references (yesterday, today, …) to literal
         // dates so the LLM doesn't have to guess the current date.
-        $llmQuestion = $this->resolveTimeReferences($question);
+        $llmQuestion = $this->filterExtractor->resolveTimeReferences($question);
 
         // Inherit filters from the previous exchange when the current
         // question doesn't specify any user or project (e.g. follow-ups).
