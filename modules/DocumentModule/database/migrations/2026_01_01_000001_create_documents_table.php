@@ -20,7 +20,11 @@ return new class extends Migration
             $table->integer('page_count')->nullable();
             $table->string('mime_type', 100);
             $table->string('file_hash', 64)->unique();
+            $table->string('embedding_model', 100)->nullable()->after('file_hash');
+            $table->ulid('embedding_model_id')->nullable()->after('embedding_model');
             $table->text('description')->nullable();
+            $table->date('report_date')->nullable()->after('description');
+            $table->string('project', 255)->nullable()->after('report_date');
             $table->string('status', 20)->default('pending');
             $table->integer('chunks_count')->default(0);
             $table->text('error_message')->nullable();
@@ -31,6 +35,8 @@ return new class extends Migration
 
             $table->index('status', 'idx_documents_status');
             $table->index('file_hash', 'idx_documents_file_hash');
+            $table->index('project');
+            $table->index('report_date');
         });
     }
 
