@@ -39,7 +39,7 @@ public function resolveSession (?string $sessionId, ?string $userId = null): Cha
             'user_id' => $userId,
         ]);
     }
-public function checkMessageLimit (ChatSession $session): void
+public function checkMessageLimit (ChatSession $session, int $maxMessagesPerSession = 100): void
     {
         $count = $session->messages()->count();
         if ($count >= $maxMessagesPerSession) {
