@@ -165,6 +165,13 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         // Inherit filters from the previous exchange when the current
         // question doesn't specify any user or project (e.g. follow-ups).
+        $prevAssistantMsg = ChatMessage::where('session_id', $session->id)
+            ->where('role', 'assistant')
+            ->orderBy('created_at', 'desc')
+            ->first();
+        
+        $wasRefusal = $prevAssistantMsg !== null && empty($prevAssistantMsg->sources);
+
         $inherited = false;
         if (empty($autoFilters['user_ids']) && empty($autoFilters['project'])) {
             $prevUserMsg = ChatMessage::where('session_id', $session->id)
@@ -175,35 +182,91 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             if ($prevUserMsg !== null) {
                 $inherited = true;
                 $inheritedFilters = $this->extractFiltersFromQuestion($prevUserMsg->content);
-                $autoFilters = array_merge($inheritedFilters, $autoFilters);
+                
+                // Always inherit user and project
+                if (isset($inheritedFilters['user_ids'])) {
+                    $autoFilters['user_ids'] = $inheritedFilters['user_ids'];
+                }
+                if (isset($inheritedFilters['project'])) {
+                    $autoFilters['project'] = $inheritedFilters['project'];
+                }
+                
+                // Inherit dates ONLY if the previous answer was successful.
+                // If it was a refusal, the previous dates likely caused the failure,
+                // and the user is asking for alternatives (e.g. "what do you have then?").
+                if (!$wasRefusal) {
+                    if (isset($inheritedFilters['report_date_from']) && !isset($autoFilters['report_date_from'])) {
+                        $autoFilters['report_date_from'] = $inheritedFilters['report_date_from'];
+                        $autoFilters['report_date_to'] = $inheritedFilters['report_date_to'];
+                    }
+                }
             }
         }
 
         // When the question had no filters of its own, also restrict the
         // search to the same documents cited in the previous answer. This
         // keeps follow-ups like "ဘာတွေတင်ထားလဲ?" on the exact same report.
-        if ($inherited) {
-            $prevAssistantMsg = ChatMessage::where('session_id', $session->id)
-                ->where('role', 'assistant')
-                ->orderBy('created_at', 'desc')
-                ->first();
-            if ($prevAssistantMsg !== null) {
-                $sources = $prevAssistantMsg->sources;
-                $ids = [];
-                if (is_array($sources)) {
-                    foreach ($sources as $s) {
-                        if (isset($s['document_id'])) {
-                            $ids[] = $s['document_id'];
-                        }
+        if ($inherited && !$wasRefusal && $prevAssistantMsg !== null) {
+            $sources = $prevAssistantMsg->sources;
+            $ids = [];
+            if (is_array($sources)) {
+                foreach ($sources as $s) {
+                    if (isset($s['document_id'])) {
+                        $ids[] = $s['document_id'];
                     }
                 }
-                if ($ids !== []) {
-                    $autoFilters['document_ids'] = $ids;
-                }
+            }
+            if ($ids !== []) {
+                $autoFilters['document_ids'] = $ids;
             }
         }
 
         $llm = $this->resolveLLM($options);
+
+        // --- Dynamic Model Selection ---
+        // If filters specifically target documents using a different embedding model,
+        // use that model for the question embedding to ensure compatibility.
+        $targetModel = $this->activeEmbeddingModel;
+        $embedder = $this->embedder;
+
+        if (! empty($autoFilters['user_ids']) || ! empty($autoFilters['project']) || ! empty($autoFilters['report_date_from'])) {
+            try {
+                $modelQuery = Document::query();
+                if (! empty($autoFilters['user_ids'])) {
+                    $modelQuery->whereIn('user_id', (array) $autoFilters['user_ids']);
+                }
+                if (! empty($autoFilters['project'])) {
+                    $modelQuery->where('project', $autoFilters['project']);
+                }
+                if (! empty($autoFilters['report_date_from'])) {
+                    $modelQuery->where('report_date', '>=', $autoFilters['report_date_from']);
+                }
+                if (! empty($autoFilters['report_date_to'])) {
+                    $modelQuery->where('report_date', '<=', $autoFilters['report_date_to']);
+                }
+
+                $usedModelIds = $modelQuery->whereNotNull('embedding_model_id')
+                    ->distinct()
+                    ->pluck('embedding_model_id');
+
+                if ($usedModelIds->count() === 1) {
+                    $requiredId = $usedModelIds->first();
+                    if ($this->activeEmbeddingModel === null || $this->activeEmbeddingModel->id !== $requiredId) {
+                        $targetModel = AiModel::find($requiredId);
+                        if ($targetModel !== null) {
+                            $provider = $this->providerFactory->createEmbeddingProvider($targetModel);
+                            $embedder = new \Modules\EmbeddingModule\Services\EmbeddingService(
+                                $provider,
+                                $this->cache,
+                                (int) ($targetModel->settings['cache_ttl'] ?? 86400)
+                            );
+                        }
+                    }
+                }
+            } catch (\Throwable) {
+                // Fallback to default model if anything fails
+            }
+        }
 
         $searchQueries = $this->expandQuery($question, $llm);
 
@@ -211,11 +274,13 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $t0 = microtime(true);
 
         foreach ($searchQueries as $q) {
-            $questionVector = $this->embedder->embed($q);
-            $minThreshold = min($this->similarityThreshold, 0.40);
+            $questionVector = $embedder->embed($q);
+            // Use a very low threshold for the initial search to allow
+            // applyDynamicThreshold (elbow method) to find the best gap.
+            $minThreshold = 0.20;
             $filters = array_merge($autoFilters, $options['document_filter'] ?? []);
             $filters['similarity_threshold'] = $minThreshold;
-            $filters['model_name'] = $this->activeEmbeddingModel?->model ?? config('rag.embedding.model', 'text-embedding-3-small');
+            $filters['model_name'] = $targetModel?->model ?? config('rag.embedding.model', 'text-embedding-3-small');
 
             $chunks = $this->searchMode === 'hybrid'
                 ? $this->vectorStore->searchHybrid($ftsQuery, $questionVector, $this->topK * 3, $filters)
@@ -232,7 +297,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $searchTime = (microtime(true) - $t0) * 1000;
 
         usort($allChunks, fn (object $a, object $b): int => (float) $b->similarity_score <=> (float) $a->similarity_score);
-        $chunks = $this->applyDynamicThreshold(array_values($allChunks));
+        $chunks = $this->applyDynamicThreshold(array_values($allChunks), $autoFilters);
         $chunks = $this->applyMMR($chunks);
 
         if ($chunks === []) {
@@ -335,6 +400,13 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         // Inherit filters from the previous exchange when the current
         // question doesn't specify any user or project (e.g. follow-ups).
+        $prevAssistantMsg = ChatMessage::where('session_id', $session->id)
+            ->where('role', 'assistant')
+            ->orderBy('created_at', 'desc')
+            ->first();
+        
+        $wasRefusal = $prevAssistantMsg !== null && empty($prevAssistantMsg->sources);
+
         $inherited = false;
         if (empty($autoFilters['user_ids']) && empty($autoFilters['project'])) {
             $prevUserMsg = ChatMessage::where('session_id', $session->id)
@@ -345,34 +417,90 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             if ($prevUserMsg !== null) {
                 $inherited = true;
                 $inheritedFilters = $this->extractFiltersFromQuestion($prevUserMsg->content);
-                $autoFilters = array_merge($inheritedFilters, $autoFilters);
+                
+                // Always inherit user and project
+                if (isset($inheritedFilters['user_ids'])) {
+                    $autoFilters['user_ids'] = $inheritedFilters['user_ids'];
+                }
+                if (isset($inheritedFilters['project'])) {
+                    $autoFilters['project'] = $inheritedFilters['project'];
+                }
+                
+                // Inherit dates ONLY if the previous answer was successful.
+                // If it was a refusal, the previous dates likely caused the failure,
+                // and the user is asking for alternatives (e.g. "what do you have then?").
+                if (!$wasRefusal) {
+                    if (isset($inheritedFilters['report_date_from']) && !isset($autoFilters['report_date_from'])) {
+                        $autoFilters['report_date_from'] = $inheritedFilters['report_date_from'];
+                        $autoFilters['report_date_to'] = $inheritedFilters['report_date_to'];
+                    }
+                }
             }
         }
 
         // When the question had no filters of its own, also restrict the
         // search to the same documents cited in the previous answer.
-        if ($inherited) {
-            $prevAssistantMsg = ChatMessage::where('session_id', $session->id)
-                ->where('role', 'assistant')
-                ->orderBy('created_at', 'desc')
-                ->first();
-            if ($prevAssistantMsg !== null) {
-                $sources = $prevAssistantMsg->sources;
-                $ids = [];
-                if (is_array($sources)) {
-                    foreach ($sources as $s) {
-                        if (isset($s['document_id'])) {
-                            $ids[] = $s['document_id'];
-                        }
+        if ($inherited && !$wasRefusal && $prevAssistantMsg !== null) {
+            $sources = $prevAssistantMsg->sources;
+            $ids = [];
+            if (is_array($sources)) {
+                foreach ($sources as $s) {
+                    if (isset($s['document_id'])) {
+                        $ids[] = $s['document_id'];
                     }
                 }
-                if ($ids !== []) {
-                    $autoFilters['document_ids'] = $ids;
-                }
+            }
+            if ($ids !== []) {
+                $autoFilters['document_ids'] = $ids;
             }
         }
 
         $llm = $this->resolveLLM($options);
+
+        // --- Dynamic Model Selection ---
+        // If filters specifically target documents using a different embedding model,
+        // use that model for the question embedding to ensure compatibility.
+        $targetModel = $this->activeEmbeddingModel;
+        $embedder = $this->embedder;
+
+        if (! empty($autoFilters['user_ids']) || ! empty($autoFilters['project']) || ! empty($autoFilters['report_date_from'])) {
+            try {
+                $modelQuery = Document::query();
+                if (! empty($autoFilters['user_ids'])) {
+                    $modelQuery->whereIn('user_id', (array) $autoFilters['user_ids']);
+                }
+                if (! empty($autoFilters['project'])) {
+                    $modelQuery->where('project', $autoFilters['project']);
+                }
+                if (! empty($autoFilters['report_date_from'])) {
+                    $modelQuery->where('report_date', '>=', $autoFilters['report_date_from']);
+                }
+                if (! empty($autoFilters['report_date_to'])) {
+                    $modelQuery->where('report_date', '<=', $autoFilters['report_date_to']);
+                }
+
+                $usedModelIds = $modelQuery->whereNotNull('embedding_model_id')
+                    ->distinct()
+                    ->pluck('embedding_model_id');
+
+                if ($usedModelIds->count() === 1) {
+                    $requiredId = $usedModelIds->first();
+                    if ($this->activeEmbeddingModel === null || $this->activeEmbeddingModel->id !== $requiredId) {
+                        $targetModel = AiModel::find($requiredId);
+                        if ($targetModel !== null) {
+                            $provider = $this->providerFactory->createEmbeddingProvider($targetModel);
+                            $embedder = new \Modules\EmbeddingModule\Services\EmbeddingService(
+                                $provider,
+                                $this->cache,
+                                (int) ($targetModel->settings['cache_ttl'] ?? 86400)
+                            );
+                        }
+                    }
+                }
+            } catch (\Throwable) {
+                // Fallback to default model if anything fails
+            }
+        }
 
         $isBurmese = preg_match('/[\x{1000}-\x{109F}]/u', $question) === 1;
 
@@ -393,11 +521,13 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         ]);
 
         foreach ($searchQueries as $q) {
-            $questionVector = $this->embedder->embed($q);
-            $minThreshold = min($this->similarityThreshold, 0.40);
+            $questionVector = $embedder->embed($q);
+            // Use a very low threshold for the initial search to allow
+            // applyDynamicThreshold (elbow method) to find the best gap.
+            $minThreshold = 0.20;
             $filters = array_merge($autoFilters, $options['document_filter'] ?? []);
             $filters['similarity_threshold'] = $minThreshold;
-            $filters['model_name'] = $this->activeEmbeddingModel?->model ?? config('rag.embedding.model', 'text-embedding-3-small');
+            $filters['model_name'] = $targetModel?->model ?? config('rag.embedding.model', 'text-embedding-3-small');
 
             $chunks = $this->searchMode === 'hybrid'
                 ? $this->vectorStore->searchHybrid($ftsQuery, $questionVector, $this->topK * 3, $filters)
@@ -414,7 +544,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $searchTime = (microtime(true) - $t0) * 1000;
 
         usort($allChunks, fn (object $a, object $b): int => (float) $b->similarity_score <=> (float) $a->similarity_score);
-        $chunks = $this->applyDynamicThreshold(array_values($allChunks));
+        $chunks = $this->applyDynamicThreshold(array_values($allChunks), $autoFilters);
         $chunks = $this->applyMMR($chunks);
 
         if ($chunks === []) {
@@ -426,8 +556,16 @@ class RAGPipelineService implements RAGPipelineServiceInterface
                 'search_time_ms' => round($searchTime, 1),
                 'total_time_ms' => round($totalTime, 1),
             ]);
-            yield json_encode(['type' => 'answer', 'content' => $refusal['message']['content']]);
             yield json_encode(['type' => 'sources', 'sources' => []]);
+            yield json_encode(['type' => 'chunk', 'content' => $refusal['message']['content']]);
+            yield json_encode([
+                'type' => 'done',
+                'session_id' => $session->id,
+                'search_time_ms' => round($searchTime, 1),
+                'llm_time_ms' => 0,
+                'total_time_ms' => round($totalTime, 1),
+                'tokens_used' => 0,
+            ]);
 
             return;
         }
@@ -575,7 +713,11 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         // ── Project name extraction ───────────────────────────────────────
         try {
             $projects = $this->cache->remember('rag:projects', 300, fn (): Collection => Document::distinct()->whereNotNull('project')->where('project', '!=', '')->pluck('project'));
-            foreach ($projects as $project) {
+            
+            // Sort projects by length descending to match the most specific project name first
+            $sortedProjects = $projects->sortByDesc(fn($p) => mb_strlen($p));
+            
+            foreach ($sortedProjects as $project) {
                 $clean = preg_quote($project, '/');
                 if (preg_match('/'.$clean.'/iu', $question)) {
                     $filters['project'] = $project;
@@ -730,7 +872,12 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             'ဒီနေ့', 'ယနေ့', 'မနေ့', 'မနေ့က',
             'တင်ထားတဲ့', 'တင်သွင်းတဲ့', 'တင်ပြထားတဲ့',
             'ရေးသားတဲ့', 'ရေးထားတဲ့', 'ပြုလုပ်တဲ့',
-            'ဆိုင်ရာ', 'ပတ်သက်',
+            'ဆိုင်ရာ', 'ပတ်သက်', 'ပေးပါ', 'ပေးပါဦး',
+            'ဆိုရင်', 'ဆိုရင်လည်း', 'ဆိုတာ', 'ဆိုတာလဲ',
+            'ဘယ်', 'ဘယ်လို', 'ဘယ်ရက်', 'ဘယ်အချိန်',
+            'ရှိတယ်ဆို', 'ရှိသလား', 'ရှိခဲ့လား', 'ရှိနေလား',
+            'ဘာတွေ', 'ဘာလဲ', 'လဲ', 'လဲဆိုတာ',
+            'အဲ့ဒါဆို', 'ဒါဆို', 'အဲ့ဒီ', 'အဲဒီ', 'ရှိတဲ့', 'ဆို', 'ရက်',
         ];
 
         // Strip matched user names
@@ -738,10 +885,11 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             try {
                 $users = User::whereIn('id', $filters['user_ids'])->pluck('name');
                 foreach ($users as $name) {
-                    $question = preg_replace('/\b'.preg_quote($name, '/').'\b/iu', '', $question);
+                    // Use a more robust pattern for Burmese names (not relying on \b)
+                    $question = preg_replace('/'.preg_quote($name, '/').'/iu', '', $question);
                     // Also try stripping just the base name before English parenthetical
                     $baseName = preg_replace('/\s*\([^)]*\)$/u', '', $name);
-                    if ($baseName !== $name) {
+                    if ($baseName !== $name && $baseName !== '') {
                         $question = preg_replace('/'.preg_quote($baseName, '/').'/iu', '', $question);
                     }
                 }
@@ -752,7 +900,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         // Strip matched project name
         if (isset($filters['project'])) {
-            $question = preg_replace('/\b'.preg_quote($filters['project'], '/').'\b/iu', '', $question);
+            $question = preg_replace('/'.preg_quote($filters['project'], '/').'/iu', '', $question);
         }
 
         // Strip date patterns (YYYY-MM-DD or YYYY-MM) before individual
@@ -767,9 +915,16 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         // Strip month names
         $question = preg_replace('/\b(January|February|March|April|May|June|July|August|September|October|November|December)\b/i', '', $question);
 
-        // Strip common stopwords (/iu flag for Burmese word boundaries)
-        $pattern = '/\b('.implode('|', array_map('preg_quote', $stopwords)).')\b/iu';
-        $question = preg_replace($pattern, '', $question);
+        // Strip common stopwords
+        foreach ($stopwords as $word) {
+            $quoted = preg_quote($word, '/');
+            // If it's a Burmese word (contains Burmese characters), don't use \b
+            if (preg_match('/[\x{1000}-\x{109F}]/u', $word)) {
+                $question = preg_replace('/'.$quoted.'/iu', '', $question);
+            } else {
+                $question = preg_replace('/\b'.$quoted.'\b/iu', '', $question);
+            }
+        }
 
         // Keep meaningful content words:
         // - ASCII words: must be > 2 chars, not just punctuation
@@ -777,9 +932,14 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         //   stopwords list. The pg 'english' FTS parser keeps non-ASCII
         //   tokens as-is so they can match document content.
         $words = preg_split('/\s+/', $question);
-        $words = array_filter($words, function (string $w): bool {
+        $words = array_filter($words, function (string $w) use ($stopwords): bool {
             $w = trim($w);
             if ($w === '') {
+                return false;
+            }
+
+            // Check if it's a stopword (for cases where preg_replace missed it)
+            if (in_array(mb_strtolower($w), $stopwords)) {
                 return false;
             }
 
@@ -804,11 +964,11 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         if ($result === '') {
             // Fallback: use non-stopword tokens from original question
-            $fallback = preg_replace('/[^\p{L}0-9\s\-\.]/u', '', $question);
-            $fallback = preg_replace('/\b\d{4}[-\.\/]\d{1,2}([-\.\/]\d{1,2})?\b/', '', $fallback);
-            $fallback = preg_replace('/\b\d{4}\b/', '', $fallback);
-            $fallback = preg_replace('/-+/', ' ', $fallback);
-            $fallback = trim(preg_replace('/\s+/', ' ', $fallback));
+            $fallback = preg_replace('/[^\p{L}0-9\s\-\.]/u', '', $question, -1);
+            $fallback = preg_replace('/\b\d{4}[-\.\/]\d{1,2}([-\.\/]\d{1,2})?\b/', '', $fallback, -1);
+            $fallback = preg_replace('/\b\d{4}\b/', '', $fallback, -1);
+            $fallback = preg_replace('/-+/', ' ', $fallback, -1);
+            $fallback = trim(preg_replace('/\s+/', ' ', $fallback, -1));
 
             return $fallback !== '' ? $fallback : 'report';
         }
@@ -904,7 +1064,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         ];
 
         foreach ($dateRanges as [$pattern, $replacement]) {
-            $question = preg_replace($pattern, $replacement, $question);
+            $question = preg_replace($pattern, $replacement, $question, -1);
         }
 
         return $question;
@@ -963,7 +1123,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         return $ordered;
     }
 
-    private function applyDynamicThreshold(array $chunks): array
+    private function applyDynamicThreshold(array $chunks, array $filters = []): array
     {
         if ($chunks === []) {
             return [];
@@ -986,7 +1146,12 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             }
         }
 
-        $cutoff = $this->similarityThreshold;
+        $baseThreshold = $this->similarityThreshold;
+        if (!empty($filters['user_ids']) || !empty($filters['project']) || !empty($filters['report_date_from'])) {
+            $baseThreshold = 0.45;
+        }
+
+        $cutoff = $baseThreshold;
         if ($maxGap > 0.15) {
             $cutoff = max($cutoff, $scores[$gapIndex + 1]);
         } else {
@@ -1000,7 +1165,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         $filtered = array_slice($filtered, 0, $this->topK);
 
-        if ($filtered === [] && $chunks !== []) {
+        if ($filtered === [] && $chunks !== [] && $scores[0] >= 0.25) {
             return array_slice($chunks, 0, min(1, $this->topK));
         }
 
@@ -1186,14 +1351,49 @@ class RAGPipelineService implements RAGPipelineServiceInterface
                 $query->where('project', $filters['project']);
             }
             $nearest = $query->orderByRaw('ABS(report_date - CAST(? AS DATE))', [$target])->value('report_date');
-            if ($nearest !== null && (string) $nearest !== ($from ?? $to)) {
-                $dateStr = $nearest instanceof Carbon
-                    ? $nearest->toDateString()
-                    : (string) $nearest;
-                if ($isBurmese) {
-                    $hint = "\n\nအနီးစပ်ဆုံးရှိသော အစီရင်ခံစာများမှာ {$dateStr} ရက်စွဲတွင် ရှိပါသည်။";
+            $nearestStr = $nearest instanceof Carbon
+                ? $nearest->toDateString()
+                : (string) $nearest;
+
+            if ($nearest !== null) {
+                // Check if the document actually has vectors
+                $targetDoc = (clone $query)->where('report_date', $nearest)->first();
+                $hasVectors = false;
+                if ($targetDoc) {
+                    $hasVectors = \Illuminate\Support\Facades\DB::table('vector_embeddings')
+                        ->whereIn('chunk_id', function ($q) use ($targetDoc) {
+                            $q->select('id')->from('document_chunks')->where('document_id', $targetDoc->id);
+                        })->exists();
+                }
+
+                if ($nearestStr === ($from ?? $to)) {
+                    if (!$hasVectors) {
+                        if ($isBurmese) {
+                            $hint = "\n\n{$nearestStr} ရက်စွဲအတွက် အစီရင်ခံစာရှိသော်လည်း ရှာဖွေမှုအတွက် အဆင်သင့်မဖြစ်သေးပါ။ (Re-embed ပြုလုပ်ရန် လိုအပ်နိုင်ပါသည်)";
+                        } else {
+                            $hint = "\n\nA report for {$nearestStr} exists but is not ready for search. (Re-embedding may be required)";
+                        }
+                    } else {
+                        // Exact date found but no chunks above threshold.
+                        // Likely a model mismatch or low similarity.
+                        if ($isBurmese) {
+                            $hint = "\n\n{$nearestStr} ရက်စွဲအတွက် အစီရင်ခံစာရှိသော်လည်း ရှာဖွေမှုရလဒ်တွင် မတွေ့ပါ။ အချက်အလက်များ မပြည့်စုံခြင်း သို့မဟုတ် ရှာဖွေမှုစံနှုန်းနှင့် မကိုက်ညီခြင်းကြောင့် ဖြစ်နိုင်ပါသည်။";
+                        } else {
+                            $hint = "\n\nA report for {$nearestStr} exists but was not found in search results. This may be due to incomplete indexing or low similarity.";
+                        }
+                    }
                 } else {
-                    $hint = "\n\nThe closest available reports are dated {$dateStr}.";
+                    if ($isBurmese) {
+                        $hint = "\n\nအနီးစပ်ဆုံးရှိသော အစီရင်ခံစာများမှာ {$nearestStr} ရက်စွဲတွင် ရှိပါသည်။";
+                        if (!$hasVectors) {
+                            $hint .= " (သို့သော် ရှာဖွေမှုအတွက် အဆင်သင့်မဖြစ်သေးပါ)";
+                        }
+                    } else {
+                        $hint = "\n\nThe closest available reports are dated {$nearestStr}.";
+                        if (!$hasVectors) {
+                            $hint .= " (But it is not yet ready for search)";
+                        }
+                    }
                 }
             }
         }
