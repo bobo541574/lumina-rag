@@ -846,6 +846,19 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             $monthNum = $monthMap[$m[2]];
             $filters['report_date_from'] = "{$m[1]}-{$monthNum}-01";
             $filters['report_date_to'] = "{$m[1]}-{$monthNum}-".now()->create((int) $m[1], (int) $monthNum)->endOfMonth()->format('d');
+        } elseif (preg_match('/\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})\b/i', $question, $m)) {
+            // MonthName DD (e.g. "April 15") — no year, use current year
+            $monthMap = [
+                'January' => '01', 'February' => '02', 'March' => '03',
+                'April' => '04', 'May' => '05', 'June' => '06',
+                'July' => '07', 'August' => '08', 'September' => '09',
+                'October' => '10', 'November' => '11', 'December' => '12',
+            ];
+            $monthNum = $monthMap[$m[1]];
+            $day = str_pad($m[2], 2, '0', STR_PAD_LEFT);
+            $year = now()->year;
+            $filters['report_date_from'] = "{$year}-{$monthNum}-{$day}";
+            $filters['report_date_to'] = "{$year}-{$monthNum}-{$day}";
         } else {
             // Quarter / year / month-name patterns
             $datePatterns = [
@@ -940,6 +953,10 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         // Strip YYYY-MonthName patterns (e.g. "2026-April") before individual
         // year/month stripping so they don't leave a bare "-" token.
         $question = preg_replace('/\b\d{4}[-\.\/](January|February|March|April|May|June|July|August|September|October|November|December)\b/i', '', $question);
+
+        // Strip MonthName DD patterns (e.g. "April 15") before individual
+        // month stripping so they don't leave a bare day number.
+        $question = preg_replace('/\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}\b/i', '', $question);
 
         // Strip year and quarter patterns
         $question = preg_replace('/\b\d{4}\b/', '', $question);
