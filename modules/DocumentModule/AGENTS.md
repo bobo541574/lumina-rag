@@ -179,3 +179,15 @@ Status indicator with color coding.
 - 50MB PDF: Complete processing within 2 minutes
 - 1,000 chunks: Process within 30 seconds
 - Embedding batch (100): < 5 seconds API call
+
+---
+
+## Code Documentation Standards
+
+All classes and methods must include comprehensive PHPDoc blocks.
+
+### Requirements:
+1.  **Title & Detailed Description**: Clear explanation of purpose.
+2.  **Parameters**: `@param {type} $name Description. Example: {example}`.
+3.  **Return Type**: `@return {type} Description. Example: {example}`.
+4.  **Exceptions**: `@throws {ExceptionClass} Description of when it's thrown. Example: {example}`.

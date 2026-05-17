@@ -13,12 +13,13 @@ Each module handles ONE business domain:
 - **LLMModule**: Language model interactions
 - **UserModule**: User registration and API token authentication
 - **VectorStoreModule**: Vector storage and similarity search
+- **SettingsModule**: AI model configuration and term alias registry
 
 ### Module Isolation
 - Modules communicate ONLY through defined service contracts (interfaces)
 - No module can directly access another module's database tables
 - Cross-module data access is via service method calls only
-- Each module can be enabled/disabled in `config/modules.php`
+- Each module reads its `enabled` flag from `config/modules.php` in its `ServiceProvider::boot()`
 
 ### Dependency Flow
 ```
@@ -51,13 +52,17 @@ Frontend components live in `resources/js/`, not per-module Vue directories.
 - All methods have explicit return types
 - All class properties are typed
 - No mixed types without justification
-- All class and methods must be included phpdoc with short title, detail description, param type, return type, exception type  
+- **Code Documentation**: All classes and methods must include comprehensive PHPDoc (PHP) or JSDoc (TS/JS) blocks with:
+    - **Title & Detailed Description**: Clear explanation of purpose.
+    - **Parameters**: `@param {type} $name Description. Example: {example}`.
+    - **Return Type**: `@return {type} Description. Example: {example}`.
+    - **Exceptions**: `@throws {ExceptionClass} Description of when it's thrown. Example: {example}`.
 
 ### Dependency Injection
-- Constructor injection only
-- No facades (DB, Cache, Log via facade)
+- Constructor injection preferred
+- Facades (`Storage::`, `Log::`) are used in practice alongside constructor-injected config — don't refactor one style to the other without a reason
 - Service container binding for interface-to-implementation resolution
-- Config values injected via constructor, not read from config() inside service
+- Config values injected via constructor where practical
 
 ### Error Handling
 - Domain-specific exceptions for business logic errors
@@ -65,12 +70,17 @@ Frontend components live in `resources/js/`, not per-module Vue directories.
 - Log all errors with structured context (JSON format)
 - User-facing messages are generic, detailed errors only in logs
 
+### Response Envelope
+- All API responses follow `{ success, message, data, errors }` format
+- List endpoints return `{ data, meta }` with pagination metadata (current_page, per_page, total, last_page)
+
 ### Performance Rules
 - Embedding API calls are cached (MD5 hash of text as cache key)
 - Batch processing for embeddings (100 texts per API call)
 - Queue all document processing (never in request lifecycle)
 - Database indexes on all foreign keys and search columns
 - pgvector IVFFlat index for vector similarity search
+- Term alias mappings are Redis-cached with 24h TTL (MD5 hash key)
 
 ## Vue.js Standards
 
@@ -111,6 +121,7 @@ Vue/
 - Soft deletes: deleted_at TIMESTAMPTZ
 - Vector columns: vector(1536) with pgvector extension
 - Full-text search: tsvector with GIN index where needed
+- `term_aliases` table: unique constraint on `(alias, canonical)`
 
 ## Foreign Key Constraints
 

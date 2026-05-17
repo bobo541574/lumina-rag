@@ -65,3 +65,23 @@ Get authenticated user profile.
 
 ## Seeder
 `UserModuleSeeder` — creates 2 users (admin@lumina.test, test@example.com) with API tokens. Idempotent (skips if users exist). Called automatically by `DatabaseSeeder`.
+
+---
+
+### API Endpoints
+
+---
+
+## Code Documentation Standards
+
+All classes and methods must include comprehensive PHPDoc blocks.
+
+### Requirements:
+1.  **Title & Detailed Description**: Clear explanation of purpose.
+2.  **Parameters**: `@param {type} $name Description. Example: {example}`.
+3.  **Return Type**: `@return {type} Description. Example: {example}`.
+4.  **Exceptions**: `@throws {ExceptionClass} Description of when it's thrown. Example: {example}`.
+
+---
+
+## Security Considerations

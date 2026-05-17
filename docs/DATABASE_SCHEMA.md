@@ -15,8 +15,8 @@ users ──< documents     ──< document_chunks ──< vector_embeddings (m
                                                ╲── ve_384 / ve_768 / ve_1024 / ve_1536 / ve_3072
                                                    (one row per chunk, in the matching-dimension table)
 
-settings   (standalone — runtime overrides for config/rag.*)
-ai_models  (standalone — registry of embedding + LLM endpoints)
+ai_models     (standalone — registry of embedding + LLM endpoints)
+term_aliases  — alias-to-canonical mappings for search query expansion
 ```
 
 Auxiliary Laravel tables: `users`, `password_reset_tokens`, `sessions` (HTTP session storage), `cache`, `cache_locks`, `jobs`, `failed_jobs`.
@@ -104,6 +104,10 @@ Auxiliary Laravel tables: `users`, `password_reset_tokens`, `sessions` (HTTP ses
 | `description` | text | nullable | Trix-edited HTML — **sanitize server-side** (rendered with `v-html`) |
 | `status` | varchar(20) | default `'pending'` | `pending` / `processing` / `completed` / `failed` |
 | `chunks_count` | integer | default `0` | Cached chunk count |
+| `token_count` | integer | nullable | Total tokens across all chunks |
+| `report_date` | date | nullable | Document date (from filename/OCR or manual) |
+| `project` | varchar(255) | nullable | Project association (auto-extracted or manual) |
+| `is_public` | boolean | default `false` | When true, cross-user search includes this doc |
 | `error_message` | text | nullable | Populated on `failed` |
 | `processed_at` | timestamptz | nullable | When status flipped to `completed` |
 | `created_at`, `updated_at` | timestamptz | default `NOW()` | |
@@ -191,21 +195,7 @@ Routing: when storing or searching, the service consults `ai_models.collection` 
 
 ---
 
-### `settings`
-
-`modules/SettingsModule/database/migrations/2026_01_01_000001_create_settings_table.php`
-
-Runtime overrides for `config('rag.*')`. Edited via the Settings UI; consulted by the modules at runtime.
-
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| `id` | ULID | PK | |
-| `key` | varchar(100) | unique, not null | e.g. `embedding.model`, `search.top_k` |
-| `value` | text | nullable | Stored as text; coerced via `type` |
-| `type` | varchar(20) | default `'string'` | `string` / `int` / `float` / `bool` / `json` |
-| `label` | varchar(255) | nullable | Human-readable label for the UI |
-| `group` | varchar(50) | nullable | UI grouping (`embedding`, `llm`, `search`, …) |
-| `created_at`, `updated_at` | timestamptz | default `NOW()` | |
+> The standalone `settings` table was dropped in `2026_01_01_000003_drop_settings_table.php`. Its runtime-override role was absorbed into `ai_models.settings` JSONB.
 
 ---
 
@@ -240,6 +230,31 @@ Registry of available embedding + LLM endpoints. Each row is a complete provider
 **Indexes**:
 - `idx_ai_models_type` on `type`
 - `idx_ai_models_active` on `is_active`
+
+---
+
+### `term_aliases`
+
+**Migration**: `modules/SettingsModule/database/migrations/2026_01_01_000004_create_term_aliases_table.php`
+
+Stores alias-to-canonical term mappings used by the RAG pipeline to expand search queries. When a user's question contains an alias word, the system also searches for the canonical term (and vice versa).
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `id` | ULID | PK | |
+| `type` | varchar(50) | `'general'` default | Category: `project`, `technical`, or `general` |
+| `alias` | varchar(255) | NOT NULL | The alternative name / shorthand |
+| `canonical` | varchar(255) | NOT NULL | The standard / full term |
+| `description` | varchar(500) | nullable | Human-readable explanation |
+| `is_active` | boolean | `true` default | When false, excluded from search expansion |
+| `created_at` | timestamptz | `NOW()` | |
+| `updated_at` | timestamptz | `NOW()` | |
+
+**Indexes**:
+- `uq_term_aliases_pair` unique on `(alias, canonical)`
+- `idx_term_aliases_type` on `type`
+
+**Integration**: `TermAliasService::expandText()` and `expandFtsQuery()` are called inside `RAGPipelineService::ask()` / `askStream()` before embedding and FTS search respectively. The alias map is cached in Redis with a 24h TTL.
 
 ---
 

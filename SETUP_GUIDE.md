@@ -105,12 +105,12 @@ DB_PASSWORD=                    # set if your role has one
 OPENAI_API_KEY=sk-…
 
 # Default RAG providers (override per-model via the AI Models registry once running)
-RAG_EMBEDDING_PROVIDER=openai
-RAG_EMBEDDING_MODEL=text-embedding-3-small
-RAG_EMBEDDING_DIMENSIONS=1536
+RAG_EMBEDDING_PROVIDER=ollama
+RAG_EMBEDDING_MODEL=nomic-embed-text:latest
+RAG_EMBEDDING_DIMENSIONS=768
 
-RAG_LLM_PROVIDER=openai
-RAG_LLM_MODEL=gpt-4o
+RAG_LLM_PROVIDER=ollama
+RAG_LLM_MODEL=qwen3.5:9b
 
 QUEUE_CONNECTION=database         # or redis if you have Redis up
 CACHE_STORE=redis                 # array if no Redis (no caching → slower embeds)
@@ -123,24 +123,25 @@ All knobs read by [config/rag.php](config/rag.php) (most have sane defaults — 
 
 | Env var | Default | Purpose |
 |---------|---------|---------|
-| `RAG_EMBEDDING_PROVIDER` | `openai` | `openai` or `ollama` |
+| `RAG_EMBEDDING_PROVIDER` | `ollama` | `openai` or `ollama` |
 | `RAG_EMBEDDING_BASE_URL` | `http://localhost:11434` | Used by Ollama provider |
-| `RAG_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model name |
-| `RAG_EMBEDDING_DIMENSIONS` | `1536` | Vector dimensions (must match the chosen model) |
+| `RAG_EMBEDDING_MODEL` | `nomic-embed-text:latest` | Embedding model name |
+| `RAG_EMBEDDING_DIMENSIONS` | `768` | Vector dimensions (must match the chosen model) |
 | `RAG_EMBEDDING_BATCH_SIZE` | `100` | Texts per provider call |
 | `RAG_EMBEDDING_CACHE_TTL` | `86400` (24h) | Embedding cache TTL |
 | `RAG_EMBEDDING_TIMEOUT` | `30` | Request timeout (seconds) |
-| `RAG_LLM_PROVIDER` | `openai` | `openai` or `ollama` |
+| `RAG_LLM_PROVIDER` | `ollama` | `openai` or `ollama` |
 | `RAG_LLM_BASE_URL` | `http://localhost:11434` | Ollama URL |
-| `RAG_LLM_MODEL` | `gpt-4o` | LLM model name |
+| `RAG_LLM_MODEL` | `qwen3.5:9b` | LLM model name |
+| `RAG_LLM_MAX_TOKENS` | `4096` | Hard cap on output tokens; used as `num_predict` for Ollama |
 | `RAG_LLM_TEMPERATURE` | `0.3` | Generation temperature |
-| `RAG_LLM_MAX_CONTEXT_TOKENS` | `4000` | Truncate context to fit |
-| `RAG_LLM_TIMEOUT` | `60` | Request timeout |
+| `RAG_LLM_MAX_CONTEXT_TOKENS` | `32768` | Truncate context to fit |
+| `RAG_LLM_TIMEOUT` | `120` | Request timeout (seconds) |
 | `RAG_VECTOR_DRIVER` | `pgsql` | Only `pgsql` is implemented |
 | `RAG_VECTOR_INDEX_LISTS` | `100` | IVFFlat lists parameter |
 | `RAG_SEARCH_MODE` | `hybrid` | `vector` / `fts` / `hybrid` |
 | `RAG_SEARCH_TOP_K` | `5` | Chunks retrieved per query |
-| `RAG_SEARCH_SIMILARITY_THRESHOLD` | `0.65` | Below this → "cannot answer" |
+| `RAG_SEARCH_SIMILARITY_THRESHOLD` | `0.65` | Base threshold; `applyDynamicThreshold()` uses elbow method starting from `0.20` |
 | `RAG_SEARCH_HYBRID_VECTOR_WEIGHT` | `0.7` | Hybrid scoring weight (vector) |
 | `RAG_SEARCH_HYBRID_FTS_WEIGHT` | `0.3` | Hybrid scoring weight (FTS) |
 | `RAG_SEARCH_MMR_ENABLED` | `true` | Re-rank top-K with MMR |
@@ -152,9 +153,10 @@ All knobs read by [config/rag.php](config/rag.php) (most have sane defaults — 
 | `RAG_MAX_QUESTION_LENGTH` | `1000` | Question length cap |
 | `RAG_MAX_MESSAGES_PER_SESSION` | `100` | Session message cap |
 | `RAG_LOG_CHANNEL` | `rag` | Logging channel name |
-| `RAG_LOG_LEVEL` | `info` | `debug` / `info` / `warning` / `error` |
+| `RAG_PAGINATION_PER_PAGE` | `20` | Default items per page on list endpoints |
+| `RAG_PAGINATION_MAX_PER_PAGE` | `100` | Maximum allowed `per_page` (server-enforced cap) |
 
-> **Runtime override**: settings in the `settings` table override these env values without a redeploy. The Settings page in the SPA is the editor.
+> **Runtime override**: per-model settings in the `ai_models.settings` JSONB column override global env values without a redeploy. Active model is determined by `is_active` + `sort_order`.
 
 ---
 
@@ -172,7 +174,7 @@ Creates:
 | ChatModule | 2 chat sessions with messages |
 | DocumentModule | 1 document with 3 chunks |
 | VectorStoreModule | Embeddings for the seeded chunks (skipped if pgvector isn't installed) |
-| SettingsModule | Default RAG settings + a couple of AI model registry entries |
+| SettingsModule | Default AI model registry entries (3 embedding + 4 LLM models) + 19 term alias mappings (Burmese project names, technical terms, abbreviations) |
 
 ---
 
@@ -248,6 +250,7 @@ Open http://localhost:8000 and:
 3. Wait for status to flip from `pending` → `processing` → `completed` (watch the queue terminal for activity).
 4. Go to **Chat** → ask a question about the document.
 5. Verify the answer comes back with sources cited beneath it.
+6. Navigate to `/settings/term-aliases` to see the seeded alias entries (19 default mappings).
 
 ---
 

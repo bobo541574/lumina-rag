@@ -65,7 +65,7 @@ pending  ──(job picked up)──→ processing ──(success)──→ comp
 
 ### Document update + delete
 
-- **Update** (`PUT /api/documents/{id}`): only `title` and `description` (Trix HTML) are mutable. Rich-text description is rendered with `v-html` in the list view — server-side sanitization is the responsibility of `DocumentResource` (track if not yet implemented).
+- **Update** (`PUT /api/documents/{id}`): mutable fields include `title`, `description` (Trix HTML), `report_date` (date), and `project` (string). `report_date` and `project` are sortable, filterable metadata. Rich-text description is rendered with `v-html` in the list view — server-side sanitization is the responsibility of `DocumentResource` (track if not yet implemented).
 - **Delete** (`DELETE /api/documents/{id}`): soft-delete on `documents`, cascading delete on `document_chunks`, `vector_embeddings` (metadata), and the row in the matching `ve_{dim}` shard table — via service code (no DB-level FK cascade).
 - **Bulk delete**: no dedicated endpoint — frontend issues parallel `DELETE` calls via `Promise.allSettled` and reports per-item success/failure via toast.
 
@@ -80,17 +80,17 @@ Orchestrated in [RAGPipelineService.php](modules/ChatModule/Services/RAGPipeline
 1. **Validation**:
    - Empty question → `InvalidArgumentException`.
    - Question > `config('rag.chat.max_question_length')` (1 000 chars) → truncated.
-2. **Auto-filters**: `extractFiltersFromQuestion()` detects user names, project names, date ranges from the question text and applies them as SQL filters (user_id, project, report_date range) to both vector and FTS queries — not as FTS search terms.
+2. **Auto-filters**: `extractFiltersFromQuestion()` detects user names, project names, date ranges (including `YYYY-MonthName` and `MonthName DD` patterns) from the question text and applies them as SQL filters (user_id, project, report_date range) to both vector and FTS queries — not as FTS search terms.
 3. **Question embedding**: same model the matching documents were embedded with (per-document override falls back to AiModel registry or config default).
-4. **FTS query refinement**: `refineFtsQuery()` strips detected filter terms (user, project, date) and stopwords from the FTS query so they don't compete with content terms. Date patterns (`YYYY-MM-DD`, `YYYY-MM`) are stripped before individual year removal to avoid bare `-MM` fragments being interpreted as PostgreSQL FTS negation operators.
-5. **Vector search**: top-K (default 5) chunks via cosine distance. Initial threshold lowered to `min(0.65, 0.40)` to cast a wider net; final threshold applied post-fusion.
+4. **FTS query refinement**: `refineFtsQuery()` strips detected filter terms (user, project, date) and stopwords from the FTS query so they don't compete with content terms. Date patterns (`YYYY-MM-DD`, `YYYY-MM`, `YYYY-MonthName`) are stripped before individual year removal to avoid bare `-MM` fragments being interpreted as PostgreSQL FTS negation operators.
+5. **Vector search**: top-K (default 5) chunks via cosine distance. Initial threshold lowered to `min(0.65, 0.20)` to cast a wider net; final threshold applied post-fusion.
 6. **Search modes** (`config('rag.search.mode')`):
    - `vector` — pure cosine similarity.
    - `fts` — full-text search (PostgreSQL `tsvector` with `english` config).
    - `hybrid` (default) — vector + FTS in parallel, fused via Reciprocal Rank Fusion (RRF) with scores normalised to 0–1.
 7. **MMR re-ranking** (`config('rag.search.mmr.enabled')`, default `true`): Maximal Marginal Relevance to reduce redundancy among top-K results. Tuned by `lambda` (default 0.7).
 8. **Query expansion** (`config('rag.search.query_expansion.enabled')`, default `false`): generates additional query variants via the LLM, runs each, merges results.
-9. **Threshold handling** (`applyDynamicThreshold()`): uses the configured similarity threshold (default 0.65) with an elbow-detection fallback. If all chunks score below threshold, a single best chunk survives as a safety valve.
+9. **Threshold handling** (`applyDynamicThreshold()`): starts from a low floor (`0.20`) and applies an elbow-detection method to find the natural drop-off point in similarity scores, capped at the configured `similarity_threshold` (default 0.65). If all chunks score below the floor, a single best chunk survives as a safety valve.
 10. **Context assembly**: chunks sorted by score desc, concatenated with source labels, truncated to `config('rag.llm.max_context_tokens')` (4 000 tokens default).
 11. **LLM completion**: provider per AiModel registry (Ollama default). Temperature 0.3 default.
 12. **Streaming**: SSE with `chunk`, `sources`, `status` (embedding/searching/generating), and `done` (with tokens_used/search_time_ms/llm_time_ms/total_time_ms metadata) events. Frontend uses `fetch` with `ReadableStream` reader and automatic retry (up to 3 attempts with exponential backoff). The **Stop** button calls `store.abortStream()`.
@@ -178,17 +178,7 @@ Both `/register` and `/login` return Laravel's standard `errors: { field: [messa
 
 ---
 
-## Settings & AI Model Registry
-
-### Runtime settings
-
-Implemented in `SettingsModule`. The `settings` table stores key/value/type/group/label tuples that **override `config('rag.*')`** at runtime. This means an admin can change RAG behavior without redeploying.
-
-- The frontend [SettingsPage.vue](resources/js/pages/SettingsPage.vue) groups settings by `group` and renders type-appropriate inputs (text / number / select / checkbox / json textarea).
-- Bulk save via `PUT /api/settings/bulk`.
-- Per-field "dirty" indicator + reset button for unsaved edits.
-
-### AI model registry
+## AI Model Registry
 
 The `ai_models` table is a registry of available embedding + LLM endpoints. Each row encapsulates a complete provider configuration: provider type, model name, API key, base URL, dimensions/timeout/etc.
 
@@ -205,6 +195,28 @@ The AI model UI is now split across two routes (changed in recent refactor):
 - `/settings/ai-models/new` and `/settings/ai-models/:id/edit` — form ([AiModelManager.vue](resources/js/pages/AiModelManager.vue))
 
 The form pre-fills all fields from the existing model on edit **except the API key**, which is left blank with a placeholder ("leave blank to keep existing"). Empty submissions during edit omit `api_key` from the payload.
+
+---
+
+## Term Alias Registry
+
+The `term_aliases` table stores `alias → canonical` mappings with types: `project`, `technical`, `general`.
+
+- **`TermAliasService`** caches the alias map in Redis (24h TTL).
+- **`expandText()`** appends canonical terms to the question text before embedding (vector search).
+- **`expandFtsQuery()`** adds `OR canonical` to each matching term in the FTS query.
+- Both are called automatically in `RAGPipelineService::ask()` and `askStream()` — no user action needed.
+- Example: searching "အိုရီယွန်" automatically also searches for "Orion".
+- CRUD available at `/api/settings/term-aliases` and via UI at `/settings/term-aliases`.
+- Seeded with 19 default aliases (Burmese → English project names, technical terms, abbreviations).
+
+### Pagination
+
+All list endpoints return paginated responses with `{ data, meta }`. Client sends `?page=` and `?per_page=`, server caps `per_page` at `config('rag.pagination.max_per_page')` (default 100) to prevent abuse.
+
+### Template files
+
+Downloadable report templates are available at `public/templates/` (5 report types × 4 formats each). The `php artisan rag:generate-templates` command regenerates `.docx` files from `.md` sources.
 
 ---
 

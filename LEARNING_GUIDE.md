@@ -8,10 +8,10 @@
 
 Lumina RAG သည် Retrieval-Augmented Generation (RAG) စနစ်တစ်ခုဖြစ်ပြီး၊ ကိုယ်ပိုင် document များ (PDF, DOCX, TXT) ကို upload တင်၍ ၎င်းတို့အပေါ် အခြေခံကာ AI ကို မေးခွန်းများ မေးမြန်းနိုင်သော system တစ်ခုဖြစ်သည်။
 
-- **Backend**: Laravel 11 (Modular Monolith Architecture)
+- **Backend**: Laravel 13 (Modular Monolith Architecture)
 - **Database**: PostgreSQL 16 + pgvector (Vector storage အတွက်)
 - **Frontend**: Vue 3 + Pinia + Tailwind CSS v4
-- **AI Integration**: OpenAI (GPT-4o) သို့မဟုတ် Ollama (Local)
+- **AI Integration**: Ollama (default: `nomic-embed-text`, `qwen3.5:9b`) သို့မဟုတ် OpenAI
 
 ---
 
@@ -26,7 +26,7 @@ Project ကို `modules/` directory အောက်တွင် အပို�
 | [EmbeddingModule](file:///Users/za/Sites/projects/lumina_rag/modules/EmbeddingModule) | စာသားများကို Vector (နံပါတ်စဉ်များ) အဖြစ် ပြောင်းလဲပေးခြင်း။ |
 | [VectorStoreModule](file:///Users/za/Sites/projects/lumina_rag/modules/VectorStoreModule) | Vector များကို သိမ်းဆည်းခြင်းနှင့် Similarity Search လုပ်ခြင်း။ |
 | [LLMModule](file:///Users/za/Sites/projects/lumina_rag/modules/LLMModule) | AI Model (LLM) နှင့် ဆက်သွယ်ပြီး အဖြေထုတ်ပေးခြင်း။ |
-| [SettingsModule](file:///Users/za/Sites/projects/lumina_rag/modules/SettingsModule) | AI models များ၏ config များကို စီမံခန့်ခွဲခြင်း။ |
+| [SettingsModule](file:///Users/za/Sites/projects/lumina_rag/modules/SettingsModule) | AI models များ၏ config များကို စီမံခန့်ခွဲခြင်းနှင့် term alias registry (မြန်မာ/အင်္ဂလိပ် ဝေါဟာရမြေပုံ) ကို စီမံခြင်း။ |
 | [UserModule](file:///Users/za/Sites/projects/lumina_rag/modules/UserModule) | User authentication (Login/Register) ပိုင်း။ |
 
 ---
@@ -49,6 +49,7 @@ File format ပေါင်းစုံကနေ စာသားတွေကိ�
 - **`chunkText()` (Recursive Logic)**: စာသားက characters ၁၀၀၀ ထက် ကျော်နေရင် ဖြတ်ဖို့ ကြိုးစားပါတယ်။
 - **`findSplitPoint()`**: စာကြောင်း အလယ်ကနေ ပြတ်မသွားအောင် separator ဦးစားပေး စနစ်ကို သုံးပါတယ်။ `\n\n` (paragraph) ကို အရင်ရှာတယ်၊ မရှိရင် `\n`၊ မရှိရင် `.` (sentence)၊ အဲ့ဒါမှ မရှိရင်တော့ space နေရာမှာ ဖြတ်ပါတယ်။
 - **Overlap**: Chunk အသစ် စတဲ့အခါ အရှေ့ chunk ရဲ့ နောက်ဆုံး characters ၂၀၀ ကနေ ပြန်စတဲ့အတွက် အဓိပ္ပာယ် ဆက်စပ်မှု မပျောက်သွားပါဘူး။
+- **Document Metadata**: Document တိုင်းတွင် `report_date` (date) နှင့် `project` (varchar) ကော်လံများပါဝင်ပြီး၊ ဤ metadata များကို UI မှတစ်ဆင့် sort, filter နှင့် edit ပြုလုပ်နိုင်ပါတယ်။
 
 ---
 
@@ -96,6 +97,13 @@ AI Models တွေရဲ့ configuration တွေကို စီမံပေ
 - **Validation Rules**: Model တစ်ခုချင်းစီရဲ့ type (embedding/llm) ပေါ်မူတည်ပြီး သက်ဆိုင်ရာ validation rules တွေကို dynamically ထုတ်ပေးပါတယ်။ (ဥပမာ- embedding ဆိုရင် dimensions ပါရမယ်၊ llm ဆိုရင် temperature ပါရမယ်)
 - **Model Registry**: System တစ်ခုလုံးမှာ code ပြင်စရာမလိုဘဲ UI ကနေ OpenAI သို့မဟုတ် Ollama model တွေကို အလွယ်တကူ တိုးနိုင်၊ လျှော့နိုင်အောင် စီစဉ်ထားပါတယ်။
 
+#### **၃။ [TermAliasService.php](file:///Users/za/Sites/projects/lumina_rag/modules/SettingsModule/Services/TermAliasService.php)**
+မြန်မာ-အင်္ဂလိပ် ဝေါဟာရ မြေပုံဆွဲခြင်းကို စီမံပေးပါတယ်။
+- **Cached Alias Map**: alias-canonical mapping ကို Redis တွင် MD5 hash key ဖြင့် သိမ်းဆည်းပြီး 24h TTL သတ်မှတ်ထားပါတယ်။
+- **expandText()**: ရှာဖွေမေးခွန်းတွင် ပါဝင်သော ဝေါဟာရများကို အခြားဘာသာစကားများသို့ ချဲ့ထွင်ပေးပါတယ် (ဥပမာ - "ရန်ကုန်" → "Yangon" နှင့် "ရန်ကုန်")။
+- **expandFtsQuery()**: Full-text search (FTS) query တွင် အလားတူ ဝေါဟာရချဲ့ထွင်မှုကို ပြုလုပ်ပေးပါတယ်။ RAG pipeline ထဲတွင် hybrid search မလုပ်မီ ဤ service ကိုခေါ်ဆိုပါတယ်။
+- **UI Route**: `/settings/term-aliases` မှတစ်ဆင့် ဝေါဟာရများကို စီမံနိုင်ပါတယ်။
+
 ---
 
 ### **F. ChatModule - RAG Orchestration**
@@ -105,6 +113,7 @@ System တစ်ခုလုံးရဲ့ step-by-step စီးဆင်း�
 - **Burmese Normalization**: မြန်မာဂဏန်း (၀-၉) တွေကို English (0-9) ပြောင်းပြီးမှ ရက်စွဲတွေ ရှာပါတယ်။
 - **Inheritance Logic**: User က "ဘယ်သူ့အစီရင်ခံစာလဲ" လို့ မေးပြီးနောက် "အဲ့ဒါက ဘယ်အချိန်ကလဲ" လို့ ထပ်မေးရင် (follow-up) အရှေ့မေးခွန်းက user id/project တွေကို အလိုအလျောက် ယူသုံးပေးပါတယ်။
 - **Confidence Assessment**: ရှာတွေ့တဲ့ similarity score တွေအရ အဖြေက စိတ်ချရမှု ရှိမရှိ (High/Low) သတ်မှတ်ပြီး AI ကို instruction ပြောင်းပေးပါတယ်။
+- **Pagination**: List view များတွင် pagination ကိုထောက်ပံ့ထားပြီး `RAG_PAGINATION_PER_PAGE` နှင့် `RAG_PAGINATION_MAX_PER_PAGE` environment variables ဖြင့် configure လုပ်နိုင်ပါတယ်။
 
 ---
 

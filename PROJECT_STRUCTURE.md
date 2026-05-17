@@ -34,7 +34,7 @@ The Laravel app is monolithic; "modules" are an internal organization, not separ
 | **LLMModule** | LLM completions with streaming | `LLMProviderInterface` → `OpenAILLMProvider` / `OllamaLLMProvider`<br>`LLMServiceInterface` → `LLMService` |
 | **DocumentModule** | Upload → extract → chunk → embed pipeline | `TextExtractionServiceInterface` → `TextExtractionService`<br>`TextChunkingServiceInterface` → `TextChunkingService` |
 | **ChatModule** | Session management + RAG orchestration | `RAGPipelineServiceInterface` → `RAGPipelineService` |
-| **SettingsModule** | Runtime settings + AI model registry | `AiModelServiceInterface` → `AiModelService` |
+| **SettingsModule** | Runtime settings + AI model registry + term aliases | `AiModelServiceInterface` → `AiModelService`<br>`TermAliasServiceInterface` → `TermAliasService` |
 
 ### Module dependency graph
 
@@ -102,12 +102,12 @@ PostgreSQL 16 + pgvector extension. Vectors live in the same database as relatio
 | `users` | ULID | `name`, `email`, `password`, `api_token` (80-char hex, unique) |
 | `chat_sessions` | ULID | `user_id`, `title`, `is_archived`, `last_activity_at`, soft deletes |
 | `chat_messages` | ULID | `session_id`, `role`, `content`, `sources` (jsonb), soft deletes |
-| `documents` | ULID | `user_id`, `title`, `description`, `original_filename`, `file_path`, `file_size`, `mime_type`, `file_hash` (unique), `status`, `chunks_count`, `embedding_model`, `embedding_model_id`, `error_message`, soft deletes |
-| `document_chunks` | ULID | `document_id`, `content`, `chunk_index`, `page_number`, `char_start`, `char_end`; unique on `(document_id, chunk_index)` |
+| `documents` | ULID | `user_id`, `title`, `description`, `original_filename`, `file_path`, `file_size`, `mime_type`, `file_hash` (unique), `status`, `chunks_count`, `token_count`, `embedding_model`, `embedding_model_id`, `report_date` (date), `project` (varchar), `is_public` (boolean), `error_message`, soft deletes |
+| `document_chunks` | ULID | `document_id`, `content`, `chunk_index`, `page_number`, `token_count`, `char_start`, `char_end`; unique on `(document_id, chunk_index)` |
 | `vector_embeddings` | ULID | **Metadata only**: `chunk_id`, `dimensions`, `model_name`, `content_hash` (+ `embedding` JSON column on SQLite). Actual vectors live in per-dimension shard tables. |
 | `ve_384` / `ve_768` / `ve_1024` / `ve_1536` / `ve_3072` | ULID | **Postgres + pgvector only.** `chunk_id`, `embedding` (`vector(N)`), `model_name`, `content_hash`. IVFFlat index with `vector_cosine_ops` (skipped for `ve_3072` — pgvector IVFFlat caps at 2000 dims). |
-| `settings` | ULID | `key` (unique), `value`, `type`, `label`, `group` |
-| `ai_models` | ULID | `name`, `type` (embedding/llm), `provider`, `model`, `api_key`, `base_url`, `collection`, `dimensions`, `batch_size`, `cache_ttl`, `temperature`, `max_context_tokens`, `timeout`, `description`, `settings` (jsonb), `is_active`, `sort_order` |
+| `ai_models` | ULID | `name`, `type` (embedding/llm), `provider`, `model`, `api_key`, `base_url`, `collection`, `dimensions`, `batch_size`, `cache_ttl`, `temperature`, `max_context_tokens`, `timeout`, `description`, `settings` (jsonb, e.g. `{"max_tokens":4096}`), `is_active`, `sort_order` |
+| `term_aliases` | ULID | `type`, `alias`, `canonical`, `description`, `is_active`; unique on `(alias, canonical)` |
 
 See [docs/DATABASE_SCHEMA.md](docs/DATABASE_SCHEMA.md) for full column-by-column reference (note: some entries there are stale — the migrations under each module's `database/migrations/` are authoritative).
 
@@ -129,7 +129,8 @@ resources/js/
 │   ├── DocumentsPage.vue
 │   ├── SettingsPage.vue
 │   ├── AiModelsPage.vue             ← list page
-│   └── AiModelManager.vue           ← form page (create + edit)
+│   ├── AiModelManager.vue           ← form page (create + edit)
+│   └── TermAliasesPage.vue          ← list + manage term aliases
 ├── components/
 │   ├── ChatInterface.vue
 │   ├── SessionList.vue
@@ -148,13 +149,14 @@ resources/js/
 │   ├── api.ts                       ← shared axios instance + auth header
 │   ├── chatService.ts
 │   ├── documentService.ts
-│   └── settingsService.ts
+│   ├── settingsService.ts
+│   └── termAliasService.ts
 ├── composables/
 │   └── useToast.ts                  ← global toast singleton
 ├── utils/
 │   └── dates.ts                     ← formatRelativeTime + formatAbsoluteTime
 ├── types/
-│   └── index.ts                     ← TypeScript interfaces (Document, AiModel, …)
+│   └── index.ts                     ← TypeScript interfaces (Document, AiModel, TermAlias, …)
 └── ...
 ```
 
@@ -233,6 +235,12 @@ See [PROJECT_RULES.md](PROJECT_RULES.md) for the full list. Most-load-bearing ru
 - Constructor DI everywhere; no facades inside services (some legacy `Storage::` / `Log::` facade usage remains and is being migrated).
 - One Resource per route; never share resources between endpoints.
 - Tests: 90%+ coverage target on services, 80%+ on controllers.
+
+---
+
+## Templates
+
+`public/templates/` holds downloadable report templates (5 types × 4 formats each). Regenerate with `php artisan rag:generate-templates`.
 
 ---
 

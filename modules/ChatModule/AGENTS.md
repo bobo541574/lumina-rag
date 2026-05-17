@@ -157,6 +157,22 @@ Expandable source reference card.
 ## Seeder
 `ChatModuleSeeder` — creates 2 sessions with 2 messages each. Idempotent (skips if sessions exist). Called automatically by `DatabaseSeeder`.
 
+### Performance Targets
+
+---
+
+## Code Documentation Standards
+
+All classes and methods must include comprehensive PHPDoc blocks.
+
+### Requirements:
+1.  **Title & Detailed Description**: Clear explanation of purpose.
+2.  **Parameters**: `@param {type} $name Description. Example: {example}`.
+3.  **Return Type**: `@return {type} Description. Example: {example}`.
+4.  **Exceptions**: `@throws {ExceptionClass} Description of when it's thrown. Example: {example}`.
+
+---
+
 ## Testing Strategy
 
 ### Feature Tests

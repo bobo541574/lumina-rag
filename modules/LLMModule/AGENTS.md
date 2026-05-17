@@ -179,6 +179,22 @@ data: {"finish_reason": "stop", "total_tokens": 150}
 - If context too large → Truncate and note in response
 - If model unavailable → Clear error message to user
 
+### Performance Considerations
+
+---
+
+## Code Documentation Standards
+
+All classes and methods must include comprehensive PHPDoc blocks.
+
+### Requirements:
+1.  **Title & Detailed Description**: Clear explanation of purpose.
+2.  **Parameters**: `@param {type} $name Description. Example: {example}`.
+3.  **Return Type**: `@return {type} Description. Example: {example}`.
+4.  **Exceptions**: `@throws {ExceptionClass} Description of when it's thrown. Example: {example}`.
+
+---
+
 ## Testing Strategy
 
 ### Unit Tests

@@ -40,7 +40,7 @@ Tests use SQLite `:memory:` and `QUEUE_CONNECTION=sync` — see `phpunit.xml`. `
 ```
 ChatModule       → EmbeddingModule + VectorStoreModule + LLMModule
 DocumentModule   → EmbeddingModule + VectorStoreModule
-SettingsModule   → standalone (key/value settings + AI model registry)
+SettingsModule   → standalone (AI model registry + term alias registry)
 UserModule       → standalone (token auth)
 EmbeddingModule  → leaf
 VectorStoreModule → leaf
@@ -74,11 +74,11 @@ modules/{Name}Module/
 | LLMModule | `LLMProviderInterface` → `OpenAILLMProvider`, `LLMServiceInterface` → `LLMService` |
 | UserModule | `AuthServiceInterface` → `AuthService` |
 | VectorStoreModule | `VectorStoreInterface` → `VectorStoreService` (wraps `PgvectorDriver` — only driver implemented) |
-| SettingsModule | `SettingsService`, `AiModelService` (no separate Contracts/) |
+| SettingsModule | `SettingsService`, `AiModelService`, `TermAliasServiceInterface` → `TermAliasService` |
 
 ### Request flow (must follow this direction)
 ```
-Request → Controller → Repository → Service (Interface) → Model
+Request → Controller → Service (Interface) → Model
 ```
 Only Services touch Models. Controllers do validation + dispatch only. See `~/.claude/CLAUDE.md` for the full coding standard the user enforces globally.
 
@@ -90,8 +90,8 @@ Only Services touch Models. Controllers do validation + dispatch only. See `~/.c
 
 1. Embed the question via `EmbeddingService` (cached by MD5(text), 24h TTL).
 2. `VectorStoreService::search(vector, topK=5)` against pgvector using cosine distance + IVFFlat index (`lists=100`).
-3. Filter by `search.similarity_threshold` (default `0.65`). If nothing passes → return `"I cannot answer this question based on the available documents."`
-4. Concatenate top chunks (truncated to `llm.max_context_tokens=4000`) into the LLM prompt.
+3. `applyDynamicThreshold()` — elbow method starting from `0.20`, capped at `search.similarity_threshold` (default `0.65`). If all chunks below threshold → return `"I cannot answer this question based on the available documents."`
+4. Concatenate top chunks (truncated to `llm.max_context_tokens`, default `32768`) into the LLM prompt. Output capped via `llm.max_tokens` (default `4096`).
 5. `LLMService::complete(...)` → answer, returned with `sources[]` (document_id, title, chunk_index, page_number, similarity_score, excerpt).
 6. Persist user + assistant `chat_messages`, attach to a `chat_session` (auto-created if no `session_id`).
 
@@ -107,12 +107,12 @@ All PKs are **ULIDs** (`HasUlids` trait, route binding via `->whereUlid()`). **N
 |-------|-----------------|
 | `chat_sessions` | `user_id`, `title`, `is_archived`, `last_activity_at`, soft deletes |
 | `chat_messages` | `session_id`, `role`, `content` (longText), `sources` (jsonb), soft deletes |
-| `documents` | `user_id`, `title`, `original_filename`, `file_path`, `file_size`, `mime_type`, `file_hash` (unique — dedupe), `status`, `chunks_count`, soft deletes |
-| `document_chunks` | `document_id`, `content`, `chunk_index`, `page_number`, `char_start`, `char_end`, unique on `(document_id, chunk_index)` |
+| `documents` | `user_id`, `title`, `original_filename`, `file_path`, `file_size`, `mime_type`, `file_hash` (unique — dedupe), `status`, `chunks_count`, `token_count`, `embedding_model`, `embedding_model_id`, `report_date` (date), `project`, `is_public`, soft deletes |
+| `document_chunks` | `document_id`, `content`, `chunk_index`, `page_number`, `token_count`, `char_start`, `char_end`, unique on `(document_id, chunk_index)` |
 | `vector_embeddings` | **Metadata only**: `chunk_id`, `dimensions`, `model_name`, `content_hash` (+ `embedding` JSON on SQLite). |
 | `ve_384` / `ve_768` / `ve_1024` / `ve_1536` / `ve_3072` | **Postgres+pgvector only** — actual vectors. `chunk_id`, `embedding` (`vector(N)`), `model_name`, `content_hash`. IVFFlat `vector_cosine_ops` index on `embedding` (skipped for `ve_3072` — IVFFlat caps at 2000 dims). |
-| `settings` (SettingsModule) | key/value with type metadata |
-| `ai_models` (SettingsModule) | configurable embedding/LLM model registry |
+| `ai_models` (SettingsModule) | configurable embedding/LLM model registry. `settings` JSONB holds per-model overrides (e.g. `{"max_tokens":4096}`). |
+| `term_aliases` (SettingsModule) | `id` (ULID), `type`, `alias`, `canonical`, `description`, `is_active`; unique on `(alias, canonical)`. |
 
 Vector-related migration steps (creating the `ve_{dim}` shard tables and their IVFFlat indexes) are conditional — they're skipped on connections without the pgvector extension. Under SQLite (test runs), vectors fall back to a JSON `embedding` column on `vector_embeddings`.
 
@@ -127,9 +127,11 @@ All routes are prefixed `api/` and registered by each module's `ServiceProvider`
 | Auth (`auth.php`) | `POST /api/auth/register \| /login \| /logout`, `GET /api/auth/me` |
 | Chat (`chat.php`) | `POST /api/chat`, `GET/DELETE /api/chat/sessions[/{ulid}]` |
 | Documents (`document.php`) | `GET /api/documents` (server-side pagination: `?page=&per_page=&search=&sort_key=&sort_dir=`), `POST /api/documents`, `GET /api/documents/{ulid}`, `GET /api/documents/{ulid}/status`, `POST /api/documents/{ulid}/retry`, `PUT /api/documents/{ulid}`, `DELETE /api/documents/{ulid}` |
-| Settings (`settings.php`) | `GET /api/settings`, `PUT /api/settings/bulk`, `PUT/DELETE /api/settings/{key}`, `GET/POST/PUT/DELETE /api/settings/ai-models[/{ulid}]` |
+| Settings (`settings.php`) | `GET /api/settings`, `PUT /api/settings/bulk`, `PUT/DELETE /api/settings/{key}`, `GET/POST/PUT/DELETE /api/settings/ai-models[/{ulid}]`, `GET/POST /api/settings/term-aliases`, `GET/PUT/DELETE /api/settings/term-aliases/{id}` |
 
 Standard response envelope: `{ success, message, data, errors }`.
+
+All list endpoints support `?page=` and `?per_page=` query params and return `{ success, data, meta }` where `meta` contains `current_page`, `last_page`, `per_page`, `total`, `from`, `to`. Server caps `per_page` at `config('rag.pagination.max_per_page')` (default 100).
 
 Tokens: 80-char hex (`bin2hex(random_bytes(40))`), stored on `users.api_token`. Login rotates the token; logout nulls it.
 
@@ -149,9 +151,9 @@ Vue 3 SPA in `resources/js/`:
 ```
 App.vue, app.js, router.ts
 components/   (ChatInterface, DocumentUpload/List/Detail, SessionList, AiModelsManager, ui/)
-pages/        (ChatPage, DocumentsPage, LoginPage, RegisterPage, SettingsPage, AiModelsPage)
+pages/        (ChatPage, DocumentsPage, LoginPage, RegisterPage, SettingsPage, AiModelsPage, TermAliasesPage)
 stores/       (authStore, chatStore, documentStore, settingsStore — Pinia)
-services/     (per-module API client wrappers around axios)
+services/     (per-module API client wrappers around axios, e.g. termAliasService.ts)
 composables/  types/
 ```
 Vite builds via `vite.config.js` with `@vitejs/plugin-vue`, `@tailwindcss/vite`, `laravel-vite-plugin`, and bunny-fonts (Instrument Sans). `trix-editor` is registered as a custom element.

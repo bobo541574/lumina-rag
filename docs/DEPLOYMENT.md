@@ -57,14 +57,15 @@ REDIS_HOST=127.0.0.1
 REDIS_PASSWORD=<strong>
 REDIS_PORT=6379
 
-# RAG
+# RAG (defaults in config/rag.php; AiModel registry overrides at runtime)
 OPENAI_API_KEY=sk-…
-RAG_EMBEDDING_PROVIDER=openai
-RAG_EMBEDDING_MODEL=text-embedding-3-small
-RAG_LLM_PROVIDER=openai
-RAG_LLM_MODEL=gpt-4o
+RAG_EMBEDDING_PROVIDER=ollama
+RAG_EMBEDDING_MODEL=nomic-embed-text:latest
+RAG_LLM_PROVIDER=ollama
+RAG_LLM_MODEL=qwen3.5:9b
 RAG_LOG_CHANNEL=rag
-RAG_LOG_LEVEL=info
+RAG_PAGINATION_PER_PAGE=20
+RAG_PAGINATION_MAX_PER_PAGE=100
 
 # File storage
 FILESYSTEM_DISK=local            # or s3 — see "Object storage" below

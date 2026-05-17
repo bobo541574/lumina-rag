@@ -82,17 +82,29 @@ Show Khin Myat's Education System reports from yesterday
 
 ```bash
 # Burmese query
+TOKEN=$(php artisan tinker --execute='echo \App\Models\User::first()->api_token;')
 curl -s http://localhost:8000/api/chat \
-  -H "Authorization: Bearer $(php artisan tinker --execute='echo \App\Models\User::first()->tokens()->first()->token;')" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"question":"အောင်ဇေယျာ Project Orion report ရှိလား?","stream":false}'
 
 # English query  
+TOKEN=$(php artisan tinker --execute='echo \App\Models\User::first()->api_token;')
 curl -s http://localhost:8000/api/chat \
-  -H "Authorization: Bearer $(php artisan tinker --execute='echo \App\Models\User::first()->tokens()->first()->token;')" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"question":"Does Sarah Chen have Project Orion reports?","stream":false}'
 ```
+
+## 7. Alias Expansion
+
+Term alias mappings automatically expand queries before embedding and FTS search. No special syntax needed.
+
+| # | Query | How alias expansion helps |
+|---|-------|---------------------------|
+| 31 | `အိုရီယွန် project reports` | `အိုရီယွန် → Orion` alias causes the system to also search for "Orion", matching documents where project = "Orion" |
+| 32 | `CNN model accuracy` | `CNN → Convolutional Neural Network` alias adds the canonical term, matching chunks mentioning either "CNN" or "Convolutional Neural Network" |
+| 33 | `OR project status` | `OR → Orion` alias expands the search to also find "Orion" documents |
 
 > **Note:** Seeder generates **1–3 reports per working day** per user-project pair. Weekends have no data — queries scoped to today (Saturday) will return refusal.
 >

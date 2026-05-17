@@ -26,6 +26,7 @@ Complete reference for **API routes** (backend) and **SPA routes** (Vue frontend
 ```
 
 - Validation failures return HTTP 422 with `errors` populated per field.
+- List endpoints (`GET /api/documents`, `GET /api/chat/sessions`, `GET /api/settings/ai-models`, `GET /api/settings/term-aliases`) return `{ success, data, meta }` where `meta = { current_page, last_page, per_page, total, from, to }`.
 - Authorization failures return HTTP 401 / 403.
 
 ### SPA
@@ -72,7 +73,7 @@ Complete reference for **API routes** (backend) and **SPA routes** (Vue frontend
 | GET | `/api/documents/{ulid}` | Token | Document detail |
 | GET | `/api/documents/{ulid}/status` | Token | Lightweight status poll (`pending` / `processing` / `completed` / `failed`) |
 | POST | `/api/documents/{ulid}/retry` | Token | Re-dispatch `ProcessDocumentJob` for a failed document |
-| PUT | `/api/documents/{ulid}` | Token | Update title + description (Trix HTML) |
+| PUT | `/api/documents/{ulid}` | Token | Update title, description (Trix HTML), report_date, project |
 | DELETE | `/api/documents/{ulid}` | Token | Soft-delete document and its chunks/embeddings |
 
 #### Upload payload
@@ -83,25 +84,25 @@ Content-Type: multipart/form-data
 
 file:                  <PDF / DOCX / TXT / CSV / Markdown — max 50MB>
 title:                 (optional) override the filename-derived title
+report_date:           (optional) YYYY-MM-DD — document date
+project:               (optional) project name or code
 embedding_model:       (optional) free-form model name override
 embedding_model_id:    (optional) ULID of an `ai_models` row of type=embedding
 ```
 
 Duplicate detection: SHA-256 file hash matched against `documents.file_hash`. Returns HTTP 409 with the existing document if matched.
 
-### Settings (`SettingsModule/Routes/settings.php`)
+### AI Models (`SettingsModule/Routes/settings.php`)
 
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
-| GET | `/api/settings` | Token | All settings + their definitions (label, group, type, options) |
-| PUT | `/api/settings/bulk` | Token | Body: `{ settings: { key: { value, type? } } }` — atomic update |
-| PUT | `/api/settings/{key}` | Token | Single-key update |
-| DELETE | `/api/settings/{key}` | Token | Reset a setting to its default |
 | GET | `/api/settings/ai-models` | Token | Optional `?type=embedding` or `?type=llm` filter |
 | POST | `/api/settings/ai-models` | Token | Create an AI model registry entry |
 | GET | `/api/settings/ai-models/{ulid}` | Token | One model |
 | PUT | `/api/settings/ai-models/{ulid}` | Token | Update — omit `api_key` to keep existing |
 | DELETE | `/api/settings/ai-models/{ulid}` | Token | Remove a model from the registry |
+
+> The standalone `settings` table was dropped. Runtime overrides live in `ai_models.settings` JSONB per-model.
 
 #### AI model payload
 
@@ -119,6 +120,7 @@ Duplicate detection: SHA-256 file hash matched against `documents.file_hash`. Re
   "cache_ttl": 86400,
   "temperature": null,
   "max_context_tokens": null,
+  "max_tokens": null,
   "timeout": 30,
   "description": "<p>Fast general-purpose embedding (768d)</p>",
   "settings": {
@@ -131,6 +133,28 @@ Duplicate detection: SHA-256 file hash matched against `documents.file_hash`. Re
 ```
 
 When updating, **omit `api_key`** to keep the existing value — sending an empty string is treated as "no change". Frontend [AiModelForm.vue](resources/js/components/AiModelForm.vue) enforces this.
+
+### Term Aliases (`SettingsModule/Routes/settings.php`)
+
+| Method | Path | Auth | Notes |
+|--------|------|------|-------|
+| GET | `/api/settings/term-aliases` | Token | Optional `?type=project|technical|general`, `?page=`, `?per_page=` | Returns paginated `{ data, meta }` |
+| POST | `/api/settings/term-aliases` | Token | `{ type, alias, canonical, description?, is_active? }` | Create alias |
+| GET | `/api/settings/term-aliases/{ulid}` | Token | — | Single alias |
+| PUT | `/api/settings/term-aliases/{ulid}` | Token | `{ type?, alias?, canonical?, description?, is_active? }` | Update alias |
+| DELETE | `/api/settings/term-aliases/{ulid}` | Token | — | Delete alias |
+
+#### Term alias payload
+
+```json
+// POST /api/settings/term-aliases
+{
+  "type": "project",
+  "alias": "အိုရီယွန်",
+  "canonical": "Orion",
+  "description": "Burmese → English project name mapping"
+}
+```
 
 ---
 
@@ -146,12 +170,13 @@ Defined in [resources/js/router.ts](resources/js/router.ts).
 | `/documents` | `documents` | `DocumentsPage.vue` | auth | Document list with search, status tabs, sort, pagination, bulk select |
 | `/settings` | `settings` | `SettingsPage.vue` | auth | RAG configuration (key/value editor, grouped) |
 | `/settings/ai-models` | `ai-models` | `AiModelsPage.vue` | auth | List of registered embedding + LLM models |
+| `/settings/term-aliases` | `term-aliases` | `TermAliasesPage.vue` | auth | Term alias management |
 | `/settings/ai-models/new` | `ai-model-create` | `AiModelManager.vue` | auth | Create-model form |
 | `/settings/ai-models/:id/edit` | `ai-model-edit` | `AiModelManager.vue` | auth | Edit-model form (`props: true`, fetches model on mount) |
 
 ### Header navigation
 
-The authenticated header in [App.vue](resources/js/App.vue) exposes four destinations: Chat, Documents, AI Models, Settings. The active route gets a brand-tinted background. On mobile (< 768px), the desktop nav collapses behind a hamburger; the mobile dropdown auto-closes on route change.
+The authenticated header in [App.vue](resources/js/App.vue) exposes five destinations: Chat, Documents, AI Models, Settings, Term Aliases. The active route gets a brand-tinted background. On mobile (< 768px), the desktop nav collapses behind a hamburger; the mobile dropdown auto-closes on route change.
 
 ### Cross-page navigation patterns
 
