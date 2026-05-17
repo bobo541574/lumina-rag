@@ -261,10 +261,13 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         $autoFilters = $this->extractFiltersFromQuestion($question);
 
-        // Expand aliases for search: append canonical terms so both
-        // vector (via expandText) and FTS (via expandFtsQuery) find matches.
+        // Expand aliases for search: append canonical terms so vector search
+        // (via expandText and expandQuery in the LLM query expansion step)
+        // benefits from Burmese→English term mappings. The FTS path uses the
+        // original question (not alias-expanded) to avoid introducing canonical
+        // terms that don't appear in document chunk content.
         $searchQuestion = $this->termAliasService->expandText($question);
-        $ftsQuery = $this->refineFtsQuery($searchQuestion, $autoFilters);
+        $ftsQuery = $this->refineFtsQuery($question, $autoFilters);
         $ftsQuery = $this->termAliasService->expandFtsQuery($ftsQuery);
 
         $this->saveUserMessage($session, $question);
@@ -530,7 +533,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $autoFilters = $this->extractFiltersFromQuestion($question);
 
         $searchQuestion = $this->termAliasService->expandText($question);
-        $ftsQuery = $this->refineFtsQuery($searchQuestion, $autoFilters);
+        $ftsQuery = $this->refineFtsQuery($question, $autoFilters);
         $ftsQuery = $this->termAliasService->expandFtsQuery($ftsQuery);
 
         $this->saveUserMessage($session, $question);
@@ -1099,7 +1102,6 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             'make', 'made', 'done', 'get', 'got', 'see', 'saw', 'use', 'used',
             'like', 'good', 'well', 'way', 'know', 'take', 'think',
             'yesterday', 'today', 'tomorrow',
-            'report', 'reports', 'reported', 'reporting',
             // Burmese/Myanmar conversational framing words
             'ရှိ', 'ရှိလား', 'ရှိပါ', 'ရှိပါတယ်', 'ပါ', 'ပါတယ်',
             'တယ်', 'သည်', 'ကို', 'မှာ', 'မှ', 'တွင်', 'အတွက်',
@@ -1202,17 +1204,27 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $words = array_map(fn (string $w): string => trim($w, '-'), $words);
         $words = array_filter($words, fn (string $w): bool => $w !== '');
         $words = array_udiff($words, $stopwords, fn (string $a, string $b): int => mb_strtolower($a) <=> mb_strtolower($b));
+        // Keep only ASCII tokens for the English FTS parser. Burmese and
+        // other non-ASCII tokens produce fragments from stopword removal
+        // that don't match the tsvector (which stores contiguous Burmese
+        // text as single tokens). Rely on the vector search for non-English
+        // queries.
+        $words = array_filter($words, fn (string $w): bool => ! preg_match('/[^\x00-\x7F]/', $w));
 
         $result = implode(' ', array_unique($words));
         $result = trim(preg_replace('/\s+/', ' ', $result));
 
         if ($result === '') {
-            // Fallback: use non-stopword tokens from original question
-            $fallback = preg_replace('/[^\p{L}0-9\s\-\.]/u', '', $question, -1);
+            // Fallback: extract only ASCII content words from the original
+            // question. Skip non-ASCII text — the English FTS parser cannot
+            // handle Burmese/Unicode tokens and AND-matching fragments would
+            // never match the tsvector.
+            $fallback = preg_replace('/[^\x00-\x7F]/u', '', $question);
             $fallback = preg_replace('/\b\d{4}[-\.\/]\d{1,2}([-\.\/]\d{1,2})?\b/', '', $fallback, -1);
             $fallback = preg_replace('/\b\d{4}\b/', '', $fallback, -1);
             $fallback = preg_replace('/-+/', ' ', $fallback, -1);
             $fallback = trim(preg_replace('/\s+/', ' ', $fallback, -1));
+            $fallback = implode(' ', array_filter(explode(' ', $fallback), fn (string $w): bool => mb_strlen($w) > 2));
 
             return $fallback !== '' ? $fallback : 'report';
         }
@@ -1891,20 +1903,41 @@ class RAGPipelineService implements RAGPipelineServiceInterface
     {
         $prompt = 'You are a precise document-answering assistant. Follow these rules strictly:
 
-1. Answer ONLY using the provided context. Do NOT use prior knowledge.
-2. If the context does not fully answer the question, state what you know and what information is missing.
-3. NEVER make up or hallucinate information. If uncertain, say so.
-4. Cite sources by document title for every factual claim.
-5. Respond in the SAME LANGUAGE as the user\'s question.
-6. DOCUMENTS contain metadata headers at the top of each chunk: "Report by: {author_name}", "Project: {project_name}", "Date: {report_date}". Use this metadata to answer questions about WHO wrote the report, WHICH PROJECT it belongs to, and WHEN it was written.
-7. When a question asks about a specific user\'s reports, look for "Report by:" in the context. When asked about a project, look for "Project:". When asked about dates, look for "Date:" in the context.';
+--- CORE RULES ---
+
+1. **Grounding**: Answer ONLY using the provided context below. Do NOT use prior knowledge or training data. Pretend your training data does not exist.
+
+2. **Completeness**: If the context fully answers the question, provide a complete cite-sourced answer. If it partially answers, state what you know and clearly mark what information is missing. If it does not answer at all, say: "I cannot answer this based on the available documents." Do not guess.
+
+3. **No Hallucination**: NEVER make up facts, names, dates, or figures that are not in the context. If uncertain, say so. Fabrication is strictly forbidden.
+
+4. **Citation**: Cite the source document title for every factual claim. Use the format [Source: Document Title]. When multiple chunks from the same document support a claim, cite the document once.
+
+5. **Language**: Respond in the SAME LANGUAGE as the user\'s question (Burmese/English/mixed). Match the user\'s tone — formal for professional queries, concise for direct questions.
+
+6. **Metadata Awareness**: DOCUMENTS contain metadata headers at the top of each chunk:
+   - "Report by: {author_name}" — Use for WHO questions.
+   - "Project: {project_name}" — Use for WHICH PROJECT questions.
+   - "Date: {report_date}" — Use for WHEN questions.
+   Look for these markers when the user asks about authors, projects, or dates.
+
+7. **Structure**: Answer directly using paragraphs or bullet points as appropriate. Group related information under logical sections when answering multi-part questions.
+
+--- BEHAVIOR ---
+
+8. **Tone**: Be professional, concise, and factual. Avoid opinion, speculation, or unsolicited advice.
+
+9. **Formatting**: Use Markdown for readability — **bold** for key terms, `code` for technical terms, and bullet lists for enumerations. Do not use emojis unless the user used them first.
+
+10. **Conciseness**: Prefer short, direct answers. Do not repeat the question back. Do not add disclaimers beyond what the rules require.';
 
         if ($confidence === 'low') {
-            $prompt .= "\n\n8. The available information may be limited. Acknowledge uncertainty clearly and suggest what additional information would help.";
+            $prompt .= "\n\n--- LOW CONFIDENCE ---\n\n11. The available information is limited (fewer than 3 relevant chunks). Acknowledge uncertainty clearly. Start with: \"Based on limited available information...\" and suggest what additional information or documents would help provide a better answer.";
         }
 
         if ($hasOldDocuments) {
-            $prompt .= "\n\n9. Some source documents are over a year old. Note this when the information may be time-sensitive.";
+            $index = $confidence === 'low' ? 12 : 11;
+            $prompt .= "\n\n--- OLD DOCUMENTS ---\n\n{$index}. Some source documents are over a year old. When your answer depends on time-sensitive information from these documents, note the document date. Use: \"According to a document from [date]...\"";
         }
 
         return $prompt;
