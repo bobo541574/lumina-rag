@@ -34,9 +34,20 @@
         <span class="text-surface-600">Uploading…</span>
       </div>
 
-      <div class="px-6 py-4 border-t border-surface-200 bg-white rounded-b-card">
-        <label class="text-sm text-surface-600 font-medium">Embedding Model</label>
-        <div class="mt-1 flex items-center gap-2">
+      <div class="px-6 py-4 border-t border-surface-200 bg-white rounded-b-card space-y-3">
+        <div class="flex items-center gap-4 flex-wrap">
+          <div class="flex-1 min-w-[200px]">
+            <label class="block text-sm text-surface-600 font-medium mb-1">Report Date</label>
+            <AppInput v-model="reportDate" type="date" aria-label="Report date" />
+          </div>
+          <div class="flex-1 min-w-[200px]">
+            <label class="block text-sm text-surface-600 font-medium mb-1">Project</label>
+            <AppInput v-model="reportProject" placeholder="e.g. Project Orion" aria-label="Project name" />
+          </div>
+        </div>
+
+        <label class="block text-sm text-surface-600 font-medium">Embedding Model</label>
+        <div class="flex items-center gap-2">
           <AppSelect v-model="selectedModelId">
             <option value="">Default (auto-select)</option>
             <option v-for="m in embeddingModels" :key="m.id" :value="m.id">{{ m.name }}</option>
@@ -45,7 +56,7 @@
             ({{ selectedModel.provider }} / {{ selectedModel.model }}{{ selectedModel.dimensions ? `, ${selectedModel.dimensions}d` : '' }})
           </span>
         </div>
-        <div v-if="selectedModelId && selectedModel?.description" class="mt-2 text-xs text-surface-500 bg-surface-50 border border-surface-200 rounded-card px-3 py-2">
+        <div v-if="selectedModelId && selectedModel?.description" class="text-xs text-surface-500 bg-surface-50 border border-surface-200 rounded-card px-3 py-2">
           {{ selectedModel.description }}
         </div>
       </div>
@@ -64,7 +75,19 @@
 </template>
 
 <script setup lang="ts">
+/**
+ * Document Upload
+ *
+ * Drag-and-drop file upload area with optional metadata fields (report date,
+ * project, embedding model override). Validates file type and size client-side
+ * before dispatching to the document store.
+ *
+ * @prop {void} - No props (self-contained)
+ *
+ * @emits {uploaded} () - A file was successfully uploaded
+ */
 import { ref, computed, onMounted } from 'vue'
+import AppInput from './ui/AppInput.vue'
 import AppSelect from './ui/AppSelect.vue'
 import AppButton from './ui/AppButton.vue'
 import AppSpinner from './ui/AppSpinner.vue'
@@ -86,6 +109,8 @@ const error = ref<string | null>(null)
 const selectedModelId = ref('')
 const embeddingModels = ref<AiModel[]>([])
 const selectedModel = computed(() => embeddingModels.value.find(m => m.id === selectedModelId.value))
+const reportDate = ref('')
+const reportProject = ref('')
 
 const allowedTypes = [
   'application/pdf',
@@ -97,16 +122,31 @@ const allowedTypes = [
 const allowedExt = /\.(pdf|docx|txt|csv|md)$/i
 const maxSize = 50 * 1024 * 1024
 
+/**
+ * Open the native file picker dialog
+ */
 function openFilePicker() {
   if (isUploading.value) return
   fileInput.value?.click()
 }
 
+/**
+ * Update dragging state for visual feedback
+ *
+ * @param {boolean} value Whether the user is dragging over the drop zone
+ */
 function setDragging(value: boolean) {
   if (isUploading.value) return
   isDragging.value = value
 }
 
+/**
+ * Validate and upload a file
+ *
+ * Checks MIME type, extension, and size before dispatching to the store.
+ *
+ * @param {File} file The selected/dropped file. Example: new File(["..."], "report.pdf")
+ */
 async function handleFile(file: File) {
   if (!allowedTypes.includes(file.type) && !file.name.match(allowedExt)) {
     error.value = 'File type not supported. Allowed: PDF, DOCX, TXT, CSV, MD'
@@ -120,8 +160,16 @@ async function handleFile(file: File) {
   error.value = null
   isUploading.value = true
   try {
-    await store.uploadDocument(file, undefined, selectedModelId.value || undefined)
+    await store.uploadDocument(
+      file,
+      undefined,
+      selectedModelId.value || undefined,
+      reportDate.value || undefined,
+      reportProject.value || undefined,
+    )
     toast.success(`"${file.name}" uploaded — processing started`)
+    reportDate.value = ''
+    reportProject.value = ''
     emit('uploaded')
   } catch {
     error.value = store.error
@@ -141,12 +189,22 @@ onMounted(async () => {
   }
 })
 
+/**
+ * Handle file drop from drag-and-drop
+ *
+ * @param {DragEvent} event The drop event
+ */
 function handleDrop(event: DragEvent) {
   isDragging.value = false
   const file = event.dataTransfer?.files[0]
   if (file) handleFile(file)
 }
 
+/**
+ * Handle file selection from the native file picker
+ *
+ * @param {Event} event The input change event
+ */
 function handleFileSelect(event: Event) {
   const input = event.target as HTMLInputElement
   if (input.files?.[0]) handleFile(input.files[0])

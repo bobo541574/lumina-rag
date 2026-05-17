@@ -37,6 +37,9 @@
           <th class="text-left p-0">
             <SortHeader :sort-key="'title'" :current-key="sortKey" :current-dir="sortDir" @sort="(k) => $emit('sort', k)">Title</SortHeader>
           </th>
+          <th class="text-left p-0 hidden md:table-cell">
+            <SortHeader :sort-key="'project'" :current-key="sortKey" :current-dir="sortDir" @sort="(k) => $emit('sort', k)">Project</SortHeader>
+          </th>
           <th class="text-left p-0">
             <SortHeader :sort-key="'status'" :current-key="sortKey" :current-dir="sortDir" @sort="(k) => $emit('sort', k)">Status</SortHeader>
           </th>
@@ -45,6 +48,9 @@
           </th>
           <th class="text-left p-0 hidden md:table-cell">
             <SortHeader :sort-key="'chunks_count'" :current-key="sortKey" :current-dir="sortDir" @sort="(k) => $emit('sort', k)">Chunks</SortHeader>
+          </th>
+          <th class="text-left p-0 hidden lg:table-cell">
+            <SortHeader :sort-key="'report_date'" :current-key="sortKey" :current-dir="sortDir" @sort="(k) => $emit('sort', k)">Report Date</SortHeader>
           </th>
           <th class="text-left px-4 py-3 font-medium text-surface-600 hidden lg:table-cell">Model</th>
           <th class="text-left p-0 hidden md:table-cell">
@@ -80,11 +86,17 @@
               {{ doc.title }}
             </AppButton>
           </td>
+          <td class="px-4 py-3 text-surface-600 hidden md:table-cell">
+            <AppBadge v-if="doc.project" variant="info" size="xs" shape="square">
+              {{ doc.project }}
+            </AppBadge>
+          </td>
           <td class="px-4 py-3">
             <AppBadge :variant="statusVariant(doc.status)" size="sm">{{ doc.status }}</AppBadge>
           </td>
           <td class="px-4 py-3 text-surface-600 hidden sm:table-cell">{{ formatSize(doc.file_size) }}</td>
           <td class="px-4 py-3 text-surface-600 hidden md:table-cell tabular-nums">{{ doc.chunks_count }}</td>
+          <td class="px-4 py-3 text-surface-600 hidden lg:table-cell tabular-nums">{{ doc.report_date ?? '—' }}</td>
           <td class="px-4 py-3 hidden lg:table-cell">
             <AppBadge v-if="doc.embedding_model" variant="neutral" size="xs" shape="square" class="!font-mono">
               {{ modelLabel(doc.embedding_model) }}
@@ -141,6 +153,27 @@
 </template>
 
 <script setup lang="ts">
+/**
+ * Document List
+ *
+ * Sortable, selectable table of documents with action buttons (view, retry, delete).
+ *
+ * @prop {Document[]} documents - Documents to display. Example: [{ id: "01J...", title: "Q3 Report", status: "completed", ... }]
+ * @prop {SortKey} [sortKey="created_at"] - Currently active sort column. Example: "title"
+ * @prop {SortDir} [sortDir="desc"] - Current sort direction. Example: "asc"
+ * @prop {boolean} [selectable=false] - Show selection checkboxes
+ * @prop {Set<string>} [selectedIds] - Set of selected document ULIDs. Example: Set("01J...")
+ * @prop {string} [emptyTitle] - Empty state title. Example: "No documents uploaded yet"
+ * @prop {string} [emptyDescription] - Empty state description. Example: "Upload a PDF to get started."
+ * @prop {boolean} [loading=false] - Show skeleton loader when true
+ *
+ * @emits {view} (doc: Document) - User clicked to view doc. Example: view({ id: "01J...", ... })
+ * @emits {retry} (id: string) - User clicked retry. Example: retry("01J...")
+ * @emits {delete} (id: string) - User clicked delete. Example: delete("01J...")
+ * @emits {sort} (key: SortKey) - User clicked a sort header. Example: sort("title")
+ * @emits {toggleSelect} (id: string) - User toggled a single selection. Example: toggleSelect("01J...")
+ * @emits {toggleSelectAll} () - User toggled select-all checkbox
+ */
 import { computed } from 'vue'
 import AppButton from './ui/AppButton.vue'
 import AppBadge from './ui/AppBadge.vue'
@@ -150,7 +183,7 @@ import SortHeader from './ui/SortHeader.vue'
 import { formatRelativeTime, formatAbsoluteTime } from '../utils/dates'
 import type { Document } from '../types'
 
-export type SortKey = 'title' | 'status' | 'file_size' | 'chunks_count' | 'created_at'
+export type SortKey = 'title' | 'status' | 'file_size' | 'chunks_count' | 'created_at' | 'report_date' | 'project'
 export type SortDir = 'asc' | 'desc'
 
 const props = withDefaults(defineProps<{
@@ -188,10 +221,22 @@ const someOnPageSelected = computed(() =>
   props.documents.some((d) => props.selectedIds.has(d.id)),
 )
 
+/**
+ * Check whether a document ID is currently selected
+ *
+ * @param {string} id Document ULID. Example: "01J..."
+ * @returns {boolean} Whether the ID is in the selected set
+ */
 function isSelected(id: string): boolean {
   return props.selectedIds.has(id)
 }
 
+/**
+ * Map document status to badge variant
+ *
+ * @param {string} status Document status. Example: "completed"
+ * @returns {'warning'|'brand'|'success'|'danger'|'neutral'} Badge variant. Example: "success"
+ */
 function statusVariant(status: string): 'warning' | 'brand' | 'success' | 'danger' | 'neutral' {
   const map: Record<string, 'warning' | 'brand' | 'success' | 'danger' | 'neutral'> = {
     pending: 'warning',
@@ -202,12 +247,24 @@ function statusVariant(status: string): 'warning' | 'brand' | 'success' | 'dange
   return map[status] ?? 'neutral'
 }
 
+/**
+ * Format file size in human-readable units
+ *
+ * @param {number} bytes File size in bytes. Example: 245760
+ * @returns {string} Formatted size. Example: "240.0 KB"
+ */
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+/**
+ * Get a short label for a known embedding model name
+ *
+ * @param {string} model Full model name. Example: "text-embedding-3-small"
+ * @returns {string} Short label. Example: "3-small"
+ */
 function modelLabel(model: string): string {
   const map: Record<string, string> = {
     'text-embedding-3-small': '3-small',
@@ -217,6 +274,12 @@ function modelLabel(model: string): string {
   return map[model] ?? model
 }
 
+/**
+ * Format a date string as absolute date/time for use in a tooltip
+ *
+ * @param {string} date ISO-8601 date string. Example: "2026-05-17T12:00:00Z"
+ * @returns {string} Formatted absolute date. Example: "May 17, 2026 12:00 PM"
+ */
 function absoluteTime(date: string): string {
   return formatAbsoluteTime(date)
 }
