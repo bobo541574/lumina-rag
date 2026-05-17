@@ -47,7 +47,7 @@ class OllamaLLMProvider implements LLMProviderInterface
     public function __construct(
         string $baseUrl = 'http://localhost:11434',
         string $model = 'llama3.2',
-        int $timeout = 60,
+        int $timeout = 300,
     ) {
         $this->baseUrl = rtrim($baseUrl, '/');
         $this->model = $model;

@@ -278,7 +278,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
      */
     public function ask(string $question, array $options = []): array
     {
-        set_time_limit(120);
+        set_time_limit(300);
         $start = microtime(true);
         $question = $this->normalizeQuestion($question);
         $session = $this->sessionManager->resolveSession($options['session_id'] ?? null, $options['user_id'] ?? $this->userId);
@@ -550,7 +550,7 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
      */
     public function askStream(string $question, array $options = []): Generator
     {
-        set_time_limit(120);
+        set_time_limit(300);
         $start = microtime(true);
         $question = $this->normalizeQuestion($question);
         $session = $this->sessionManager->resolveSession($options['session_id'] ?? null, $options['user_id'] ?? $this->userId);
