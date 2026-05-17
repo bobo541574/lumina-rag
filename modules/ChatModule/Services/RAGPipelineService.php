@@ -98,6 +98,8 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
     private int $maxTokens;
 
+    private float $temperature;
+
     private ?string $userId;
 
     private ProviderFactory $providerFactory;
@@ -196,6 +198,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $this->mmrEnabled = $mmrEnabled;
         $this->mmrLambda = $mmrLambda;
         $this->maxTokens = $maxTokens;
+        $this->temperature = (float) config('rag.llm.temperature', 0.3);
         $this->userId = $userId;
 
         try {
@@ -252,6 +255,9 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             if (isset($s['max_tokens'])) {
                 $this->maxTokens = (int) $s['max_tokens'];
             }
+        }
+        if ($this->activeLlmModel !== null && $this->activeLlmModel->temperature !== null) {
+            $this->temperature = (float) $this->activeLlmModel->temperature;
         }
     }
 
@@ -489,7 +495,7 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
             systemPrompt: $systemPrompt,
             userPrompt: $llmQuestion,
             context: $context,
-            options: ['temperature' => 0.3, 'max_tokens' => $this->maxTokens],
+            options: ['temperature' => $this->temperature, 'max_tokens' => $this->maxTokens],
         );
         $llmTime = (microtime(true) - $t0) * 1000;
 
@@ -785,7 +791,7 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
         $fullContent = '';
         $t0 = microtime(true);
         $stream = $llm->completeStream($systemPrompt, $llmQuestion, $context, [
-            'temperature' => 0.3,
+            'temperature' => $this->temperature,
             'max_tokens' => $this->maxTokens,
         ]);
 
@@ -977,7 +983,7 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
                 'You generate search queries. Return only the queries, one per line.',
                 $prompt,
                 [],
-                ['temperature' => 0.3, 'max_tokens' => 500],
+                ['temperature' => $this->temperature, 'max_tokens' => 500],
             );
 
             $lines = array_filter(

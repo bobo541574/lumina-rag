@@ -53,6 +53,7 @@ return [
         'model' => env('RAG_LLM_MODEL', 'qwen3.5:9b'),
         'max_context_tokens' => (int) env('RAG_LLM_MAX_CONTEXT_TOKENS', 32768),
         'max_tokens' => (int) env('RAG_LLM_MAX_TOKENS', 4096),
+        'temperature' => (float) env('RAG_LLM_TEMPERATURE', 0.3),
         'timeout' => (int) env('RAG_LLM_TIMEOUT', 120),
 
         // Provider-specific API keys (used by ProviderFactory fallback)

@@ -99,7 +99,7 @@ class SettingsModuleSeeder extends Seeder
                 'provider' => 'ollama',
                 'model' => 'qwen3.5:9b',
                 'base_url' => 'http://localhost:11434',
-                'temperature' => 0.3,
+                'temperature' => 0.1,
                 'max_context_tokens' => 32768,
                 'timeout' => 300,
                 'is_active' => true,
