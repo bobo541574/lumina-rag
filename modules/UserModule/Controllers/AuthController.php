@@ -11,15 +11,45 @@ use Modules\UserModule\Contracts\AuthServiceInterface;
 use Modules\UserModule\Requests\LoginRequest;
 use Modules\UserModule\Requests\RegisterRequest;
 
+/**
+ * Auth Controller
+ *
+ * Handles HTTP requests for user registration, login, logout, and profile
+ * retrieval. Delegates all business logic to AuthServiceInterface.
+ *
+ * All responses use the standard envelope format: { success, message, data, errors }.
+ * Errors from the service layer are caught and returned as JSON error responses
+ * with appropriate HTTP status codes (201, 401, 409, 500).
+ *
+ * @param AuthServiceInterface $authService The authentication service implementation. Example: app(AuthServiceInterface::class)
+ *
+ * @throws \Throwable Caught and converted to JSON error responses in each method
+ */
 class AuthController extends Controller
 {
+    /** @var AuthServiceInterface The authentication service handling business logic */
     private AuthServiceInterface $authService;
 
+    /**
+     * @param  AuthServiceInterface  $authService  The authentication service. Example: app(AuthServiceInterface::class)
+     */
     public function __construct(AuthServiceInterface $authService)
     {
         $this->authService = $authService;
     }
 
+    /**
+     * Register a new user
+     *
+     * Validates registration data (name, email, password) via RegisterRequest,
+     * delegates to AuthService::register, and returns the new user with an
+     * API token. Returns 409 if the email is already taken.
+     *
+     * @param  RegisterRequest  $request  Validated registration request. Example: new RegisterRequest(["name" => "John", "email" => "john@test.com", "password" => "secret123"])
+     * @return JsonResponse User + token on success (201), error on conflict. Example: response()->json(["success" => true, "data" => ["user" => [...], "token" => "..."]], 201)
+     *
+     * @throws \InvalidArgumentException Caught and returned as 409 JSON response
+     */
     public function register(RegisterRequest $request): JsonResponse
     {
         try {
@@ -38,6 +68,18 @@ class AuthController extends Controller
         }
     }
 
+    /**
+     * Authenticate a user
+     *
+     * Validates credentials via LoginRequest, delegates to AuthService::login,
+     * and returns the authenticated user with an API token. Returns 401 on
+     * invalid credentials.
+     *
+     * @param  LoginRequest  $request  Validated login request. Example: new LoginRequest(["email" => "john@test.com", "password" => "secret123"])
+     * @return JsonResponse User + token on success. Example: response()->json(["success" => true, "data" => ["user" => [...], "token" => "..."]])
+     *
+     * @throws \InvalidArgumentException Caught and returned as 401 JSON response
+     */
     public function login(LoginRequest $request): JsonResponse
     {
         try {
@@ -58,6 +100,18 @@ class AuthController extends Controller
         }
     }
 
+    /**
+     * Logout a user
+     *
+     * Invalidates the current bearer token via AuthService::logout.
+     * Always returns a success response to the client, even if no
+     * token was provided. Internal errors are caught and returned as 500.
+     *
+     * @param  Request  $request  The incoming HTTP request. Example: request()
+     * @return JsonResponse Logout confirmation. Example: response()->json(["success" => true, "message" => "Logged out successfully."])
+     *
+     * @throws \Throwable Caught and returned as 500 JSON response
+     */
     public function logout(Request $request): JsonResponse
     {
         try {
@@ -79,6 +133,17 @@ class AuthController extends Controller
         }
     }
 
+    /**
+     * Get authenticated user profile
+     *
+     * Retrieves the user record associated with the request's bearer token.
+     * Returns 401 if no valid token is provided or the token is not found.
+     *
+     * @param  Request  $request  The incoming HTTP request. Example: request()
+     * @return JsonResponse User data on success, 401 if unauthenticated. Example: response()->json(["success" => true, "data" => ["id" => "01J...", "name" => "John", "email" => "john@test.com"]])
+     *
+     * @throws \Throwable Caught and returned as 500 JSON response
+     */
     public function me(Request $request): JsonResponse
     {
         try {
