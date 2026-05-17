@@ -32,6 +32,45 @@
       </div>
     </div>
 
+    <!-- Template download -->
+    <div class="mb-4">
+      <button
+        type="button"
+        class="flex items-center gap-1.5 text-sm text-surface-500 hover:text-surface-800 transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded"
+        @click="templateOpen = !templateOpen"
+        aria-expanded="templateOpen"
+      >
+        <svg class="w-4 h-4 transition-transform" :class="templateOpen ? 'rotate-90' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+        </svg>
+        Download Report Templates
+      </button>
+      <div v-if="templateOpen" class="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+        <div
+          v-for="t in templates"
+          :key="t.label"
+          class="border border-surface-200 rounded-card bg-white p-3"
+        >
+          <p class="text-sm font-medium text-surface-800 mb-2">{{ t.label }}</p>
+          <div class="flex flex-wrap items-center gap-1.5">
+            <a
+              v-for="f in t.files"
+              :key="f.ext"
+              :href="f.url"
+              download
+              class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded transition-colors"
+              :class="formatClass(f.ext)"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              {{ formatLabel(f.ext) }}
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <DocumentUpload @uploaded="onUploaded" />
 
     <!-- Status tabs -->
@@ -159,6 +198,17 @@
 </template>
 
 <script setup lang="ts">
+/**
+ * Documents Page
+ *
+ * Full document management view. Supports uploading, searching, filtering by
+ * status, sorting, pagination, single/bulk selection, single/bulk deletion,
+ * and viewing/editing document details in a modal. Also provides template
+ * downloads for common report formats.
+ *
+ * @prop {void} - This page is route-driven; no custom props
+ * @emits {void} - All side-effects are store actions or service calls
+ */
 import { ref, computed, watch, onMounted } from 'vue'
 import { useDocumentStore } from '../stores/documentStore'
 import { storeToRefs } from 'pinia'
@@ -180,6 +230,60 @@ const store = useDocumentStore()
 const toast = useToast()
 const { documents, meta } = storeToRefs(store)
 const selectedDoc = ref<Document | null>(null)
+
+/**
+ * Get a human-readable file format label
+ *
+ * @param {string} ext File extension. Example: "md"
+ * @returns {string} Uppercase label. Example: "MD"
+ */
+function formatLabel(ext: string): string {
+  const map: Record<string, string> = { md: 'MD', txt: 'TXT', docx: 'DOCX', csv: 'CSV' }
+  return map[ext] ?? ext.toUpperCase()
+}
+
+/**
+ * Get Tailwind classes for a file format badge
+ *
+ * @param {string} ext File extension. Example: "md"
+ * @returns {string} Tailwind class string. Example: "bg-blue-50 text-blue-700 hover:bg-blue-100"
+ */
+function formatClass(ext: string): string {
+  const map: Record<string, string> = {
+    md: 'bg-blue-50 text-blue-700 hover:bg-blue-100',
+    txt: 'bg-gray-50 text-gray-700 hover:bg-gray-100',
+    docx: 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100',
+    csv: 'bg-amber-50 text-amber-700 hover:bg-amber-100',
+  }
+  return map[ext] ?? 'bg-surface-50 text-surface-700 hover:bg-surface-100'
+}
+
+// --- Template download ---
+const templateOpen = ref(false)
+const TEMPLATE_BASE = '/templates'
+const TEMPLATE_NAMES = [
+  'software-developer-report',
+  'project-coordinator-report',
+  'customer-service-report',
+  'finance-report',
+  'general-report',
+] as const
+const FORMAT_EXTS = ['md', 'txt', 'docx', 'csv'] as const
+const FORMAT_LABELS: Record<string, string> = {
+  md: 'Markdown', txt: 'Plain Text', docx: 'Word', csv: 'CSV',
+}
+const TEMPLATE_LABELS: Record<string, string> = {
+  'software-developer-report': 'Software Developer',
+  'project-coordinator-report': 'Project Coordinator',
+  'customer-service-report': 'Customer Service',
+  'finance-report': 'Finance',
+  'general-report': 'General',
+}
+
+const templates = TEMPLATE_NAMES.map(name => ({
+  label: TEMPLATE_LABELS[name],
+  files: FORMAT_EXTS.map(ext => ({ ext, url: `${TEMPLATE_BASE}/${name}.${ext}` })),
+}))
 
 // --- Filter, search, sort, pagination state ---
 const statusFilter = ref<StatusFilter>('all')
@@ -223,6 +327,9 @@ const rangeEnd = computed(() =>
 // --- Server fetch helper ---
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 
+/**
+ * Fetch documents from the server using current filter, search, sort, and pagination state
+ */
 function fetchPage() {
   store.fetchDocuments({
     status: statusFilter.value === 'all' ? undefined : statusFilter.value,
@@ -252,7 +359,11 @@ watch(searchQuery, () => {
   }, 300)
 })
 
-// --- Sort handler ---
+/**
+ * Handle sort header click — toggles direction if same key, otherwise sets new key
+ *
+ * @param {SortKey} key Column sort key. Example: "title"
+ */
 function onSort(key: SortKey) {
   if (sortKey.value === key) {
     sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
@@ -262,7 +373,11 @@ function onSort(key: SortKey) {
   }
 }
 
-// --- Selection handlers ---
+/**
+ * Toggle selection of a single document
+ *
+ * @param {string} id Document ULID. Example: "01J..."
+ */
 function toggleSelect(id: string) {
   const next = new Set(selectedIds.value)
   if (next.has(id)) next.delete(id)
@@ -270,6 +385,9 @@ function toggleSelect(id: string) {
   selectedIds.value = next
 }
 
+/**
+ * Toggle selection of all documents on the current page
+ */
 function togglePageSelection() {
   const pageIds = documents.value.map((d) => d.id)
   const allSelected = pageIds.every((id) => selectedIds.value.has(id))
@@ -282,10 +400,16 @@ function togglePageSelection() {
   selectedIds.value = next
 }
 
+/**
+ * Clear all document selections
+ */
 function clearSelection() {
   selectedIds.value = new Set()
 }
 
+/**
+ * Called after a successful upload — re-fetches the current page
+ */
 function onUploaded() {
   fetchPage()
 }
@@ -300,10 +424,20 @@ onMounted(async () => {
   }
 })
 
+/**
+ * Open the document detail modal
+ *
+ * @param {Document} doc The document to view. Example: { id: "01J...", title: "...", ... }
+ */
 function handleView(doc: Document) {
   selectedDoc.value = doc
 }
 
+/**
+ * Retry processing for a failed document
+ *
+ * @param {string} id Document ULID. Example: "01J..."
+ */
 async function handleRetry(id: string) {
   try {
     await store.retryDocument(id)
@@ -335,22 +469,36 @@ const confirmMessage = computed(() => {
   return `"${title}" and its embeddings will be permanently removed. This cannot be undone.`
 })
 
+/**
+ * Open delete confirmation for a single document
+ *
+ * @param {string} id Document ULID. Example: "01J..."
+ */
 function askDelete(id: string) {
   confirmAction.value = 'single'
   pendingDeleteId.value = id
   confirmOpen.value = true
 }
 
+/**
+ * Open bulk delete confirmation
+ */
 function askBulkDelete() {
   if (selectedIds.value.size === 0) return
   confirmAction.value = 'bulk'
   confirmOpen.value = true
 }
 
+/**
+ * Reset pending delete ID on cancel
+ */
 function onConfirmCancel() {
   pendingDeleteId.value = null
 }
 
+/**
+ * Execute the pending delete (single or bulk)
+ */
 async function performDelete() {
   isDeleting.value = true
   try {

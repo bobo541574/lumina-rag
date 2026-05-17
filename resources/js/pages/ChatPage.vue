@@ -12,6 +12,17 @@
           @select="selectSession"
           @delete="askDeleteSession"
         />
+        <AppButton
+          v-if="hasMoreSessions"
+          variant="ghost"
+          size="sm"
+          block
+          class="mt-2"
+          :loading="sessionsLoading"
+          @click="store.loadMoreSessions()"
+        >
+          Load more
+        </AppButton>
       </div>
     </aside>
 
@@ -34,6 +45,16 @@
 </template>
 
 <script setup lang="ts">
+/**
+ * Chat Page
+ *
+ * Main chat view with a sidebar for session management and the main
+ * ChatInterface for conversation. Supports session selection, deletion
+ * with confirmation, and creating new chats.
+ *
+ * @prop {void} - This page is route-driven; no custom props
+ * @emits {void} - All side-effects are store actions
+ */
 import { ref, computed, onMounted } from 'vue'
 import { useChatStore } from '../stores/chatStore'
 import { storeToRefs } from 'pinia'
@@ -45,7 +66,7 @@ import SessionList from '../components/SessionList.vue'
 
 const store = useChatStore()
 const toast = useToast()
-const { sessions, currentSessionId } = storeToRefs(store)
+const { sessions, currentSessionId, sessionsLoading, hasMoreSessions } = storeToRefs(store)
 
 const confirmOpen = ref(false)
 const pendingDeleteId = ref<string | null>(null)
@@ -59,25 +80,32 @@ const confirmMessage = computed(() => {
   return `"${title}" and all its messages will be permanently removed.`
 })
 
-const sessionsLoading = ref(true)
-
 onMounted(async () => {
-  try {
-    await store.fetchSessions()
-  } finally {
-    sessionsLoading.value = false
-  }
+  await store.fetchSessions()
 })
 
+/**
+ * Select and load a session's messages
+ *
+ * @param {string} id Session ULID. Example: "01J..."
+ */
 async function selectSession(id: string) {
   await store.fetchSession(id)
 }
 
+/**
+ * Open delete confirmation for a session
+ *
+ * @param {string} id Session ULID. Example: "01J..."
+ */
 function askDeleteSession(id: string) {
   pendingDeleteId.value = id
   confirmOpen.value = true
 }
 
+/**
+ * Execute the pending session deletion
+ */
 async function performDeleteSession() {
   if (!pendingDeleteId.value) return
   isDeleting.value = true
@@ -93,6 +121,9 @@ async function performDeleteSession() {
   }
 }
 
+/**
+ * Start a new chat session
+ */
 function startNewChat() {
   store.startNewChat()
 }

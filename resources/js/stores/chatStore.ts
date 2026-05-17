@@ -1,11 +1,21 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { ChatMessage, ChatSession, Source } from '../types'
+import type { ChatMessage, ChatSession, PaginationMeta, Source } from '../types'
 import type { StreamMeta } from '../services/chatService'
 import { chatService } from '../services/chatService'
 
+/**
+ * Chat Store
+ *
+ * Manages chat sessions, messages, and streaming state. Orchestrates the
+ * send/stream lifecycle with optimistic message insertion, SSE callback
+ * handling, abort support, and session management.
+ */
 export const useChatStore = defineStore('chat', () => {
   const sessions = ref<ChatSession[]>([])
+  const sessionsMeta = ref<PaginationMeta | null>(null)
+  const sessionsPage = ref(1)
+  const sessionsLoading = ref(false)
   const currentSession = ref<ChatSession | null>(null)
   const messages = ref<ChatMessage[]>([])
   const isLoading = ref(false)
@@ -16,16 +26,49 @@ export const useChatStore = defineStore('chat', () => {
   const lastStreamMeta = ref<StreamMeta | null>(null)
 
   const currentSessionId = computed(() => currentSession.value?.id ?? null)
+  const hasMoreSessions = computed(() => {
+    if (!sessionsMeta.value) return false
+    return sessionsMeta.value.current_page < sessionsMeta.value.last_page
+  })
 
-  async function fetchSessions() {
+  /**
+   * Fetch chat sessions with pagination
+   *
+   * Replaces sessions on page 1, appends for subsequent pages.
+   *
+   * @param {number} [page] Page number (1-based). Example: 1
+   */
+  async function fetchSessions(page = 1) {
+    sessionsLoading.value = true
     try {
-      const response = await chatService.listSessions()
-      sessions.value = response.data?.data ?? []
+      const response = await chatService.listSessions(page)
+      if (page === 1) {
+        sessions.value = response.data ?? []
+      } else {
+        sessions.value = [...sessions.value, ...(response.data ?? [])]
+      }
+      sessionsMeta.value = response.meta ?? null
+      sessionsPage.value = page
     } catch (e: any) {
       error.value = e.response?.data?.message ?? 'Failed to load sessions'
+    } finally {
+      sessionsLoading.value = false
     }
   }
 
+  /**
+   * Load the next page of sessions (appends to current list)
+   */
+  async function loadMoreSessions() {
+    if (!hasMoreSessions.value || sessionsLoading.value) return
+    await fetchSessions(sessionsPage.value + 1)
+  }
+
+  /**
+   * Fetch a single session with its messages
+   *
+   * @param {string} id Session ULID. Example: "01J..."
+   */
   async function fetchSession(id: string) {
     try {
       const response = await chatService.getSession(id)
@@ -38,6 +81,17 @@ export const useChatStore = defineStore('chat', () => {
 
   const documentFilter = ref<Record<string, unknown> | null>(null)
 
+  /**
+   * Send a message with streaming response
+   *
+   * Inserts optimistic user and assistant messages, then initiates an SSE
+   * stream. Updates the assistant message in-place as chunks arrive.
+   * Creates a new session on first message.
+   *
+   * @param {string} question The user's question. Example: "What is Project Orion?"
+   * @param {Record<string, unknown>} [filter] Optional document/date filter. Example: { document_ids: ["01J..."] }
+   * @param {string} [llmModelId] Override LLM model ULID. Example: "01J..."
+   */
   async function sendMessage(question: string, filter?: Record<string, unknown>, llmModelId?: string) {
     if (!question.trim()) return
 
@@ -114,6 +168,11 @@ export const useChatStore = defineStore('chat', () => {
     )
   }
 
+  /**
+   * Abort the current streaming response
+   *
+   * Cancels the SSE connection and removes the incomplete assistant message.
+   */
   function abortStream() {
     if (streamAbortController.value) {
       streamAbortController.value.abort()
@@ -125,6 +184,16 @@ export const useChatStore = defineStore('chat', () => {
     messages.value = messages.value.filter(m => !m.id.startsWith('stream-'))
   }
 
+  /**
+   * Send a message synchronously (non-streaming fallback)
+   *
+   * Inserts an optimistic user message, waits for the full response, then
+   * appends the assistant message. Suitable for environments where SSE is
+   * unavailable.
+   *
+   * @param {string} question The user's question. Example: "Summarize the report"
+   * @param {string} [llmModelId] Override LLM model ULID. Example: "01J..."
+   */
   async function sendMessageNonStreaming(question: string, llmModelId?: string) {
     if (!question.trim()) return
 
@@ -158,6 +227,13 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  /**
+   * Delete a session by ID
+   *
+   * Removes from local list and clears current session if it was deleted.
+   *
+   * @param {string} id Session ULID. Example: "01J..."
+   */
   async function deleteSession(id: string) {
     try {
       await chatService.deleteSession(id)
@@ -171,32 +247,50 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  /**
+   * Start a new chat session
+   *
+   * Aborts any in-progress stream and clears messages and current session.
+   */
   function startNewChat() {
     abortStream()
     currentSession.value = null
     messages.value = []
   }
 
+  /**
+   * Clear the current error state
+   */
   function clearError() {
     error.value = null
   }
 
+  /**
+   * Set the document filter for subsequent messages
+   *
+   * @param {Record<string, unknown> | null} filter Filter object or null to clear. Example: { project: "Orion" }
+   */
   function setDocumentFilter(filter: Record<string, unknown> | null) {
     documentFilter.value = filter
   }
 
   return {
     sessions,
+    sessionsMeta,
+    sessionsPage,
+    sessionsLoading,
     currentSession,
     messages,
     isLoading,
     isStreaming,
     error,
     currentSessionId,
+    hasMoreSessions,
     documentFilter,
     currentStage,
     lastStreamMeta,
     fetchSessions,
+    loadMoreSessions,
     fetchSession,
     sendMessage,
     sendMessageNonStreaming,

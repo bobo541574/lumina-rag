@@ -2,6 +2,26 @@
 
 declare(strict_types=1);
 
+/**
+ * RAG Configuration
+ *
+ * Central configuration file for the RAG (Retrieval-Augmented Generation)
+ * system. All settings are read via env() with sensible defaults, allowing
+ * overrides through environment variables prefixed with RAG_.
+ *
+ * Configuration sections:
+ * - embedding: Provider, model, dimensions, batch size, cache TTL, timeout
+ * - llm: Provider, model, context/max tokens, timeout
+ * - vector_store: Driver selection and index parameters
+ * - search: Mode (hybrid/vector), top K, similarity threshold, query expansion, MMR
+ * - chunking: Chunk size and overlap for document processing
+ * - chat: Max question length and messages per session
+ * - pagination: Per-page limits for API responses
+ * - logging: Log channel for RAG-specific logging
+ *
+ * @see \Modules\SettingsModule\Models\AiModel For per-model overrides in the database
+ */
+
 return [
 
     /*
@@ -82,6 +102,16 @@ return [
     'chat' => [
         'max_question_length' => (int) env('RAG_MAX_QUESTION_LENGTH', 1000),
         'max_messages_per_session' => (int) env('RAG_MAX_MESSAGES_PER_SESSION', 100),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Pagination Configuration
+    |--------------------------------------------------------------------------
+    */
+    'pagination' => [
+        'per_page' => (int) env('RAG_PAGINATION_PER_PAGE', 20),
+        'max_per_page' => (int) env('RAG_PAGINATION_MAX_PER_PAGE', 100),
     ],
 
     /*

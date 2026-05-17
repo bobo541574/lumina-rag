@@ -1,6 +1,16 @@
 import { get, post, del } from './api'
 import type { ChatMessage, ChatSession, Source } from '../types'
 
+/**
+ * Streaming response metadata
+ *
+ * Performance metrics returned with the 'done' SSE event.
+ *
+ * @property {number} [tokens_used] Total tokens used by the LLM. Example: 452
+ * @property {number} [search_time_ms] Vector search time in ms. Example: 120
+ * @property {number} [llm_time_ms] LLM generation time in ms. Example: 3400
+ * @property {number} [total_time_ms] Total end-to-end time in ms. Example: 3600
+ */
 export type StreamMeta = {
   tokens_used?: number
   search_time_ms?: number
@@ -8,6 +18,18 @@ export type StreamMeta = {
   total_time_ms?: number
 }
 
+/**
+ * Streaming SSE callbacks
+ *
+ * Callbacks invoked during an SSE chat stream. Each callback receives
+ * the parsed data from the corresponding event type.
+ *
+ * @property {function} onSources Called when source citations arrive. Example: (sources) => { ... }
+ * @property {function} onChunk Called for each text chunk. Example: (content) => { ... }
+ * @property {function} onDone Called when the stream completes. Example: (sessionId, meta) => { ... }
+ * @property {function} onError Called when an error occurs. Example: (message) => { ... }
+ * @property {function} onStatus Called with processing stage updates. Example: (stage, message) => { ... }
+ */
 export type StreamingCallbacks = {
   onSources: (sources: Source[]) => void
   onChunk: (content: string) => void
@@ -16,7 +38,25 @@ export type StreamingCallbacks = {
   onStatus: (stage: string, message: string) => void
 }
 
+/**
+ * Chat API service
+ *
+ * Handles synchronous and streaming question answering, session listing,
+ * detail fetching, and deletion. Streaming uses SSE with automatic retry.
+ */
 export const chatService = {
+  /**
+   * Send a question synchronously (non-streaming)
+   *
+   * Posts the question to the chat endpoint with `stream: false`. Returns
+   * the full assistant response including sources.
+   *
+   * @param {string} question The user's question. Example: "What is Project Orion?"
+   * @param {string} [sessionId] Existing session ULID for continuation. Example: "01J..."
+   * @param {Record<string, unknown>} [documentFilter] Optional document filter. Example: { project: "Orion" }
+   * @param {string} [llmModelId] Override LLM model ULID. Example: "01J..."
+   * @returns {Promise<ApiResponse<{ session_id: string; message: ChatMessage }>>} Session ID and assistant message. Example: { success: true, data: { session_id: "01J...", message: { role: "assistant", ... } } }
+   */
   async ask(question: string, sessionId?: string, documentFilter?: Record<string, unknown>, llmModelId?: string) {
     return post<{ session_id: string; message: ChatMessage }>('/chat', {
       question,
@@ -27,6 +67,20 @@ export const chatService = {
     })
   },
 
+  /**
+   * Send a question with streaming response (SSE)
+   *
+   * Opens an EventStream connection to the chat endpoint with `stream: true`.
+   * Parses SSE data events and invokes the corresponding callbacks. Implements
+   * exponential-backoff retry (up to 3 attempts) on connection drops.
+   *
+   * @param {string} question The user's question. Example: "What is Project Orion?"
+   * @param {string|undefined} sessionId Existing session ULID for continuation. Example: "01J..."
+   * @param {StreamingCallbacks} callbacks SSE event handlers. Example: { onChunk: (c) => ..., onDone: (id, m) => ... }
+   * @param {Record<string, unknown>} [documentFilter] Optional document filter. Example: { project: "Orion" }
+   * @param {string} [llmModelId] Override LLM model ULID. Example: "01J..."
+   * @returns {AbortController} Controller to abort the stream. Example: const ctrl = chatService.askStreaming(...); ctrl.abort()
+   */
   askStreaming(
     question: string,
     sessionId: string | undefined,
@@ -145,14 +199,32 @@ export const chatService = {
     return controller
   },
 
-  async listSessions() {
-    return get<{ data: ChatSession[] }>('/chat/sessions')
+  /**
+   * List chat sessions with pagination
+   *
+   * @param {number} [page] Page number (1-based). Example: 1
+   * @returns {Promise<ApiResponse<ChatSession[]>>} Paginated list of sessions. Example: { success: true, data: [{ id: "01J...", ... }], meta: {...} }
+   */
+  async listSessions(page = 1) {
+    return get<ChatSession[]>('/chat/sessions', { page })
   },
 
+  /**
+   * Get a single chat session with messages
+   *
+   * @param {string} id Session ULID. Example: "01J..."
+   * @returns {Promise<ApiResponse<ChatSession>>} Session with messages array. Example: { success: true, data: { id: "01J...", messages: [...], ... } }
+   */
   async getSession(id: string) {
     return get<ChatSession>(`/chat/sessions/${id}`)
   },
 
+  /**
+   * Delete a chat session
+   *
+   * @param {string} id Session ULID. Example: "01J..."
+   * @returns {Promise<ApiResponse<null>>} Empty success response. Example: { success: true, message: "Session deleted" }
+   */
   async deleteSession(id: string) {
     return del(`/chat/sessions/${id}`)
   },
