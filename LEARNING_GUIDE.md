@@ -11,7 +11,7 @@ Lumina RAG သည် Retrieval-Augmented Generation (RAG) စနစ်တစ်�
 - **Backend**: Laravel 13 (Modular Monolith Architecture)
 - **Database**: PostgreSQL 16 + pgvector (Vector storage အတွက်)
 - **Frontend**: Vue 3 + Pinia + Tailwind CSS v4
-- **AI Integration**: Ollama (default: `nomic-embed-text`, `qwen3.5:9b`) သို့မဟုတ် OpenAI
+- **AI Integration**: Provider ၅ မျိုး — OpenAI, Ollama (local), Gemini, Claude, DeepSeek (Embedding: OpenAI/Ollama/Gemini, LLM: ၅ မျိုးလုံး)
 
 ---
 
@@ -23,9 +23,9 @@ Project ကို `modules/` directory အောက်တွင် အပို�
 | :--- | :--- |
 | [ChatModule](file:///Users/za/Sites/projects/lumina_rag/modules/ChatModule) | Chat sessions နှင့် RAG pipeline တစ်ခုလုံးကို ထိန်းချုပ်ခြင်း။ |
 | [DocumentModule](file:///Users/za/Sites/projects/lumina_rag/modules/DocumentModule) | Document upload၊ Extraction နှင့် Chunking ပြုလုပ်ခြင်း။ |
-| [EmbeddingModule](file:///Users/za/Sites/projects/lumina_rag/modules/EmbeddingModule) | စာသားများကို Vector (နံပါတ်စဉ်များ) အဖြစ် ပြောင်းလဲပေးခြင်း။ |
-| [VectorStoreModule](file:///Users/za/Sites/projects/lumina_rag/modules/VectorStoreModule) | Vector များကို သိမ်းဆည်းခြင်းနှင့် Similarity Search လုပ်ခြင်း။ |
-| [LLMModule](file:///Users/za/Sites/projects/lumina_rag/modules/LLMModule) | AI Model (LLM) နှင့် ဆက်သွယ်ပြီး အဖြေထုတ်ပေးခြင်း။ |
+| [EmbeddingModule](file:///Users/za/Sites/projects/lumina_rag/modules/EmbeddingModule) | စာသားများကို Vector (နံပါတ်စဉ်များ) အဖြစ် ပြောင်းလဲပေးခြင်း။ Provider: OpenAI, Ollama, Gemini |
+| [VectorStoreModule](file:///Users/za/Sites/projects/lumina_rag/modules/VectorStoreModule) | Vector များကို သိမ်းဆည်းခြင်းနှင့် Similarity Search လုပ်ခြင်း။ Metadata JSONB filtering (project, date, user, section) |
+| [LLMModule](file:///Users/za/Sites/projects/lumina_rag/modules/LLMModule) | AI Model (LLM) နှင့် ဆက်သွယ်ပြီး အဖြေထုတ်ပေးခြင်း။ Provider: OpenAI, Ollama, Gemini, Claude, DeepSeek |
 | [SettingsModule](file:///Users/za/Sites/projects/lumina_rag/modules/SettingsModule) | AI models များ၏ config များကို စီမံခန့်ခွဲခြင်းနှင့် term alias registry (မြန်မာ/အင်္ဂလိပ် ဝေါဟာရမြေပုံ) ကို စီမံခြင်း။ |
 | [UserModule](file:///Users/za/Sites/projects/lumina_rag/modules/UserModule) | User authentication (Login/Register) ပိုင်း။ |
 
@@ -50,6 +50,8 @@ File format ပေါင်းစုံကနေ စာသားတွေကိ�
 - **`findSplitPoint()`**: စာကြောင်း အလယ်ကနေ ပြတ်မသွားအောင် separator ဦးစားပေး စနစ်ကို သုံးပါတယ်။ `\n\n` (paragraph) ကို အရင်ရှာတယ်၊ မရှိရင် `\n`၊ မရှိရင် `.` (sentence)၊ အဲ့ဒါမှ မရှိရင်တော့ space နေရာမှာ ဖြတ်ပါတယ်။
 - **Overlap**: Chunk အသစ် စတဲ့အခါ အရှေ့ chunk ရဲ့ နောက်ဆုံး characters ၂၀၀ ကနေ ပြန်စတဲ့အတွက် အဓိပ္ပာယ် ဆက်စပ်မှု မပျောက်သွားပါဘူး။
 - **Document Metadata**: Document တိုင်းတွင် `report_date` (date) နှင့် `project` (varchar) ကော်လံများပါဝင်ပြီး၊ ဤ metadata များကို UI မှတစ်ဆင့် sort, filter နှင့် edit ပြုလုပ်နိုင်ပါတယ်။
+- **Chunk Metadata JSONB**: Chunk တစ်ခုချင်းစီတွင် structured metadata JSONB (user_name, project, report_date, document_title, section, page_number, chunk_index) ပါဝင်ပြီး PostgreSQL `@>` jsonb operator သုံးပြီး precision filtering လုပ်နိုင်ပါတယ်။ PgvectorDriver က vector search ရော FTS ရော မှာ meta filter ကို support လုပ်ပါတယ်။
+- **Section Tracking**: Chunk တစ်ခုချင်းစီရဲ့ ဘယ် section/heading အောက်ကလဲဆိုတာကို `section` field မှာသိမ်းပါတယ်။ ဒါက `TextChunkingService` ရဲ့ `splitByHeadings()` method ကနေ ရယူပါတယ်။
 
 ---
 
@@ -63,6 +65,8 @@ PostgreSQL ရဲ့ pgvector ကို သုံးပြီး vector search �
     2. **FTS Search**: `ts_rank(tsv_content, plainto_tsquery(...))` ကို သုံးပြီး စာလုံးအတိအကျ ပါတဲ့ chunks တွေကို ရှာပါတယ်။
     3. **`fuseResults()` (RRF Fusion)**: Vector ရလဒ်နဲ့ FTS ရလဒ်တွေကို **Reciprocal Rank Fusion (k=60)** algorithm နဲ့ ပေါင်းစပ်ပါတယ်။ ဒါမှ ရှာဖွေမှုက ပိုတိကျပါတယ်။
     4. **Normalization**: RRF score တွေကို 0-1 range ထဲရောက်အောင် ပြန်ညှိပေးတဲ့အတွက် downstream logic တွေမှာ similarity threshold နဲ့ စစ်ရတာ အဆင်ပြေစေပါတယ်။
+- **Metadata Filtering**: `applyFiltersVector()` နဲ့ `applyFiltersFts()` မှာ `meta` filter array ကို support လုပ်ပါတယ်။ PostgreSQL မှာ `dc.metadata @> ?::jsonb` (contains operator), SQLite မှာ `json_extract()` ကိုသုံးပါတယ်။ ဒါမှ "project Orion နဲ့ သက်ဆိုင်တဲ့ chunks တွေပဲရှာမယ်" ဆိုတဲ့ filter မျိုး ထည့်လို့ရပါတယ်။
+- **Metadata in Results**: `searchHybrid()`, `search()`, FTS — အကုန်လုံးက `dc.metadata` ကို SELECT ထဲမှာထည့်ပြီး return လုပ်ပါတယ်။
 
 ---
 
@@ -83,6 +87,8 @@ AI ကို prompt ပို့ဖို့ ပြင်ဆင်ပေးတ�
 - **Token Counting**: Chunk တစ်ခုချင်းစီကို context ထဲ မထည့်ခင် token ဘယ်လောက်ရှိလဲအရင်တွက်ပါတယ်။ `maxContextTokens` (default 4000) ထက် ကျော်သွားရင် နောက်ထပ် chunks တွေကို ထည့်မပေးတော့ပါဘူး။
 - **Source Labeling**: Chunk တစ်ခုချင်းစီရဲ့ ထိပ်မှာ `[Source: Title, Similarity %, Page X]` ဆိုတဲ့ အချက်အလက်တွေ ထည့်ပေးတဲ့အတွက် AI က အကိုးအကား ပြန်ပေးနိုင်ပါတယ်။
 
+**Provider ၅ မျိုး**: OpenAI, Ollama, Gemini, Claude, DeepSeek — အားလုံးက `LLMProviderInterface` ကို implement လုပ်ထားပြီး `ProviderFactory` က `AiModel->provider` အလိုက် auto-create လုပ်ပေးပါတယ်။
+
 ---
 
 ### **E. UserModule & SettingsModule - စနစ်စီမံခန့်ခွဲခြင်း**
@@ -95,7 +101,7 @@ AI ကို prompt ပို့ဖို့ ပြင်ဆင်ပေးတ�
 #### **၂။ [AiModelService.php](file:///Users/za/Sites/projects/lumina_rag/modules/SettingsModule/Services/AiModelService.php)**
 AI Models တွေရဲ့ configuration တွေကို စီမံပေးပါတယ်။
 - **Validation Rules**: Model တစ်ခုချင်းစီရဲ့ type (embedding/llm) ပေါ်မူတည်ပြီး သက်ဆိုင်ရာ validation rules တွေကို dynamically ထုတ်ပေးပါတယ်။ (ဥပမာ- embedding ဆိုရင် dimensions ပါရမယ်၊ llm ဆိုရင် temperature ပါရမယ်)
-- **Model Registry**: System တစ်ခုလုံးမှာ code ပြင်စရာမလိုဘဲ UI ကနေ OpenAI သို့မဟုတ် Ollama model တွေကို အလွယ်တကူ တိုးနိုင်၊ လျှော့နိုင်အောင် စီစဉ်ထားပါတယ်။
+- **Model Registry**: System တစ်ခုလုံးမှာ code ပြင်စရာမလိုဘဲ UI ကနေ provider စုံ (OpenAI, Ollama, Gemini, Claude, DeepSeek) က model တွေကို အလွယ်တကူ တိုးနိုင်၊ လျှော့နိုင်အောင် စီစဉ်ထားပါတယ်။ Model တစ်ခုချင်းစီမှာ ကိုယ်ပိုင် `api_key`, `base_url`, `temperature`, `timeout`, `settings` JSONB ပါရှိပါတယ်။
 
 #### **၃။ [TermAliasService.php](file:///Users/za/Sites/projects/lumina_rag/modules/SettingsModule/Services/TermAliasService.php)**
 မြန်မာ-အင်္ဂလိပ် ဝေါဟာရ မြေပုံဆွဲခြင်းကို စီမံပေးပါတယ်။
@@ -111,8 +117,12 @@ AI Models တွေရဲ့ configuration တွေကို စီမံပေ
 #### **၁။ [RAGPipelineService.php](file:///Users/za/Sites/projects/lumina_rag/modules/ChatModule/Services/RAGPipelineService.php)**
 System တစ်ခုလုံးရဲ့ step-by-step စီးဆင်းမှုကို စီမံခန့်ခွဲပါတယ်။
 - **Burmese Normalization**: မြန်မာဂဏန်း (၀-၉) တွေကို English (0-9) ပြောင်းပြီးမှ ရက်စွဲတွေ ရှာပါတယ်။
-- **Inheritance Logic**: User က "ဘယ်သူ့အစီရင်ခံစာလဲ" လို့ မေးပြီးနောက် "အဲ့ဒါက ဘယ်အချိန်ကလဲ" လို့ ထပ်မေးရင် (follow-up) အရှေ့မေးခွန်းက user id/project တွေကို အလိုအလျောက် ယူသုံးပေးပါတယ်။
-- **Confidence Assessment**: ရှာတွေ့တဲ့ similarity score တွေအရ အဖြေက စိတ်ချရမှု ရှိမရှိ (High/Low) သတ်မှတ်ပြီး AI ကို instruction ပြောင်းပေးပါတယ်။
+- **Inheritance Logic**: User က "ဘယ်သူ့အစီရင်ခံစာလဲ" လို့ မေးပြီးနောက် "အဲ့ဒါက ဘယ်အချိန်ကလဲ" လို့ ထပ်မေးရင် (follow-up) အရှေ့မေးခွန်းက user id/project တွေကို အလိုအလျောက် ယူသုံးပေးပါတယ်။ Refusal ဖြစ်ရင် date ကို inherit မလုပ်ပါဘူး (user က "ဒါဆိုဘာရှိလဲ" ပြန်မေးနိုင်တယ်)။
+- **Dynamic Model Selection**: Document တွေ ဘယ် embedding model သုံးထားလဲဆိုတာကို auto-detect လုပ်ပြီး question ကိုလည်း အဲဒီ model နဲ့ပဲ embed လုပ်တယ်။ တစ်မျိုးတည်းပဲရှိရင် အဲဒါကိုသုံး၊ အမျိုးစုံရှိရင် default ကိုသုံး။
+- **FTS Non-ASCII Stripping**: FTS query ကနေ Burmese/Unicode tokens တွေကိုဖယ်တယ် — English `plainto_tsquery` parser က မကိုင်တွယ်နိုင်လို့။ Non-English query တွေအတွက် vector search ကိုပဲ အားကိုးတယ်။
+- **Confidence Assessment**: ရှာတွေ့တဲ့ similarity score တွေအရ အဖြေက စိတ်ချရမှု ရှိမရှိ (High/Low) သတ်မှတ်ပြီး AI ကို instruction ပြောင်းပေးပါတယ်။ Low confidence ဆို "Based on limited available information..." နဲ့စပြီး uncertainty ကိုဖော်ပြပါတယ်။
+- **Old Document Detection**: Document တွေက တစ်နှစ်ကျော်ရင် system prompt မှာ "Some source documents are over a year old" ဆိုတဲ့ rule ကိုထည့်ပေးတယ်။
+- **System Prompt Rewrite**: Core rules (grounding, completeness, citation, language), behavior (tone, formatting, conciseness), conditional sections (low confidence, old documents) — ဆိုပြီး structured prompt ကိုသုံးထားပါတယ်။
 - **Pagination**: List view များတွင် pagination ကိုထောက်ပံ့ထားပြီး `RAG_PAGINATION_PER_PAGE` နှင့် `RAG_PAGINATION_MAX_PER_PAGE` environment variables ဖြင့် configure လုပ်နိုင်ပါတယ်။
 
 ---
@@ -123,8 +133,10 @@ System တစ်ခုလုံးရဲ့ step-by-step စီးဆင်း�
 | :--- | :--- | :--- | :--- |
 | Chunking | `TextChunkingService` | Recursive Separator Priority | အဓိပ္ပာယ်မပြတ်ဘဲ AI ဖတ်ရလွယ်ရန် |
 | Search | `PgvectorDriver` | RRF Fusion (Vector + FTS) | စာလုံးရော အဓိပ္ပာယ်ပါ တိကျစွာ ရှာနိုင်ရန် |
+| Metadata Filter | `PgvectorDriver` | `metadata @> ?::jsonb` (jsonb contains) | Project/user/date အလိုက် chunks စစ်ထုတ်ရန် |
 | Caching | `EmbeddingService` | MD5 Hashing (24h TTL) | API cost သက်သာစေပြီး ပိုမြန်စေရန် |
 | Optimization | `RAGPipelineService` | Dynamic Threshold (Elbow Method) | မဆိုင်တဲ့ chunks တွေကို ဖြတ်ချရန် |
+| Providers | `ProviderFactory` | Strategy Pattern (5 providers) | Provider အသစ်ထည့်ရန် interface implement လုပ်ရုံပဲ |
 | Context | `LLMService` | Token-aware concatenation | Model ၏ limit ထက်မကျော်စေရန် |
 | Security | `AuthService` | Secure Random Tokens | လုံခြုံစိတ်ချရသော API access ရရှိရန် |
 

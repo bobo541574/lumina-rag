@@ -43,17 +43,21 @@ PHP က ရွေးချယ်စရာမဟုတ်ဘူး — Laravel �
 - DB ၂ ခု manage လုပ်စရာမလိုဘူး
 - pgvector က production-ready ဖြစ်နေပြီ
 
-### Ollama (သို့) OpenAI
-နှစ်မျိုးလုံး support လုပ်ထားတယ်။ ဘာလို့ interface တစ်ခုတည်းနဲ့ထားလဲ?
-- Provider တွေက API format မတူဘူး (OpenAI က chat completion, Ollama က /api/chat)
+### Provider ၅ ခု — OpenAI, Ollama, Gemini, Claude, DeepSeek
+
+အခု ၅ မျိုး support လုပ်ထားတယ်။ Embedding အတွက် OpenAI + Ollama + Gemini, LLM အတွက် ၅ မျိုးလုံး။
+ဘာလို့ interface တစ်ခုတည်းနဲ့ထားလဲ?
+- Provider တွေက API format မတူဘူး (OpenAI က chat completion, Ollama က /api/chat, Gemini က content generation, Claude က messages API, DeepSeek က OpenAI-compatible)
 - ဒါပေမယ့် အပေါ်ယံကနေကြည့်ရင် တူတူပဲ — "text ထည့် → vector ထုတ်" (embedding) သို့ "prompt ထည့် → text ထုတ်" (LLM)
 - Interface/Implementation pattern သုံးထားတယ် — ဘယ် provider ပြောင်းပြောင်း calling code က ပြောင်းစရာမလိုဘူး
+- ProviderFactory က AiModel ရဲ့ `provider` field ကိုကြည့်ပြီး သင့်တော်တဲ့ class ကို auto-create လုပ်တယ်
 
 **ဘာလို့ raw cURL သုံးတာလဲ? ဘာလို့ official SDK မသုံးတာလဲ?**
 SDK တွေက:
 - Dependencies တွေများတယ် (guzzlehttp, psr-7, etc.)
 - Version တက်လိုက်ကျလိုက်နဲ့ breaking changes တွေရှိတယ်
 - တကယ်တော့ AI API တွေက simple HTTP POST ပဲ — curl နဲ့တန်းခေါ်ရတာ ပိုမြန်တယ်၊ ပိုရှင်းတယ်
+- Provider အသစ်ထည့်ရင်လည�် curl နဲ့ပဲထည့်ရတယ် — SDK ကိုစောင့်စရာမလိုဘူး
 
 ### Vue 3 + TypeScript + Tailwind
 Frontend framework တွေအများကြီးရှိပေမယ့်:
@@ -288,9 +292,11 @@ $score = 1 / (60 + $vectorRank) + 1 / (60 + $ftsRank)
 ### SettingsModule — AI Model Registry
 
 **ဘာလို့ Model Registry လိုတာလဲ?**
-- Document တစ်ခုစီက မတူတဲ့ embedding model သုံးနိုင်တယ်
-- LLM ကိုလည်း ပြောင်းသုံးနိုင်တယ် (ဥပမာ code document ဆို qwen2.5-coder)
-- တစ်ချိန်တည်းမှာ model ၂ ခု active ဖြစ်နေလို့ရတယ် (primary + fallback)
+- Document တစ်ခုစီက မတူတဲ့ embedding model သုံးနိုင်တယ် (ဥပမာ nomic-embed-text 768d vs text-embedding-004 768d vs text-embedding-3-small 1536d)
+- LLM ကိုလည်း ပြောင်းသုံးနိုင်တယ် (code document ဆို DeepSeek, Burmese QA ဆို Gemini, general ဆို Claude)
+- ဒီအတိုင်းဆို dimension မတူတဲ့ model နှစ်ခုနဲ့ embed လုပ်ထားတဲ့ document တွေကို အတူတူရှာလို့မရဘူး (dimension mismatch)
+- Model တစ်ခုချင်းစီမှာ `api_key`, `base_url`, `temperature`, `timeout` တွေကို သီးသန့်သတ်မှတ်လို့ရတယ်
+- Provider-specific API keys တွေကို config/rag.php မှာလည်းထည့်လို့ရတယ် (ဥပမာ `GEMINI_API_KEY`, `CLAUDE_API_KEY`, `DEEPSEEK_API_KEY`)
 
 `is_active` + `sort_order` က ဘယ် model က active လဲဆုံးဖြတ်တယ်:
 ```php
@@ -382,6 +388,12 @@ $ftsQuery = $this->refineFtsQuery($question, $autoFilters);
 
 **ဒီလောက်တောင် stripping လုပ်ရတဲ့ အဓိကအကြောင်းရင်း:**
 Filter တွေ (user, project, date) ကို SQL WHERE clause အနေနဲ့ပြီးသားထည့်ထားတယ်။ FTS မှာ ထပ်ထည့်စရာမလိုဘူး။ အမှန်တကယ် content word တွေချည်းပဲ FTS မှာထားရင် ပိုတိကျတယ်။
+
+**ဘာလို့ non-ASCII tokens တွေကို FTS ကနေဖယ်တာလဲ?**
+FTS က `plainto_tsquery('english', ...)` ကို သုံးတယ် — English parser က Burmese/Unicode စာလုံးတွေကို မကိုင်တွယ်နိုင်ဘူး။
+- "ရှိ" ဆိုတဲ့ stopword ကိုဖယ်လိုက်ရင် "ပါတယ်" ဆိုတဲ့အပိုင်းအစကျန်တယ် — FTS က အဲဒီအပိုင်းအစနဲ့ AND- match လုပ်ပြီး ဘာမှမတွေ့တော့ဘူး
+- Non-ASCII (Burmese) query တွေအတွက်က vector search ကိုပဲ အားကိုးတယ် — FTS ကို ASCII-only ထားလိုက်တယ်
+- Fallback မှာလည်း non-ASCII ကိုဖယ်ပြီး 3 character အောက် tokens တွေကိုထပ်စစ်ထုတ်တယ်
 
 ### Step 4: Follow-up Inheritance
 
@@ -596,16 +608,45 @@ Chunk 1 ရဲ့အဆုံးနဲ့ chunk 2 ရဲ့အစပိုင်
 ဒါမှ "ရောင်းအားက ၂၀၂၆ ခုနှစ်မှာ" ဆိုတဲ့ sentence က chunk 1 ရဲ့အဆုံးမှာပါပြီး chunk 2 ရဲ့အစမှာလည်းပါမယ်။
 Search လုပ်ရင် နှစ်မျိုးလုံးမှာတွေ့နိုင်တယ်။
 
-### Metadata Header
+### Metadata Header + Structured JSON
+
+နှစ်မျိုးပေါင်းသုံးတယ် — text header (LLM အတွက်) နဲ့ structured JSON (filtering အတွက်):
 
 ```php
+// Chunk content ထဲမှာထည့်တဲ့ text header (LLM မြင်အောင်)
 $metaHeader = "Report by: {$userName}\nProject: {$project}\nDate: {$reportDate}\n\n";
+
+// DB မှာသိမ်းတဲ့ structured metadata (filtering အတွက်)
+$docMeta = [
+    'user_id' => $document->user_id,
+    'user_name' => $userName,
+    'project' => $project,
+    'report_date' => $reportDate,
+    'document_title' => $document->title,
+];
+// Per-chunk data
+$chunkMeta = array_merge($docMeta, [
+    'chunk_index' => $i,
+    'section' => $chunkData['section'] ?? null,
+    'page_number' => $chunkData['page_number'] ?? null,
+]);
+// → metadata JSONB column မှာသိမ်း
 ```
 
-**ဘာလို့ chunk content ရဲ့အစမှာ metadata ထည့်တာလဲ?**
-- LLM က "ဒီအပိုင်းက ဘယ် project အတွက်လဲ၊ ဘယ်ရက်စွဲလဲ" ဆိုတာ context ထဲမှာမြင်ရမယ်
-- FTS က "Project Orion" ဆိုတဲ့ keyword ကိုလည်းရှာနိုင်တယ် (document level column မှာလည်းရှိပေမယ့် chunk content ထဲမှာပါထည့်ထားတာ)
-- Vector embedding မှာလည်း metadata ပါသွားတယ် → "Project Orion" နဲ့ "2026-04" က semantic ဆက်စပ်မှုကိုလည်းဖမ်းတယ်
+**Metadata JSONB က ဘာအတွက်လဲ?**
+`document_chunks` ရဲ့ `metadata` column က JSONB type — PostgreSQL ရဲ့ `@>` (contains) operator နဲ့ စစ်လို့ရတယ်:
+```sql
+WHERE metadata @> '{"project": "Orion"}'::jsonb
+```
+
+**ဘာလို့ text header ရော JSONB ရော နှစ်မျိုးလုံးလိုတာလဲ?**
+- **Text header** — Vector embedding မှာပါသွားမယ် → "Project Orion" နဲ့ "2026-04" ကို semantic ဆက်စပ်မှုအဖြစ်ဖမ်းတယ်။ LLM က context ထဲမှာလည်းမြင်ရမယ်။
+- **JSONB** — PgvectorDriver က search လုပ်တဲ့အခါ `applyFiltersVector()` နဲ့ `applyFiltersFts()` မှာ `meta` filter အနေနဲ့သုံးလို့ရတယ်။
+
+**ဘာလို့ JSON ကို json မဟုတ်ဘဲ jsonb သုံးတာလဲ?**
+- JSONB က `@>` operator ကို support လုပ်တယ် (json မလုပ်ဘူး)
+- JSONB က GIN index (`jsonb_path_ops`) တပ်လို့ရတယ် → performance ပိုကောင်းတယ်
+- Migration consolidation လုပ်တုန်းက မူလ `json` ကနေ `jsonb` ကိုပြောင်းထားတယ်
 
 ---
 
@@ -772,11 +813,15 @@ Job တွေက background မှာပြေးရင် test က job ပြ�
 | **Streaming SSE** | Real-time UX, stages display, early text rendering |
 | **Custom token auth** | Simple, stateless, no extra tables |
 | **Module system** | Separation of concerns, independent testing |
+| **5 AI providers** | OpenAI/Ollama/Gemini (embedding), +Claude/DeepSeek (LLM) |
 | **MD5 embedding cache** | Avoid redundant API calls, save cost |
 | **Recursive chunking** | Semantic boundaries preserved, graceful fallback |
-| **Metadata header in chunks** | LLM sees context (user/project/date) in each chunk |
+| **Metadata JSONB in chunks** | LLM sees context (text header) + structured filtering (jsonb @>) |
+| **Metadata filter in search** | `meta` filter array → PgvectorDriver applies jsonb @> WHERE |
+| **Migration consolidation** | Merge add-column migrations into base create-table migrations |
 | **Follow-up inheritance** | Natural conversation flow without repeating context |
 | **Burmese language support** | Myanmar digit conversion, Burmese stopwords, month names |
+| **FTS non-ASCII stripping** | English parser can't handle Burmese; vector search handles non-English |
 
 ---
 
@@ -808,12 +853,19 @@ Fix: `.env` မှာ `RAG_LLM_MAX_TOKENS=8192` ထည့် (သို့) AiMo
 
 ## 14. How to Extend This Project
 
-### Add a new embedding/LLM provider (e.g., Anthropic)
+### Add a new embedding/LLM provider (e.g., Mistral)
 
-1. Create provider class: `AnthropicLLMProvider.php` implements `LLMProviderInterface`
-2. Register in `ProviderFactory.php`
+1. Create provider class: `MistralLLMProvider.php` implements `LLMProviderInterface`
+2. Register in `ProviderFactory.php` (add case in `createLLMProvider()` switch)
 3. Add provider option in `AiModelForm.vue`
-4. Update validation in `AiModelService.php`
+4. Add model entry in `SettingsModuleSeeder.php`
+5. Add API key env var in `.env.example` + `config/rag.php`
+
+**Provider အသစ်ထည့်ဖို့ pattern က ရှင်းတယ်:**
+- Provider တစ်ခုစီက `LLMProviderInterface` (သို့) `EmbeddingProviderInterface` ကို implement
+- `ProviderFactory` က `AiModel->provider` field ကိုကြည့်ပြီး appropriate class ကို new လုပ်
+- Interface မှာ `complete()`, `completeStream()`, `countTokens()` (LLM) / `embed()`, `embedBatch()` (embedding) — ဒါတွေကိုပဲ implement လုပ်စရာလို
+- Calling code (RAGPipelineService, DocumentService) က provider ဘာလဲဆိုတာ သိစရာမလိုဘူး — interface ကိုပဲခေါ်တယ်
 
 ### Add a new search mode
 
