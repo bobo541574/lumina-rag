@@ -84,7 +84,7 @@ flowchart TB
 
         DocMod["DocumentModule\n• Upload → SHA-256 dedup\n• ProcessDocumentJob (queue)\n• Text extraction (PDF/DOCX/TXT)\n• Chunk → Batch embed → Upsert"]:::module
 
-        ChatMod["ChatModule\n• RAG pipeline orchestrator\n• Alias expansion → Embed\n• Hybrid search → RRF fusion\n• Threshold → MMR → LLM\n• SSE streaming · Source citations"]:::module
+        ChatMod["ChatModule\n• RAG pipeline orchestrator\n• Adaptive query rewrite → Embed\n• Hybrid search → RRF fusion\n• Threshold → MMR → LLM\n• SSE streaming · Source citations"]:::module
 
         EmbedMod["EmbeddingModule\n• EmbeddingService\n• MD5-cached 24h\n• OpenAI / Ollama / Gemini"]:::module
 
@@ -184,17 +184,18 @@ flowchart TD
     ResolveSession --> CheckLimit["Check session msg count\nmax 100"]:::process
     CheckLimit -->|"Exceeded"| SessionFull["Return: Session limit reached"]:::refusal
     CheckLimit -->|"OK"| SaveQuestion["Save user message"]:::process
-    SaveQuestion --> AliasExpand["Term alias expansion:\n• expandText() → substitute\n• expandFtsQuery() → OR canonical"]:::process
+    SaveQuestion --> Rewrite["Adaptive query rewrite:\n• Score complexity (word count, negation, ambiguous)\n• SIMPLE (<5): spelling → dates → synonyms\n• COMPLEX (≥5): same + LLM reformulation"]:::process
 
-    TermAliases -.->|"reads"| AliasExpand
+    TermAliases -.->|"reads aliases"| Rewrite
+    AiModelDb -.->|"reads complexity_threshold"| Rewrite
 
-    AliasExpand --> EmbedQuestion["Embed question\n(MD5-cached 24h)"]:::process
+    Rewrite --> EmbedQuestion["Embed question\n(uses rewritten embeddingText, MD5-cached 24h)"]:::process
 
     AiModelDb -.->|"reads active model"| EmbedQuestion
 
     EmbedQuestion --> SearchType{"Search\nmode?"}:::decision
     SearchType -->|"hybrid"| VecSearch["Vector cosine search\n<=> distance · ORDER BY · topK"]:::process
-    SearchType -->|"hybrid"| FTSSearch["Full-text search\nplainto_tsquery · ts_rank"]:::process
+    SearchType -->|"hybrid"| FTSSearch["Full-text search:\nto_tsquery (boolean & | !)\nwith plainto_tsquery fallback"]:::process
     SearchType -->|"vector"| VecOnly["Vector cosine search\n(same)"]:::process
     VecSearch & FTSSearch --> Fusion["Reciprocal rank fusion"]:::process
     VecOnly --> Fusion
