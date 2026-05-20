@@ -94,6 +94,7 @@ Soft-delete session and mark for archival.
 - If no chunks above threshold → Polite refusal message
 - If 1-2 relevant chunks → Answer with low-confidence note
 - Context window: 4000 tokens max
+- Query rewriting: `QueryRewriterService` scores complexity; SIMPLE (score <5) uses rule-based rewrite (spelling, dates, synonyms), COMPLEX (≥5) triggers LLM reformulation via `expandQuery()`
 
 ### Response Generation
 - System prompt: Strict context-only instruction with rules for grounding, completeness, no hallucination, citation, language matching, metadata awareness, structure, tone, markdown formatting, conciseness. Low-confidence and old-document warnings appended when applicable.
@@ -119,8 +120,11 @@ Soft-delete session and mark for archival.
 ChatController
   ↓ (validated request)
 RAGPipelineService
-  ├→ EmbeddingService.embed(question) → Vector
-  ├→ VectorStoreService.search(vector, topK=5) → Chunks[]
+  ├→ QueryRewriterService.rewrite(question) → {embeddingText, ftsQuery, mode}
+  │    (SIMPLE: rule-based rewrite; COMPLEX: LLM reformulation)
+  ├→ EmbeddingService.embed(embeddingText) → Vector
+  ├→ VectorStoreService.searchHybrid(ftsQuery, vector, topK, filters)
+  │    (uses to_tsquery with AND/OR/NOT when boolean ftsQuery available)
   ├→ LLMService.complete(systemPrompt, context, question) → Answer
   └→ Save ChatMessage (user + assistant roles)
   ↓

@@ -53,6 +53,7 @@ All 7 service providers registered manually in `config/app.php` via `ServiceProv
 modules/{Name}Module/
 ├── Controllers/     (validation + dispatch only)
 ├── Services/        (business logic — the only layer touching Models)
+│   └── Pipeline/    (ChatModule only: chunked pipeline stage classes)
 ├── Contracts/       (interfaces, bound in ServiceProvider)
 ├── Models/          (Eloquent, HasUlids, soft-deletes)
 ├── Requests/        (FormRequest validation)
@@ -75,12 +76,13 @@ No Repository layer. Services interact with Models directly. Controllers only va
 
 `modules/ChatModule/Services/RAGPipelineService.php` orchestrates:
 
-1. **Embed** the question via `EmbeddingService` (MD5-cached, 24h TTL).
-2. **Search** — `VectorStoreService::searchHybrid()` runs vector cosine + FTS (`plainto_tsquery('english', ...)`) in parallel, fused by reciprocal rank fusion.
-3. **Filter** — chunks below `similarity_threshold` (default `0.65`) are dropped. If none survive → refusal, no LLM call.
-4. **Context** — top chunks (truncated to `llm.max_context_tokens`) concatenated into the LLM prompt.
-5. **Answer** — `LLMService::complete(...)` with `temperature=0.3`. Sources attached (document_id, title, chunk_index, page_number, score, excerpt).
-6. **Persist** — user + assistant `chat_messages` saved to `chat_session`.
+1. **Rewrite** — `QueryRewriterService::rewrite()` scores complexity (word count, negation, logical ops, ambiguous terms). SIMPLE (score < 5): spelling correction + date expansion + synonym expansion. COMPLEX (score ≥ 5): same + triggers LLM `expandQuery()` reformulation.
+2. **Embed** the rewritten question via `EmbeddingService` (MD5-cached, 24h TTL).
+3. **Search** — `VectorStoreService::searchHybrid()` runs vector cosine + FTS in parallel, fused by reciprocal rank fusion. FTS uses `to_tsquery('english', ...)` with `&`, `|`, `!` operators when a boolean query is available, falling back to `plainto_tsquery`.
+4. **Filter** — chunks below `similarity_threshold` (default `0.65`) are dropped. If none survive → refusal, no LLM call.
+5. **Context** — top chunks (truncated to `llm.max_context_tokens`) concatenated into the LLM prompt.
+6. **Answer** — `LLMService::complete(...)` with `temperature` from active AiModel (default `0.3`). Sources attached (document_id, title, chunk_index, page_number, score, excerpt).
+7. **Persist** — user + assistant `chat_messages` saved to `chat_session`.
 
 Document upload: `DocumentService::upload()` → dispatch `ProcessDocumentJob` → extract text (smalot/pdfparser, phpoffice/phpword) → chunk (recursive char splitter, 1000/200) → batch-embed via document's `embedding_model_id` AiModel → upsert vectors → mark `completed`.
 
@@ -124,6 +126,7 @@ Response envelope: `{ success, message, data, errors }`.
 `config/rag.php` is the central knob — all RAG params read via `env()` with sensible defaults:
 - `RAG_EMBEDDING_PROVIDER` / `RAG_LLM_PROVIDER` — `openai`, `ollama`, `gemini`, `claude`, or `deepseek`
 - `RAG_VECTOR_DRIVER` — only `pgsql` is implemented
+- `RAG_QUERY_REWRITER_ENABLED` / `RAG_QUERY_REWRITER_COMPLEXITY_THRESHOLD` — adaptive query rewriting toggle
 - Provider-specific model, dimensions, batch size, cache TTL, timeouts, search mode, chunk params
 
 **Either** `OPENAI_API_KEY` (OpenAI), `GEMINI_API_KEY` (Gemini), `CLAUDE_API_KEY` (Claude), `DEEPSEEK_API_KEY` (DeepSeek), **or** a local Ollama instance is required, depending on the provider setting. The AiModel registry (`ai_models` table) can override the global provider per-document.
