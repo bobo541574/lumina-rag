@@ -1,0 +1,28 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Modules\ChatModule\Services\Pipeline;
+
+/**
+ * Rewritten Query Data Transfer Object
+ *
+ * Carries the output of QueryRewriterService through the RAG pipeline.
+ * Contains the cleaned embedding text for vector search, an optional
+ * boolean FTS query for to_tsquery, and the complexity mode label.
+ *
+ * @param  string  $embeddingText  Cleaned text for vector embedding.
+ *                                 Example: "2026-05-19 & (ရာသီဥတု OR မိုးလေဝသ) & ရန်ကုန်"
+ * @param  string|null  $ftsQuery  Boolean FTS query for PostgreSQL to_tsquery.
+ *                                 Example: "weather & (rain OR climate) & yangon"
+ * @param  string  $mode  Complexity mode: "simple" or "complex".
+ *                        Example: "simple"
+ */
+readonly class RewrittenQuery
+{
+    public function __construct(
+        public string $embeddingText,
+        public ?string $ftsQuery = null,
+        public string $mode = 'simple',
+    ) {}
+}
