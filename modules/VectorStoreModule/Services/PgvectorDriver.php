@@ -158,28 +158,57 @@ class PgvectorDriver implements VectorStoreInterface
             ->orderByRaw('ve.embedding <=> ?::vector', [$vectorLiteral])
             ->limit($topK * 3);
 
-        $tsQuery = $this->db->table('document_chunks as dc')
-            ->select(
-                'dc.id',
-                'dc.id as chunk_id',
-                'dc.content',
-                'dc.metadata',
-                'd.id as document_id',
-                'd.title as document_title',
-                'd.user_id as document_user_id',
-                'd.project as document_project',
-                'd.report_date as document_report_date',
-                'dc.chunk_index',
-                'dc.page_number',
-                'd.created_at as document_created_at',
-            )
-            ->selectRaw('0.0 as similarity_score')
-            ->selectRaw('ts_rank(dc.tsv_content, plainto_tsquery(\'english\', ?)) as fts_score', [$queryText])
-            ->join('documents as d', 'd.id', '=', 'dc.document_id')
-            ->whereNull('d.deleted_at')
-            ->whereRaw('dc.tsv_content @@ plainto_tsquery(\'english\', ?)', [$queryText])
-            ->orderByRaw('ts_rank(dc.tsv_content, plainto_tsquery(\'english\', ?)) desc', [$queryText])
-            ->limit($topK * 3);
+        $booleanFtsQuery = $filters['boolean_fts_query'] ?? null;
+        unset($filters['boolean_fts_query']);
+
+        if ($booleanFtsQuery !== null && $booleanFtsQuery !== '') {
+            $sanitised = $this->sanitiseBooleanFts($booleanFtsQuery);
+            $tsQuery = $this->db->table('document_chunks as dc')
+                ->select(
+                    'dc.id',
+                    'dc.id as chunk_id',
+                    'dc.content',
+                    'dc.metadata',
+                    'd.id as document_id',
+                    'd.title as document_title',
+                    'd.user_id as document_user_id',
+                    'd.project as document_project',
+                    'd.report_date as document_report_date',
+                    'dc.chunk_index',
+                    'dc.page_number',
+                    'd.created_at as document_created_at',
+                )
+                ->selectRaw('0.0 as similarity_score')
+                ->selectRaw('ts_rank(dc.tsv_content, to_tsquery(\'english\', ?)) as fts_score', [$sanitised])
+                ->join('documents as d', 'd.id', '=', 'dc.document_id')
+                ->whereNull('d.deleted_at')
+                ->whereRaw('dc.tsv_content @@ to_tsquery(\'english\', ?)', [$sanitised])
+                ->orderByRaw('ts_rank(dc.tsv_content, to_tsquery(\'english\', ?)) desc', [$sanitised])
+                ->limit($topK * 3);
+        } else {
+            $tsQuery = $this->db->table('document_chunks as dc')
+                ->select(
+                    'dc.id',
+                    'dc.id as chunk_id',
+                    'dc.content',
+                    'dc.metadata',
+                    'd.id as document_id',
+                    'd.title as document_title',
+                    'd.user_id as document_user_id',
+                    'd.project as document_project',
+                    'd.report_date as document_report_date',
+                    'dc.chunk_index',
+                    'dc.page_number',
+                    'd.created_at as document_created_at',
+                )
+                ->selectRaw('0.0 as similarity_score')
+                ->selectRaw('ts_rank(dc.tsv_content, plainto_tsquery(\'english\', ?)) as fts_score', [$queryText])
+                ->join('documents as d', 'd.id', '=', 'dc.document_id')
+                ->whereNull('d.deleted_at')
+                ->whereRaw('dc.tsv_content @@ plainto_tsquery(\'english\', ?)', [$queryText])
+                ->orderByRaw('ts_rank(dc.tsv_content, plainto_tsquery(\'english\', ?)) desc', [$queryText])
+                ->limit($topK * 3);
+        }
 
         $vectorQuery = $this->applyFiltersVector($vectorQuery, $filters, 've');
         $tsQuery = $this->applyFiltersFts($tsQuery, $filters);
@@ -194,6 +223,28 @@ class PgvectorDriver implements VectorStoreInterface
         );
 
         return $this->fuseResults($vectorResults, $ftsResults, $topK);
+    }
+
+    /**
+     * Sanitise a boolean FTS query for PostgreSQL to_tsquery
+     *
+     * Strips characters that are not valid in a to_tsquery expression
+     * (only letters, digits, spaces, &, |, !, (, ), and ' are allowed).
+     * This prevents SQL syntax errors from user-generated boolean queries.
+     *
+     * @param string $query Raw boolean query. Example: "term1 & (term2 OR term3)"
+     * @return string Sanitised query. Example: "term1 & (term2 OR term3)"
+     */
+    private function sanitiseBooleanFts(string $query): string
+    {
+        $sanitised = preg_replace('/[^a-zA-Z0-9\s&\|!()\'\x{1000}-\x{109F}]/u', ' ', $query);
+        $sanitised = trim(preg_replace('/\s+/', ' ', $sanitised));
+
+        if ($sanitised === '' || $sanitised === '()') {
+            return '';
+        }
+
+        return $sanitised;
     }
 
     /**

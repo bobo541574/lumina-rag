@@ -18,6 +18,7 @@ use Modules\ChatModule\Models\ChatSession;
 use Modules\ChatModule\Services\Pipeline\ChunkProcessor;
 use Modules\ChatModule\Services\Pipeline\FilterExtractor;
 use Modules\ChatModule\Services\Pipeline\FtsQueryBuilder;
+use Modules\ChatModule\Services\Pipeline\QueryRewriterService;
 use Modules\ChatModule\Services\Pipeline\ResponseBuilder;
 use Modules\ChatModule\Services\Pipeline\SessionManager;
 use Modules\DocumentModule\Models\Document;
@@ -118,6 +119,8 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
     private FtsQueryBuilder $ftsQueryBuilder;
 
+    private QueryRewriterService $queryRewriter;
+
     private ChunkProcessor $chunkProcessor;
 
     private ResponseBuilder $responseBuilder;
@@ -162,6 +165,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         TermAliasServiceInterface $termAliasService,
         FilterExtractor $filterExtractor,
         FtsQueryBuilder $ftsQueryBuilder,
+        QueryRewriterService $queryRewriter,
         ChunkProcessor $chunkProcessor,
         ResponseBuilder $responseBuilder,
         SessionManager $sessionManager,
@@ -187,6 +191,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $this->termAliasService = $termAliasService;
         $this->filterExtractor = $filterExtractor;
         $this->ftsQueryBuilder = $ftsQueryBuilder;
+        $this->queryRewriter = $queryRewriter;
         $this->chunkProcessor = $chunkProcessor;
         $this->responseBuilder = $responseBuilder;
         $this->sessionManager = $sessionManager;
@@ -301,13 +306,17 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         $autoFilters = $this->filterExtractor->extract($question);
 
+        // Rewrite query for improved search: spelling correction, date
+        // expansion, synonym expansion, and boolean FTS query generation.
+        $rewritten = $this->queryRewriter->rewrite($question);
+
         // Expand aliases for search: append canonical terms so vector search
         // (via expandText and expandQuery in the LLM query expansion step)
         // benefits from Burmese→English term mappings. The FTS path uses the
         // original question (not alias-expanded) to avoid introducing canonical
         // terms that don't appear in document chunk content.
-        $searchQuestion = $this->termAliasService->expandText($question);
-        $ftsQuery = $this->ftsQueryBuilder->refine($question, $autoFilters);
+        $searchQuestion = $this->termAliasService->expandText($rewritten->embeddingText);
+        $ftsQuery = $this->ftsQueryBuilder->refine($rewritten->ftsQuery ?? $question, $autoFilters);
         $ftsQuery = $this->termAliasService->expandFtsQuery($ftsQuery);
 
         $this->sessionManager->saveUserMessage($session, $question);
@@ -434,6 +443,9 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             $filters = array_merge($autoFilters, $options['document_filter'] ?? []);
             $filters['similarity_threshold'] = $minThreshold;
             $filters['model_name'] = $targetModel?->model ?? config('rag.embedding.model', 'text-embedding-3-small');
+            if ($rewritten->ftsQuery !== null) {
+                $filters['boolean_fts_query'] = $rewritten->ftsQuery;
+            }
 
             $chunks = $this->searchMode === 'hybrid'
                 ? $this->vectorStore->searchHybrid($ftsQuery, $questionVector, $this->topK * 3, $filters)
@@ -573,8 +585,10 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
 
         $autoFilters = $this->filterExtractor->extract($question);
 
-        $searchQuestion = $this->termAliasService->expandText($question);
-        $ftsQuery = $this->ftsQueryBuilder->refine($question, $autoFilters);
+        $rewritten = $this->queryRewriter->rewrite($question);
+
+        $searchQuestion = $this->termAliasService->expandText($rewritten->embeddingText);
+        $ftsQuery = $this->ftsQueryBuilder->refine($rewritten->ftsQuery ?? $question, $autoFilters);
         $ftsQuery = $this->termAliasService->expandFtsQuery($ftsQuery);
 
         $this->sessionManager->saveUserMessage($session, $question);
@@ -713,6 +727,9 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
             $filters = array_merge($autoFilters, $options['document_filter'] ?? []);
             $filters['similarity_threshold'] = $minThreshold;
             $filters['model_name'] = $targetModel?->model ?? config('rag.embedding.model', 'text-embedding-3-small');
+            if ($rewritten->ftsQuery !== null) {
+                $filters['boolean_fts_query'] = $rewritten->ftsQuery;
+            }
 
             $chunks = $this->searchMode === 'hybrid'
                 ? $this->vectorStore->searchHybrid($ftsQuery, $questionVector, $this->topK * 3, $filters)

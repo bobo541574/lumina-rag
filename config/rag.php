@@ -85,6 +85,10 @@ return [
             'enabled' => (bool) env('RAG_QUERY_EXPANSION_ENABLED', false),
             'num_queries' => (int) env('RAG_QUERY_EXPANSION_NUM_QUERIES', 3),
         ],
+        'query_rewriter' => [
+            'enabled' => (bool) env('RAG_QUERY_REWRITER_ENABLED', true),
+            'complexity_threshold' => (int) env('RAG_QUERY_REWRITER_COMPLEXITY_THRESHOLD', 5),
+        ],
         'mmr' => [
             'enabled' => (bool) env('RAG_SEARCH_MMR_ENABLED', true),
             'lambda' => (float) env('RAG_SEARCH_MMR_LAMBDA', 0.7),

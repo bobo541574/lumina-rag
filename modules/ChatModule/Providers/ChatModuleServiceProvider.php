@@ -11,6 +11,7 @@ use Modules\ChatModule\Contracts\RAGPipelineServiceInterface;
 use Modules\ChatModule\Services\Pipeline\ChunkProcessor;
 use Modules\ChatModule\Services\Pipeline\FilterExtractor;
 use Modules\ChatModule\Services\Pipeline\FtsQueryBuilder;
+use Modules\ChatModule\Services\Pipeline\QueryRewriterService;
 use Modules\ChatModule\Services\Pipeline\ResponseBuilder;
 use Modules\ChatModule\Services\Pipeline\SessionManager;
 use Modules\ChatModule\Services\RAGPipelineService;
@@ -55,6 +56,11 @@ class ChatModuleServiceProvider extends ServiceProvider
             termAliasService: $app->make(TermAliasServiceInterface::class),
             filterExtractor: $app->make(FilterExtractor::class),
             ftsQueryBuilder: $app->make(FtsQueryBuilder::class),
+            queryRewriter: new QueryRewriterService(
+                filterExtractor: $app->make(FilterExtractor::class),
+                termAliasService: $app->make(TermAliasServiceInterface::class),
+                complexityThreshold: (int) config('rag.search.query_rewriter.complexity_threshold', 5),
+            ),
             chunkProcessor: $app->make(ChunkProcessor::class),
             responseBuilder: $app->make(ResponseBuilder::class),
             sessionManager: $app->make(SessionManager::class),

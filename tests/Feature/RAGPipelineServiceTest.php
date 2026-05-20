@@ -3,16 +3,20 @@
 declare(strict_types=1);
 
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
+use Modules\ChatModule\Models\ChatMessage;
+use Modules\ChatModule\Models\ChatSession;
+use Modules\ChatModule\Services\Pipeline\ChunkProcessor;
+use Modules\ChatModule\Services\Pipeline\FilterExtractor;
+use Modules\ChatModule\Services\Pipeline\FtsQueryBuilder;
+use Modules\ChatModule\Services\Pipeline\QueryRewriterService;
+use Modules\ChatModule\Services\Pipeline\ResponseBuilder;
+use Modules\ChatModule\Services\Pipeline\RewrittenQuery;
+use Modules\ChatModule\Services\Pipeline\SessionManager;
 use Modules\ChatModule\Services\RAGPipelineService;
 use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
 use Modules\EmbeddingModule\Services\ProviderFactory;
 use Modules\LLMModule\Contracts\LLMResponseInterface;
 use Modules\LLMModule\Contracts\LLMServiceInterface;
-use Modules\ChatModule\Services\Pipeline\ChunkProcessor;
-use Modules\ChatModule\Services\Pipeline\FilterExtractor;
-use Modules\ChatModule\Services\Pipeline\FtsQueryBuilder;
-use Modules\ChatModule\Services\Pipeline\ResponseBuilder;
-use Modules\ChatModule\Services\Pipeline\SessionManager;
 use Modules\SettingsModule\Contracts\TermAliasServiceInterface;
 use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
 use PHPUnit\Framework\MockObject\Exception;
@@ -49,6 +53,8 @@ function makePipeline(
     $filterExtractor->shouldReceive('resolveTimeReferences')->andReturnArg(0);
     $ftsQueryBuilder = mock(FtsQueryBuilder::class);
     $ftsQueryBuilder->shouldReceive('refine')->andReturnArg(0);
+    $queryRewriter = mock(QueryRewriterService::class);
+    $queryRewriter->shouldReceive('rewrite')->andReturnUsing(fn (string $q): RewrittenQuery => new RewrittenQuery(embeddingText: $q, ftsQuery: null));
     $chunkProcessor = mock(ChunkProcessor::class);
     $chunkProcessor->shouldReceive('applyDynamicThreshold')->andReturnArg(0);
     $chunkProcessor->shouldReceive('applyMMR')->andReturnArg(0);
@@ -73,19 +79,19 @@ function makePipeline(
     });
     $sessionManager = mock(SessionManager::class);
     $sessionManager->shouldReceive('resolveSession')->andReturnUsing(function ($sessionId, $userId) {
-        return $sessionId ? (Modules\ChatModule\Models\ChatSession::find($sessionId) ?? new Modules\ChatModule\Models\ChatSession) : new Modules\ChatModule\Models\ChatSession;
+        return $sessionId ? (ChatSession::find($sessionId) ?? new ChatSession) : new ChatSession;
     });
     $sessionManager->shouldReceive('checkMessageLimit')->andReturn();
-    $sessionManager->shouldReceive('saveUserMessage')->andReturn(new Modules\ChatModule\Models\ChatMessage);
+    $sessionManager->shouldReceive('saveUserMessage')->andReturn(new ChatMessage);
     $sessionManager->shouldReceive('saveAssistantMessage')->andReturnUsing(function () {
-        $msg = new Modules\ChatModule\Models\ChatMessage;
+        $msg = new ChatMessage;
         $msg->setAttribute('id', '01J');
         $msg->setAttribute('created_at', now());
 
         return $msg;
     });
 
-    return new RAGPipelineService($embedder, $vectorStore, $llm, $providerFactory, $cache, $termAliasService, $filterExtractor, $ftsQueryBuilder, $chunkProcessor, $responseBuilder, $sessionManager);
+    return new RAGPipelineService($embedder, $vectorStore, $llm, $providerFactory, $cache, $termAliasService, $filterExtractor, $ftsQueryBuilder, $queryRewriter, $chunkProcessor, $responseBuilder, $sessionManager);
 }
 
 /**
