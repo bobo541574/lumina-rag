@@ -471,6 +471,8 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             Log::channel(config('rag.logging.channel', 'rag'))->info('RAG pipeline: refusal (no chunks)', [
                 'session_id' => $session->id,
                 'question_length' => mb_strlen($question),
+                'rewrite_score' => $rewritten->score,
+                'rewrite_mode' => $rewritten->mode,
                 'search_time_ms' => round($searchTime, 1),
                 'total_time_ms' => round($totalTime, 1),
             ]);
@@ -531,6 +533,8 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
         Log::channel(config('rag.logging.channel', 'rag'))->info('RAG pipeline: complete', [
             'session_id' => $session->id,
             'question_length' => mb_strlen($question),
+            'rewrite_score' => $rewritten->score,
+            'rewrite_mode' => $rewritten->mode,
             'chunks_found' => count($chunks),
             'search_time_ms' => round($searchTime, 1),
             'llm_time_ms' => round($llmTime, 1),
@@ -704,6 +708,14 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
         $isBurmese = preg_match('/[\x{1000}-\x{109F}]/u', $question) === 1;
 
         yield json_encode([
+            'type' => 'rewrite_info',
+            'score' => $rewritten->score,
+            'mode' => $rewritten->mode,
+            'embedding_text' => $rewritten->embeddingText,
+            'fts_query' => $rewritten->ftsQuery,
+        ]);
+
+        yield json_encode([
             'type' => 'status',
             'stage' => 'embedding',
             'message' => $isBurmese ? 'မေးခွန်းအား ထည့်သွင်းနေသည်...' : 'Embedding question...',
@@ -755,6 +767,8 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
             Log::channel(config('rag.logging.channel', 'rag'))->info('RAG pipeline (stream): refusal (no chunks)', [
                 'session_id' => $session->id,
                 'question_length' => mb_strlen($question),
+                'rewrite_score' => $rewritten->score,
+                'rewrite_mode' => $rewritten->mode,
                 'search_time_ms' => round($searchTime, 1),
                 'total_time_ms' => round($totalTime, 1),
             ]);
@@ -833,6 +847,8 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
         Log::channel(config('rag.logging.channel', 'rag'))->info('RAG pipeline (stream): complete', [
             'session_id' => $session->id,
             'question_length' => mb_strlen($question),
+            'rewrite_score' => $rewritten->score,
+            'rewrite_mode' => $rewritten->mode,
             'chunks_found' => count($chunks),
             'search_time_ms' => round($searchTime, 1),
             'llm_time_ms' => round($llmTime, 1),

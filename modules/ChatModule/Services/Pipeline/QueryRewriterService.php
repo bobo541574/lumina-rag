@@ -85,8 +85,8 @@ class QueryRewriterService
      * additional LLM reformulation.
      *
      * @param  string  $question  Raw user question. Example: "မနေ့က ရာသီဥတု"
-     * @return RewrittenQuery Rewritten query with embeddingText, ftsQuery, and mode.
-     *                        Example: new RewrittenQuery("2026-05-19 (ရာသီဥတု မိုးလေဝသ)", "(2026-05-19) & (ရာသီဥတု OR မိုးလေဝသ)", "simple")
+     * @return RewrittenQuery Rewritten query with embeddingText, ftsQuery, mode, and score.
+     *                        Example: new RewrittenQuery("2026-05-19 ရာသီဥတု မိုးလေဝသ", "(2026-05-19) & (ရာသီဥတု | မိုးလေဝသ)", "simple", 0)
      */
     public function rewrite(string $question): RewrittenQuery
     {
@@ -109,6 +109,7 @@ class QueryRewriterService
             embeddingText: $embeddingText,
             ftsQuery: $ftsQuery,
             mode: $mode,
+            score: $score,
         );
     }
 
