@@ -7,6 +7,7 @@ namespace Modules\ChatModule\Services\Pipeline;
 use App\Models\User;
 use Carbon\Carbon;
 use Modules\ChatModule\Models\ChatSession;
+use Modules\DocumentModule\Models\Document;
 
 class ResponseBuilder
 {
