@@ -6,6 +6,7 @@ namespace Modules\ChatModule\Services\Pipeline;
 
 use App\Models\User;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 use Modules\ChatModule\Models\ChatSession;
 use Modules\DocumentModule\Models\Document;
 
