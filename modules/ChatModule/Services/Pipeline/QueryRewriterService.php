@@ -269,6 +269,31 @@ class QueryRewriterService
                 continue;
             }
 
+            // Skip tokens with non-ASCII characters — the tsv_content is built
+            // with to_tsvector('english', ...), which doesn't index non-English
+            // text. Including Burmese/full-width tokens in to_tsquery would make
+            // them required matches (via &), but they never exist in documents.
+            if (preg_match('/[^\x00-\x7F]/u', $token)) {
+                continue;
+            }
+
+            // Strip hyphenated dates like "2026-06-09" from the boolean query.
+            // to_tsvector('english') stores these as single lexemes, but
+            // sanitiseBooleanFts splits hyphens into spaces, then we insert &
+            // between adjacent numbers — producing "2026 & 06 & 09", which is
+            // too strict (all three numbers must match independently). Just
+            // drop the token entirely; date filtering is handled by
+            // report_date_from/report_date_to filters at the SQL level.
+            if (preg_match('/^\d{4}[-\.\/]\d{1,2}([-\.\/]\d{1,2})?$/', $token)) {
+                continue;
+            }
+
+            // Skip bare numbers (year, month, day) — they're unlikely to be
+            // useful FTS terms and cause over-specificity in the boolean query.
+            if (preg_match('/^\d+$/', $token)) {
+                continue;
+            }
+
             // For known synonyms, build OR group (| for PostgreSQL to_tsquery)
             $synonyms = $this->getSynonymsForFts($token);
             if ($synonyms !== null) {
