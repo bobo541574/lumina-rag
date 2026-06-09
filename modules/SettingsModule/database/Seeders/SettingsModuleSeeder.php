@@ -10,12 +10,12 @@ use Modules\SettingsModule\Models\TermAlias;
 
 /**
  * Settings Module Seeder
- * 
+ *
  * Seeds the database with default AI model configurations and term alias
  * mappings required for the RAG pipeline to function out of the box.
  * Populates embedding models (nomic, mxbai, MiniLM), LLM models (Qwen,
  * Gemma, Qwen Coder), and a curated set of Burmese→English term aliases.
- * 
+ *
  * Uses firstOrCreate to be idempotent — safe to run multiple times without
  * creating duplicate entries. The seeder is organized into embedding model
  * seeding, LLM model seeding, and term alias seeding.
@@ -24,12 +24,10 @@ class SettingsModuleSeeder extends Seeder
 {
     /**
      * Run the database seeders
-     * 
+     *
      * Seeds embedding models (3 defaults), LLM models (4 defaults), and
      * term aliases (18 mappings covering project names, technical terms,
      * and abbreviations). Each seed uses firstOrCreate to ensure idempotency.
-     *
-     * @return void
      */
     public function run(): void
     {
@@ -226,13 +224,11 @@ class SettingsModuleSeeder extends Seeder
 
     /**
      * Seed term alias mappings
-     * 
+     *
      * Inserts a curated set of Burmese→English term aliases for project names
      * (Orion, Nova, Apex, etc.), technical terms (CNN, API, database, etc.),
      * and general abbreviations (OR→Orion, NV→Nova).
      * Each entry uses firstOrCreate keyed by (alias, canonical) for idempotency.
-     *
-     * @return void
      */
     private function seedTermAliases(): void
     {

@@ -9,7 +9,7 @@ use Modules\ChatModule\Models\ChatSession;
 
 class SessionManager
 {
-public function resolveSession (?string $sessionId, ?string $userId = null): ChatSession
+    public function resolveSession(?string $sessionId, ?string $userId = null): ChatSession
     {
         if ($sessionId !== null) {
             $query = ChatSession::where('id', $sessionId);
@@ -39,14 +39,16 @@ public function resolveSession (?string $sessionId, ?string $userId = null): Cha
             'user_id' => $userId,
         ]);
     }
-public function checkMessageLimit (ChatSession $session, int $maxMessagesPerSession = 100): void
+
+    public function checkMessageLimit(ChatSession $session, int $maxMessagesPerSession = 100): void
     {
         $count = $session->messages()->count();
         if ($count >= $maxMessagesPerSession) {
             throw new \RuntimeException('Session message limit reached. Please start a new chat.');
         }
     }
-public function saveUserMessage (ChatSession $session, string $question): ChatMessage
+
+    public function saveUserMessage(ChatSession $session, string $question): ChatMessage
     {
         $session->update(['last_activity_at' => now()]);
         $session->increment('message_count');
@@ -57,7 +59,8 @@ public function saveUserMessage (ChatSession $session, string $question): ChatMe
             'content' => $question,
         ]);
     }
-public function saveAssistantMessage (ChatSession $session, string $content, array $sources): ChatMessage
+
+    public function saveAssistantMessage(ChatSession $session, string $content, array $sources): ChatMessage
     {
         if ($session->title === 'New Chat') {
             $session->update([
@@ -74,6 +77,4 @@ public function saveAssistantMessage (ChatSession $session, string $content, arr
             'sources' => $sources,
         ]);
     }
-
-
 }

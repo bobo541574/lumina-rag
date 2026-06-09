@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use Carbon\Carbon;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
@@ -32,14 +34,14 @@ use Modules\DocumentModule\Models\Document;
  * @property string|null $password Bcrypt-hashed password. Example: "$2y$..."
  * @property string|null $api_token 80-char bearer token. Example: "a1b2c3d4e5..."
  * @property string|null $remember_token Remember-me token. Example: "f6g7h8..."
- * @property \Carbon\Carbon|null $email_verified_at Email verification timestamp. Example: "2026-01-15T10:00:00Z"
- * @property \Carbon\Carbon $created_at Record creation timestamp
- * @property \Carbon\Carbon $updated_at Record update timestamp
+ * @property Carbon|null $email_verified_at Email verification timestamp. Example: "2026-01-15T10:00:00Z"
+ * @property Carbon $created_at Record creation timestamp
+ * @property Carbon $updated_at Record update timestamp
  *
  * @method \Illuminate\Database\Eloquent\Relations\HasMany sessions() User's chat sessions
  * @method \Illuminate\Database\Eloquent\Relations\HasMany documents() User's uploaded documents
  *
- * @throws \Illuminate\Database\Eloquent\ModelNotFoundException When not found via ULID
+ * @throws ModelNotFoundException When not found via ULID
  */
 #[Fillable(['name', 'email', 'password', 'api_token'])]
 #[Hidden(['password', 'remember_token', 'api_token'])]

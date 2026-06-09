@@ -269,11 +269,11 @@ class QueryRewriterService
                 continue;
             }
 
-        // For known synonyms, build OR group (| for PostgreSQL to_tsquery)
-        $synonyms = $this->getSynonymsForFts($token);
-        if ($synonyms !== null) {
-            $terms[] = '('.implode(' | ', $synonyms).')';
-        } else {
+            // For known synonyms, build OR group (| for PostgreSQL to_tsquery)
+            $synonyms = $this->getSynonymsForFts($token);
+            if ($synonyms !== null) {
+                $terms[] = '('.implode(' | ', $synonyms).')';
+            } else {
                 $terms[] = $token;
             }
         }

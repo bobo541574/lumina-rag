@@ -18,7 +18,8 @@ class FilterExtractor
     {
         $this->cache = $cache;
     }
-public function extract (string $question): array
+
+    public function extract(string $question): array
     {
         $filters = [];
 
@@ -209,7 +210,8 @@ public function extract (string $question): array
 
         return $filters;
     }
-public function applyTimePeriod(array $filters, string $period, Carbon $today): array
+
+    public function applyTimePeriod(array $filters, string $period, Carbon $today): array
     {
         $from = null;
         $to = null;
@@ -256,7 +258,8 @@ public function applyTimePeriod(array $filters, string $period, Carbon $today): 
 
         return $filters;
     }
-public function resolveTimeReferences(string $question): string
+
+    public function resolveTimeReferences(string $question): string
     {
         $now = now();
         $today = $now->copy()->startOfDay();
@@ -297,5 +300,4 @@ public function resolveTimeReferences(string $question): string
 
         return $question;
     }
-
 }

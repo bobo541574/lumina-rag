@@ -8,7 +8,7 @@ use App\Models\User;
 
 class FtsQueryBuilder
 {
-public function refine (string $question, array $filters): string
+    public function refine(string $question, array $filters): string
     {
         static $stopwords = [
             'show', 'list', 'tell', 'give', 'find', 'does', 'have', 'has',
@@ -151,5 +151,4 @@ public function refine (string $question, array $filters): string
 
         return $result;
     }
-
 }

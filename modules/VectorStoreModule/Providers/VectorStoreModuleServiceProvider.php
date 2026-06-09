@@ -29,8 +29,6 @@ class VectorStoreModuleServiceProvider extends ServiceProvider
      * Creates two singletons:
      * 1. PgvectorDriver — raw pgvector driver wrapping the database
      * 2. VectorStoreInterface — service facade delegating to PgvectorDriver
-     *
-     * @return void
      */
     public function register(): void
     {
@@ -48,8 +46,6 @@ class VectorStoreModuleServiceProvider extends ServiceProvider
      *
      * Checks if the module is enabled via config and loads migrations
      * for the vector store tables when active.
-     *
-     * @return void
      */
     public function boot(): void
     {

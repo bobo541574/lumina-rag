@@ -9,7 +9,6 @@ use Carbon\Carbon;
 use Generator;
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
-use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Modules\ChatModule\Contracts\RAGPipelineServiceInterface;
@@ -504,7 +503,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         // Prepend search-scope metadata so the LLM knows which filters
         // were applied (e.g. date=2026-05-15, not its own guess of "yesterday").
-$scope = $this->responseBuilder->buildFilterNote($autoFilters);
+        $scope = $this->responseBuilder->buildFilterNote($autoFilters);
         if ($scope !== '') {
             array_unshift($context, (object) [
                 'document_title' => 'Search Scope',
@@ -953,6 +952,15 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
      * Returns an associative array of extracted filter values.
      *
      * @param  string  $question  The raw question text. Example: "What reports did John file in April 2026?"
+     * @param  string  $question  The search question (may already be alias-expanded). Example: "Show me John's report for April"
+     * @param  array  $filters  Extracted filters (used to strip user/project names). Example: ["user_ids" => ["01J..."], "report_date_from" => "2026-04-01"]
+     * @param  array  $filters  Current filter array (may be empty). Example: []
+     * @param  string  $period  Named time period. Example: "this_month"
+     * @param  Carbon  $today  Reference date for relative calculations. Example: now()->startOfDay()
+     * @param  string  $question  The question text potentially containing relative time references.
+     *                            Example: "What reports were filed yesterday?"
+     * @param  string  $question  The original search question. Example: "Q3 revenue report"
+     * @param  LLMServiceInterface  $llm  The LLM service to generate reformulations. Example: $this->llm
      * @return array{user_ids?: array, project?: string, report_date_from?: string, report_date_to?: string}
      *                                                                                                       Extracted filters keyed by type. Example: ["user_ids" => ["01J..."], "project" => "Orion", "report_date_from" => "2026-04-01", "report_date_to" => "2026-04-30"]
 
@@ -965,9 +973,6 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
      * PostgreSQL's plainto_tsquery. Handles Burmese Unicode by not using
      * \b word boundaries. Falls back to a minimal query ("report") if
      * all content words are stripped.
-     *
-     * @param  string  $question  The search question (may already be alias-expanded). Example: "Show me John's report for April"
-     * @param  array  $filters  Extracted filters (used to strip user/project names). Example: ["user_ids" => ["01J..."], "report_date_from" => "2026-04-01"]
      * @return string Cleaned query string for plainto_tsquery. Example: "report April"
 
     /**
@@ -977,10 +982,6 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
      * last_week, this_month, last_month, this_year, last_year) to
      * concrete report_date_from/report_date_to date ranges using
      * the provided reference date (today).
-     *
-     * @param  array  $filters  Current filter array (may be empty). Example: []
-     * @param  string  $period  Named time period. Example: "this_month"
-     * @param  Carbon  $today  Reference date for relative calculations. Example: now()->startOfDay()
      * @return array Updated filters with report_date_from and report_date_to set.
      *               Example: ["report_date_from" => "2026-05-01", "report_date_to" => "2026-05-31"]
 
@@ -992,9 +993,6 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
      * and English with their literal date ranges (e.g. "2026-05-17" or
      * "2026-05-11 to 2026-05-17"). This prevents the LLM from having to
      * guess the current date when answering time-sensitive questions.
-     *
-     * @param  string  $question  The question text potentially containing relative time references.
-     *                            Example: "What reports were filed yesterday?"
      * @return string Question with relative times replaced by literal dates.
      *                Example: "What reports were filed on 2026-05-16?"
 
@@ -1006,9 +1004,6 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
      * to improve document retrieval recall. The original question is
      * prepended as the first query. If the LLM call fails, falls back
      * to returning only the original question.
-     *
-     * @param  string  $question  The original search question. Example: "Q3 revenue report"
-     * @param  LLMServiceInterface  $llm  The LLM service to generate reformulations. Example: $this->llm
      * @return array<string> Array of query strings, with the original first.
      *                       Example: ["Q3 revenue report", "third quarter revenue", "Q3 financial results"]
      */
@@ -1056,6 +1051,15 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
      *
      * @param  array  $chunks  Sorted chunks with similarity_score property.
      *                         Example: [['similarity_score' => 0.9, 'content' => '...'], ...]
+     * @param  array  $chunks  Sorted chunks with similarity_score property.
+     *                         Example: [['similarity_score' => 0.92, 'content' => '...'], ['similarity_score' => 0.45, 'content' => '...']]
+     * @param  array  $filters  Current filters that may lower the base threshold.
+     *                          Example: ["user_ids" => ["01J..."]]
+     * @param  array  $chunks  Candidate chunks with document_id and similarity_score.
+     *                         Example: [['document_id' => '01J...', 'similarity_score' => 0.9, 'content' => '...']]
+     * @param  array  $filters  The active search filters.
+     *                          Example: ["user_ids" => ["01J..."], "project" => "Orion", "report_date_from" => "2026-04-01", "report_date_to" => "2026-04-30"]
+     * @param  string  $question  Raw question text. Example: "  What is revenue for 2026-04?  "
      * @return array Reordered chunks with best first, worst last.
      *               Example: [best, mid1, worst, mid2] for 4 chunks
 
@@ -1069,11 +1073,6 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
      * of the configured similarityThreshold) to account for narrower searches.
      * Always caps results at topK. If all chunks are below threshold but the
      * top score is >= 0.25, returns the single best chunk as a fallback.
-     *
-     * @param  array  $chunks  Sorted chunks with similarity_score property.
-     *                         Example: [['similarity_score' => 0.92, 'content' => '...'], ['similarity_score' => 0.45, 'content' => '...']]
-     * @param  array  $filters  Current filters that may lower the base threshold.
-     *                          Example: ["user_ids" => ["01J..."]]
      * @return array Filtered chunks above the determined threshold.
      *               Example: [['similarity_score' => 0.92, 'content' => '...']]
 
@@ -1086,9 +1085,6 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
      * (1 - mmr_lambda) * max_similarity_to_selected. When two chunks share the
      * same document_id, the redundancy penalty is 1.0 (fully penalised).
      * Returns early (unchanged) when MMR is disabled or there is <= 1 chunk.
-     *
-     * @param  array  $chunks  Candidate chunks with document_id and similarity_score.
-     *                         Example: [['document_id' => '01J...', 'similarity_score' => 0.9, 'content' => '...']]
      * @return array MMR-diversified chunks capped at topK.
      *               Example: [best_chunk, diverse_chunk_from_other_doc, ...]
 
@@ -1101,9 +1097,6 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
      * model knows the exact scope used (e.g. a specific date rather
      * than the relative term "yesterday"). Returns empty string when
      * no filters are active.
-     *
-     * @param  array  $filters  The active search filters.
-     *                          Example: ["user_ids" => ["01J..."], "project" => "Orion", "report_date_from" => "2026-04-01", "report_date_to" => "2026-04-30"]
      * @return string Formatted filter description, or empty string.
      *                Example: "Search scope:\n- Users: John Doe\n- Project: Orion\n- Date range: 2026-04-01 to 2026-04-30"
 
@@ -1114,8 +1107,6 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
      * and converts bare YYYY-MM patterns (without a following day) to
      * YYYY-MonthName format so the LLM and date parser can recognise them
      * as month references rather than generic numbers.
-     *
-     * @param  string  $question  Raw question text. Example: "  What is revenue for 2026-04?  "
      * @return string Normalised question. Example: "What is revenue for 2026-April?"
      *
      * @throws \InvalidArgumentException When question is empty after trimming.
@@ -1151,6 +1142,8 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
      *
      * @param  string|null  $sessionId  Optional session ULID to resume. Example: "01J..."
      * @param  string|null  $userId  Optional user ULID for ownership scope. Example: "01J..."
+     * @param  array  $options  Request options, possibly containing 'llm_model_id'.
+     *                          Example: ["llm_model_id" => "01J..."]
      * @return ChatSession The resolved or newly created session.
     /**
      * Resolve the LLM service for a specific request
@@ -1159,9 +1152,6 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
      * AiModel, creates a new LLMService with the appropriate provider and
      * context token limit. Otherwise returns the default LLM service that
      * was injected at construction time.
-     *
-     * @param  array  $options  Request options, possibly containing 'llm_model_id'.
-     *                          Example: ["llm_model_id" => "01J..."]
      * @return LLMServiceInterface The resolved LLM service (default or overridden).
      *                             Example: $this->llm or new LLMService(...)
      */
@@ -1175,11 +1165,11 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
      * 3. Auto-detect in OllamaLLMProvider (false for Qwen models)
      *
      * @param  array  $overrides  Base options (temperature, max_tokens, etc.).
-     *   Example: ['temperature' => 0.3, 'max_tokens' => 4096]
+     *                            Example: ['temperature' => 0.3, 'max_tokens' => 4096]
      * @param  array  $requestOptions  Pipeline-level options from the API request.
-     *   Example: ['session_id' => '01J...', 'think' => true]
+     *                                 Example: ['session_id' => '01J...', 'think' => true]
      * @return array Options with `think` conditionally included.
-     *   Example: ['temperature' => 0.3, 'max_tokens' => 4096, 'think' => false]
+     *               Example: ['temperature' => 0.3, 'max_tokens' => 4096, 'think' => false]
      */
     private function buildLlmOptions(array $overrides, array $requestOptions = []): array
     {
@@ -1201,7 +1191,7 @@ $scope = $this->responseBuilder->buildFilterNote($autoFilters);
      *
      * @param  array  $options  Request options. Example: ["session_id" => "01J...", "llm_model_id" => "01J..."]
      * @return LLMServiceInterface The configured LLM service
-     *   Example: new LLMService(provider: new OllamaLLMProvider(...), maxContextTokens: 4000)
+     *                             Example: new LLMService(provider: new OllamaLLMProvider(...), maxContextTokens: 4000)
      */
     private function resolveLLM(array $options): LLMServiceInterface
     {

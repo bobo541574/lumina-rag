@@ -28,8 +28,6 @@ class UserModuleServiceProvider extends ServiceProvider
      *
      * Binds AuthServiceInterface as a singleton to AuthService::class
      * for automatic dependency injection in controllers.
-     *
-     * @return void
      */
     public function register(): void
     {
@@ -41,8 +39,6 @@ class UserModuleServiceProvider extends ServiceProvider
      *
      * Checks if the module is enabled via config. When enabled, loads
      * the database migrations and auth routes.
-     *
-     * @return void
      */
     public function boot(): void
     {

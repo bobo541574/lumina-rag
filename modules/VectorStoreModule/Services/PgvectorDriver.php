@@ -232,13 +232,24 @@ class PgvectorDriver implements VectorStoreInterface
      * (only letters, digits, spaces, &, |, !, (, ), and ' are allowed).
      * This prevents SQL syntax errors from user-generated boolean queries.
      *
-     * @param string $query Raw boolean query. Example: "term1 & (term2 OR term3)"
+     * @param  string  $query  Raw boolean query. Example: "term1 & (term2 OR term3)"
      * @return string Sanitised query. Example: "term1 & (term2 OR term3)"
      */
     private function sanitiseBooleanFts(string $query): string
     {
+        // Keep only valid tsquery characters
         $sanitised = preg_replace('/[^a-zA-Z0-9\s&\|!()\'\x{1000}-\x{109F}]/u', ' ', $query);
         $sanitised = trim(preg_replace('/\s+/', ' ', $sanitised));
+
+        // Insert & between adjacent word tokens separated only by whitespace.
+        // This prevents tsquery syntax errors when sanitisation replaces
+        // special characters (e.g. hyphens in "2026-04-30") with spaces,
+        // producing "2026 04 30" which PostgreSQL cannot parse.
+        $sanitised = preg_replace(
+            '/([a-zA-Z0-9\x{1000}-\x{109F}])\s+(?=[a-zA-Z0-9\x{1000}-\x{109F}])/u',
+            '$1 & ',
+            $sanitised,
+        );
 
         if ($sanitised === '' || $sanitised === '()') {
             return '';

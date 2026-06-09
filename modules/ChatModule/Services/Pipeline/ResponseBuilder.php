@@ -16,7 +16,8 @@ class ResponseBuilder
     {
         $this->sessionManager = $sessionManager;
     }
-public function buildRefusalResponse (ChatSession $session, string $question = '', array $filters = []): array
+
+    public function buildRefusalResponse(ChatSession $session, string $question = '', array $filters = []): array
     {
         $isBurmese = preg_match('/[\x{1000}-\x{109F}]/u', $question) === 1;
 
@@ -99,7 +100,8 @@ public function buildRefusalResponse (ChatSession $session, string $question = '
             ],
         ];
     }
-public function buildSystemPrompt (string $confidence, bool $hasOldDocuments = false): string
+
+    public function buildSystemPrompt(string $confidence, bool $hasOldDocuments = false): string
     {
         $prompt = 'You are a precise document-answering assistant. Follow these rules strictly:
 
@@ -142,7 +144,8 @@ public function buildSystemPrompt (string $confidence, bool $hasOldDocuments = f
 
         return $prompt;
     }
-public function buildFilterNote (array $filters): string
+
+    public function buildFilterNote(array $filters): string
     {
         $lines = [];
 
@@ -173,7 +176,8 @@ public function buildFilterNote (array $filters): string
 
         return "Search scope:\n".implode("\n", $lines);
     }
-public function buildSources (array $chunks): array
+
+    public function buildSources(array $chunks): array
     {
         return array_map(fn (object $chunk): array => [
             'document_id' => $chunk->document_id,
@@ -184,6 +188,4 @@ public function buildSources (array $chunks): array
             'excerpt' => mb_substr((string) $chunk->content, 0, 200),
         ], $chunks);
     }
-
-
 }

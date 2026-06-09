@@ -32,8 +32,6 @@ class LLMModuleServiceProvider extends ServiceProvider
      * Creates two singletons:
      * 1. LLMProviderInterface — concrete provider based on config
      * 2. LLMServiceInterface — prompt-assembly service wrapping the provider
-     *
-     * @return void
      */
     public function register(): void
     {
@@ -65,8 +63,6 @@ class LLMModuleServiceProvider extends ServiceProvider
      *
      * Checks if the module is enabled via config and returns early if not.
      * No additional boot-time actions are currently performed.
-     *
-     * @return void
      */
     public function boot(): void
     {

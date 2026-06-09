@@ -8,7 +8,7 @@ use Carbon\Carbon;
 
 class ChunkProcessor
 {
-public function applyDynamicThreshold (array $chunks, array $filters = [], float $similarityThreshold = 0.65, int $topK = 5): array
+    public function applyDynamicThreshold(array $chunks, array $filters = [], float $similarityThreshold = 0.65, int $topK = 5): array
     {
         if ($chunks === []) {
             return [];
@@ -56,7 +56,8 @@ public function applyDynamicThreshold (array $chunks, array $filters = [], float
 
         return $filtered;
     }
-public function applyMMR (array $chunks, bool $mmrEnabled = true, int $topK = 5, float $mmrLambda = 0.7): array
+
+    public function applyMMR(array $chunks, bool $mmrEnabled = true, int $topK = 5, float $mmrLambda = 0.7): array
     {
         if (! $mmrEnabled || count($chunks) <= 1) {
             return $chunks;
@@ -101,7 +102,8 @@ public function applyMMR (array $chunks, bool $mmrEnabled = true, int $topK = 5,
 
         return $selected;
     }
-public function assessConfidence (array $chunks): string
+
+    public function assessConfidence(array $chunks): string
     {
         $aboveThreshold = count($chunks);
 
@@ -111,7 +113,8 @@ public function assessConfidence (array $chunks): string
             default => 'none',
         };
     }
-public function reorderForLostInTheMiddle (array $chunks): array
+
+    public function reorderForLostInTheMiddle(array $chunks): array
     {
         if (count($chunks) <= 2) {
             return $chunks;
@@ -129,7 +132,8 @@ public function reorderForLostInTheMiddle (array $chunks): array
 
         return $ordered;
     }
-public function hasOldDocuments (array $chunks): bool
+
+    public function hasOldDocuments(array $chunks): bool
     {
         $oneYearAgo = now()->subYear();
 
@@ -149,6 +153,4 @@ public function hasOldDocuments (array $chunks): bool
 
         return false;
     }
-
-
 }

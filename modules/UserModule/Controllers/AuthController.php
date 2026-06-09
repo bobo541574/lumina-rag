@@ -21,7 +21,7 @@ use Modules\UserModule\Requests\RegisterRequest;
  * Errors from the service layer are caught and returned as JSON error responses
  * with appropriate HTTP status codes (201, 401, 409, 500).
  *
- * @param AuthServiceInterface $authService The authentication service implementation. Example: app(AuthServiceInterface::class)
+ * @param  AuthServiceInterface  $authService  The authentication service implementation. Example: app(AuthServiceInterface::class)
  *
  * @throws \Throwable Caught and converted to JSON error responses in each method
  */

@@ -22,9 +22,9 @@ use Modules\LLMModule\Contracts\LLMProviderInterface;
  * Requires a running Ollama server (default http://localhost:11434) with
  * the configured model pulled. No authentication is needed for local instances.
  *
- * @param string $baseUrl Ollama server base URL. Example: "http://localhost:11434"
- * @param string $model LLM model name. Example: "llama3.2"
- * @param int $timeout cURL request timeout in seconds. Example: 60
+ * @param  string  $baseUrl  Ollama server base URL. Example: "http://localhost:11434"
+ * @param  string  $model  LLM model name. Example: "llama3.2"
+ * @param  int  $timeout  cURL request timeout in seconds. Example: 60
  *
  * @throws \RuntimeException On API failure, empty response, or unexpected structure
  */
@@ -270,7 +270,7 @@ class OllamaLLMProvider implements LLMProviderInterface
      * think=false in the Ollama payload unless explicitly overridden via options.
      *
      * @return bool True if the model name contains "qwen" (case-insensitive).
-     *   Example: true for "qwen3.5:9b" or "sorc/qwen3.5-claude-4.6-opus:9b"
+     *              Example: true for "qwen3.5:9b" or "sorc/qwen3.5-claude-4.6-opus:9b"
      */
     private function isQwenModel(): bool
     {

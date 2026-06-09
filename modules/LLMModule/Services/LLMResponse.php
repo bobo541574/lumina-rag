@@ -17,12 +17,12 @@ use Modules\LLMModule\Contracts\LLMResponseInterface;
  * and consumed by LLMService and the RAG pipeline for downstream processing,
  * logging, and cost tracking.
  *
- * @param string $content The generated text. Example: "The answer is 42."
- * @param int $promptTokens Tokens used in the prompt. Example: 150
- * @param int $completionTokens Tokens used in the response. Example: 50
- * @param int $totalTokens Total tokens (prompt + completion). Example: 200
- * @param string $model Model identifier. Example: "gpt-4o"
- * @param string|null $finishReason Reason completion ended. Example: "stop"
+ * @param  string  $content  The generated text. Example: "The answer is 42."
+ * @param  int  $promptTokens  Tokens used in the prompt. Example: 150
+ * @param  int  $completionTokens  Tokens used in the response. Example: 50
+ * @param  int  $totalTokens  Total tokens (prompt + completion). Example: 200
+ * @param  string  $model  Model identifier. Example: "gpt-4o"
+ * @param  string|null  $finishReason  Reason completion ended. Example: "stop"
  */
 class LLMResponse implements LLMResponseInterface
 {

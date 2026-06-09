@@ -20,9 +20,9 @@ use Modules\LLMModule\Contracts\LLMProviderInterface;
  * arrive. The non-streaming path uses exponential-backoff retry (3 attempts)
  * for transient server errors.
  *
- * @param string $apiKey OpenAI API key for bearer authentication. Example: "sk-proj-..."
- * @param string $model LLM model identifier. Example: "gpt-4o"
- * @param int $timeout cURL request timeout in seconds. Example: 60
+ * @param  string  $apiKey  OpenAI API key for bearer authentication. Example: "sk-proj-..."
+ * @param  string  $model  LLM model identifier. Example: "gpt-4o"
+ * @param  int  $timeout  cURL request timeout in seconds. Example: 60
  *
  * @throws \RuntimeException On API failure, empty response, or unexpected structure
  */

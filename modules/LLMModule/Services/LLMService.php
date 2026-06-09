@@ -22,8 +22,8 @@ use Modules\LLMModule\Contracts\LLMServiceInterface;
  *
  * Supports both synchronous (complete) and streaming (completeStream) modes.
  *
- * @param LLMProviderInterface $provider The underlying LLM provider. Example: mock(LLMProviderInterface::class)
- * @param int $maxContextTokens Maximum tokens for the assembled context. Example: 4000
+ * @param  LLMProviderInterface  $provider  The underlying LLM provider. Example: mock(LLMProviderInterface::class)
+ * @param  int  $maxContextTokens  Maximum tokens for the assembled context. Example: 4000
  *
  * @throws \RuntimeException Propagated from provider on API failures
  */
