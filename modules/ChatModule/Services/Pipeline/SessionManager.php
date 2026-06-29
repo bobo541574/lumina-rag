@@ -9,6 +9,13 @@ use Modules\ChatModule\Models\ChatSession;
 
 class SessionManager
 {
+    private int $sessionTimeoutHours;
+
+    public function __construct()
+    {
+        $this->sessionTimeoutHours = (int) config('rag.chat.session_timeout_hours', 24);
+    }
+
     public function resolveSession(?string $sessionId, ?string $userId = null): ChatSession
     {
         if ($sessionId !== null) {
@@ -25,7 +32,7 @@ class SessionManager
             if ($session->trashed()) {
                 throw new \RuntimeException('Chat session has been deleted.');
             }
-            if ($session->last_activity_at < now()->subHours(24)) {
+            if ($session->last_activity_at < now()->subHours($this->sessionTimeoutHours)) {
                 throw new \RuntimeException('Chat session has expired. Please start a new chat.');
             }
             $session->update(['last_activity_at' => now()]);

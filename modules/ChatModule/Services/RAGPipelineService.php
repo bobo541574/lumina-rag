@@ -19,6 +19,7 @@ use Modules\ChatModule\Services\Pipeline\FilterExtractor;
 use Modules\ChatModule\Services\Pipeline\FtsQueryBuilder;
 use Modules\ChatModule\Services\Pipeline\QueryRewriterService;
 use Modules\ChatModule\Services\Pipeline\ResponseBuilder;
+use Modules\ChatModule\Services\Pipeline\RewrittenQuery;
 use Modules\ChatModule\Services\Pipeline\SessionManager;
 use Modules\DocumentModule\Models\Document;
 use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
@@ -97,6 +98,10 @@ class RAGPipelineService implements RAGPipelineServiceInterface
     private float $mmrLambda;
 
     private int $maxTokens;
+
+    private float $minInitialThreshold;
+
+    private int $historyWindow;
 
     private float $temperature;
 
@@ -178,6 +183,8 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         bool $mmrEnabled = true,
         float $mmrLambda = 0.7,
         int $maxTokens = 4096,
+        float $minInitialThreshold = 0.20,
+        int $historyWindow = 4,
         ?string $userId = null,
         ?string $activeEmbeddingModelId = null,
         ?string $activeLlmModelId = null,
@@ -204,6 +211,8 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $this->mmrEnabled = $mmrEnabled;
         $this->mmrLambda = $mmrLambda;
         $this->maxTokens = $maxTokens;
+        $this->minInitialThreshold = $minInitialThreshold;
+        $this->historyWindow = $historyWindow;
         $this->temperature = (float) config('rag.llm.temperature', 0.3);
         $this->think = null;
         $this->userId = $userId;
@@ -272,6 +281,19 @@ class RAGPipelineService implements RAGPipelineServiceInterface
                 $this->think = (bool) $s['think'];
             }
         }
+
+        // Override the default LLM with the active model's provider + timeout
+        if ($this->activeLlmModel !== null) {
+            $this->llm = new LLMService(
+                provider: $this->providerFactory->createLLMProvider($this->activeLlmModel),
+                maxContextTokens: $this->activeLlmModel->max_context_tokens ?? (int) config('rag.llm.max_context_tokens', 4000),
+            );
+        }
+
+        // Override the default embedder with the active model's provider + settings
+        if ($this->activeEmbeddingModel !== null) {
+            $this->embedder = $this->providerFactory->createEmbeddingService($this->activeEmbeddingModel);
+        }
     }
 
     /**
@@ -299,170 +321,16 @@ class RAGPipelineService implements RAGPipelineServiceInterface
     {
         set_time_limit(300);
         $start = microtime(true);
-        $question = $this->normalizeQuestion($question);
-        $session = $this->sessionManager->resolveSession($options['session_id'] ?? null, $options['user_id'] ?? $this->userId);
-        $this->sessionManager->checkMessageLimit($session, $this->maxMessagesPerSession);
-
-        $autoFilters = $this->filterExtractor->extract($question);
-
-        // Rewrite query for improved search: spelling correction, date
-        // expansion, synonym expansion, and boolean FTS query generation.
-        $rewritten = $this->queryRewriter->rewrite($question);
-
-        // Expand aliases for search: append canonical terms so vector search
-        // (via expandText and expandQuery in the LLM query expansion step)
-        // benefits from Burmese→English term mappings. The FTS path uses the
-        // original question (not alias-expanded) to avoid introducing canonical
-        // terms that don't appear in document chunk content.
-        $searchQuestion = $this->termAliasService->expandText($rewritten->embeddingText);
-        $ftsQuery = $this->ftsQueryBuilder->refine($rewritten->ftsQuery ?? $question, $autoFilters);
-        $ftsQuery = $this->termAliasService->expandFtsQuery($ftsQuery);
-
-        $this->sessionManager->saveUserMessage($session, $question);
-
-        // Resolve relative time references (yesterday, today, …) to literal
-        // dates so the LLM doesn't have to guess the current date.
-        $llmQuestion = $this->filterExtractor->resolveTimeReferences($question);
-
-        // Inherit filters from the previous exchange when the current
-        // question doesn't specify any user or project (e.g. follow-ups).
-        $prevAssistantMsg = ChatMessage::where('session_id', $session->id)
-            ->where('role', 'assistant')
-            ->orderBy('created_at', 'desc')
-            ->first();
-
-        $wasRefusal = $prevAssistantMsg !== null && empty($prevAssistantMsg->sources);
-
-        $inherited = false;
-        if (empty($autoFilters['user_ids']) && empty($autoFilters['project'])) {
-            $prevUserMsg = ChatMessage::where('session_id', $session->id)
-                ->where('role', 'user')
-                ->orderBy('created_at', 'desc')
-                ->skip(1)
-                ->first(['content']);
-            if ($prevUserMsg !== null) {
-                $inherited = true;
-                $inheritedFilters = $this->filterExtractor->extract($prevUserMsg->content);
-
-                // Always inherit user and project
-                if (isset($inheritedFilters['user_ids'])) {
-                    $autoFilters['user_ids'] = $inheritedFilters['user_ids'];
-                }
-                if (isset($inheritedFilters['project'])) {
-                    $autoFilters['project'] = $inheritedFilters['project'];
-                }
-
-                // Inherit dates ONLY if the previous answer was successful.
-                // If it was a refusal, the previous dates likely caused the failure,
-                // and the user is asking for alternatives (e.g. "what do you have then?").
-                if (! $wasRefusal) {
-                    if (isset($inheritedFilters['report_date_from']) && ! isset($autoFilters['report_date_from'])) {
-                        $autoFilters['report_date_from'] = $inheritedFilters['report_date_from'];
-                        $autoFilters['report_date_to'] = $inheritedFilters['report_date_to'];
-                    }
-                }
-            }
-        }
-
-        // When the question had no filters of its own, also restrict the
-        // search to the same documents cited in the previous answer. This
-        // keeps follow-ups like "ဘာတွေတင်ထားလဲ?" on the exact same report.
-        if ($inherited && ! $wasRefusal && $prevAssistantMsg !== null) {
-            $sources = $prevAssistantMsg->sources;
-            $ids = [];
-            if (is_array($sources)) {
-                foreach ($sources as $s) {
-                    if (isset($s['document_id'])) {
-                        $ids[] = $s['document_id'];
-                    }
-                }
-            }
-            if ($ids !== []) {
-                $autoFilters['document_ids'] = $ids;
-            }
-        }
-
-        $llm = $this->resolveLLM($options);
-
-        // --- Dynamic Model Selection ---
-        // If filters specifically target documents using a different embedding model,
-        // use that model for the question embedding to ensure compatibility.
-        $targetModel = $this->activeEmbeddingModel;
-        $embedder = $this->embedder;
-
-        if (! empty($autoFilters['user_ids']) || ! empty($autoFilters['project']) || ! empty($autoFilters['report_date_from'])) {
-            try {
-                $modelQuery = Document::query();
-                if (! empty($autoFilters['user_ids'])) {
-                    $modelQuery->whereIn('user_id', (array) $autoFilters['user_ids']);
-                }
-                if (! empty($autoFilters['project'])) {
-                    $modelQuery->where('project', $autoFilters['project']);
-                }
-                if (! empty($autoFilters['report_date_from'])) {
-                    $modelQuery->where('report_date', '>=', $autoFilters['report_date_from']);
-                }
-                if (! empty($autoFilters['report_date_to'])) {
-                    $modelQuery->where('report_date', '<=', $autoFilters['report_date_to']);
-                }
-
-                $usedModelIds = $modelQuery->whereNotNull('embedding_model_id')
-                    ->distinct()
-                    ->pluck('embedding_model_id');
-
-                if ($usedModelIds->count() === 1) {
-                    $requiredId = $usedModelIds->first();
-                    if ($this->activeEmbeddingModel === null || $this->activeEmbeddingModel->id !== $requiredId) {
-                        $targetModel = AiModel::find($requiredId);
-                        if ($targetModel !== null) {
-                            $provider = $this->providerFactory->createEmbeddingProvider($targetModel);
-                            $embedder = new EmbeddingService(
-                                $provider,
-                                $this->cache,
-                                (int) ($targetModel->settings['cache_ttl'] ?? 86400)
-                            );
-                        }
-                    }
-                }
-            } catch (\Throwable) {
-                // Fallback to default model if anything fails
-            }
-        }
+        $ctx = $this->buildPipelineContext($question, $options);
+        ['question' => $question, 'session' => $session, 'autoFilters' => $autoFilters,
+            'rewritten' => $rewritten, 'searchQuestion' => $searchQuestion, 'ftsQuery' => $ftsQuery,
+            'llmQuestion' => $llmQuestion, 'llm' => $llm, 'targetModel' => $targetModel,
+            'embedder' => $embedder] = $ctx;
 
         $searchQueries = $this->expandQuery($searchQuestion, $llm, $options);
-
-        $allChunks = [];
-        $t0 = microtime(true);
-
-        foreach ($searchQueries as $q) {
-            $questionVector = $embedder->embed($q);
-            // Use a very low threshold for the initial search to allow
-            // applyDynamicThreshold (elbow method) to find the best gap.
-            $minThreshold = 0.20;
-            $filters = array_merge($autoFilters, $options['document_filter'] ?? []);
-            $filters['similarity_threshold'] = $minThreshold;
-            $filters['model_name'] = $targetModel?->model ?? config('rag.embedding.model', 'text-embedding-3-small');
-            if ($rewritten->ftsQuery !== null) {
-                $filters['boolean_fts_query'] = $rewritten->ftsQuery;
-            }
-
-            $chunks = $this->searchMode === 'hybrid'
-                ? $this->vectorStore->searchHybrid($ftsQuery, $questionVector, $this->topK * 3, $filters)
-                : $this->vectorStore->search($questionVector, $this->topK * 3, $filters);
-
-            foreach ($chunks as $chunk) {
-                $key = $chunk->chunk_id;
-                if (! isset($allChunks[$key])) {
-                    $allChunks[$key] = $chunk;
-                }
-            }
-        }
-
-        $searchTime = (microtime(true) - $t0) * 1000;
-
-        usort($allChunks, fn (object $a, object $b): int => (float) $b->similarity_score <=> (float) $a->similarity_score);
-        $chunks = $this->chunkProcessor->applyDynamicThreshold(array_values($allChunks), $autoFilters, $this->similarityThreshold, $this->topK);
-        $chunks = $this->chunkProcessor->applyMMR($chunks, $this->mmrEnabled, $this->topK, $this->mmrLambda);
+        ['chunks' => $chunks, 'searchTime' => $searchTime] = $this->runSearchQueries(
+            $searchQueries, $embedder, $targetModel, $ftsQuery, $rewritten, $autoFilters, $options
+        );
 
         if ($chunks === []) {
             $answer = $this->responseBuilder->buildRefusalResponse($session, $question, $autoFilters);
@@ -490,7 +358,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             $history = ChatMessage::where('session_id', $session->id)
                 ->orderBy('created_at', 'desc')
                 ->skip(1)
-                ->take(4)
+                ->take($this->historyWindow)
                 ->get(['role', 'content'])
                 ->reverse();
             $conversation = '';
@@ -582,127 +450,11 @@ class RAGPipelineService implements RAGPipelineServiceInterface
     {
         set_time_limit(300);
         $start = microtime(true);
-        $question = $this->normalizeQuestion($question);
-        $session = $this->sessionManager->resolveSession($options['session_id'] ?? null, $options['user_id'] ?? $this->userId);
-        $this->sessionManager->checkMessageLimit($session, $this->maxMessagesPerSession);
-
-        $autoFilters = $this->filterExtractor->extract($question);
-
-        $rewritten = $this->queryRewriter->rewrite($question);
-
-        $searchQuestion = $this->termAliasService->expandText($rewritten->embeddingText);
-        $ftsQuery = $this->ftsQueryBuilder->refine($rewritten->ftsQuery ?? $question, $autoFilters);
-        $ftsQuery = $this->termAliasService->expandFtsQuery($ftsQuery);
-
-        $this->sessionManager->saveUserMessage($session, $question);
-
-        // Resolve relative time references (yesterday, today, …) to literal
-        // dates so the LLM doesn't have to guess the current date.
-        $llmQuestion = $this->filterExtractor->resolveTimeReferences($question);
-
-        // Inherit filters from the previous exchange when the current
-        // question doesn't specify any user or project (e.g. follow-ups).
-        $prevAssistantMsg = ChatMessage::where('session_id', $session->id)
-            ->where('role', 'assistant')
-            ->orderBy('created_at', 'desc')
-            ->first();
-
-        $wasRefusal = $prevAssistantMsg !== null && empty($prevAssistantMsg->sources);
-
-        $inherited = false;
-        if (empty($autoFilters['user_ids']) && empty($autoFilters['project'])) {
-            $prevUserMsg = ChatMessage::where('session_id', $session->id)
-                ->where('role', 'user')
-                ->orderBy('created_at', 'desc')
-                ->skip(1)
-                ->first(['content']);
-            if ($prevUserMsg !== null) {
-                $inherited = true;
-                $inheritedFilters = $this->filterExtractor->extract($prevUserMsg->content);
-
-                // Always inherit user and project
-                if (isset($inheritedFilters['user_ids'])) {
-                    $autoFilters['user_ids'] = $inheritedFilters['user_ids'];
-                }
-                if (isset($inheritedFilters['project'])) {
-                    $autoFilters['project'] = $inheritedFilters['project'];
-                }
-
-                // Inherit dates ONLY if the previous answer was successful.
-                // If it was a refusal, the previous dates likely caused the failure,
-                // and the user is asking for alternatives (e.g. "what do you have then?").
-                if (! $wasRefusal) {
-                    if (isset($inheritedFilters['report_date_from']) && ! isset($autoFilters['report_date_from'])) {
-                        $autoFilters['report_date_from'] = $inheritedFilters['report_date_from'];
-                        $autoFilters['report_date_to'] = $inheritedFilters['report_date_to'];
-                    }
-                }
-            }
-        }
-
-        // When the question had no filters of its own, also restrict the
-        // search to the same documents cited in the previous answer.
-        if ($inherited && ! $wasRefusal && $prevAssistantMsg !== null) {
-            $sources = $prevAssistantMsg->sources;
-            $ids = [];
-            if (is_array($sources)) {
-                foreach ($sources as $s) {
-                    if (isset($s['document_id'])) {
-                        $ids[] = $s['document_id'];
-                    }
-                }
-            }
-            if ($ids !== []) {
-                $autoFilters['document_ids'] = $ids;
-            }
-        }
-
-        $llm = $this->resolveLLM($options);
-
-        // --- Dynamic Model Selection ---
-        // If filters specifically target documents using a different embedding model,
-        // use that model for the question embedding to ensure compatibility.
-        $targetModel = $this->activeEmbeddingModel;
-        $embedder = $this->embedder;
-
-        if (! empty($autoFilters['user_ids']) || ! empty($autoFilters['project']) || ! empty($autoFilters['report_date_from'])) {
-            try {
-                $modelQuery = Document::query();
-                if (! empty($autoFilters['user_ids'])) {
-                    $modelQuery->whereIn('user_id', (array) $autoFilters['user_ids']);
-                }
-                if (! empty($autoFilters['project'])) {
-                    $modelQuery->where('project', $autoFilters['project']);
-                }
-                if (! empty($autoFilters['report_date_from'])) {
-                    $modelQuery->where('report_date', '>=', $autoFilters['report_date_from']);
-                }
-                if (! empty($autoFilters['report_date_to'])) {
-                    $modelQuery->where('report_date', '<=', $autoFilters['report_date_to']);
-                }
-
-                $usedModelIds = $modelQuery->whereNotNull('embedding_model_id')
-                    ->distinct()
-                    ->pluck('embedding_model_id');
-
-                if ($usedModelIds->count() === 1) {
-                    $requiredId = $usedModelIds->first();
-                    if ($this->activeEmbeddingModel === null || $this->activeEmbeddingModel->id !== $requiredId) {
-                        $targetModel = AiModel::find($requiredId);
-                        if ($targetModel !== null) {
-                            $provider = $this->providerFactory->createEmbeddingProvider($targetModel);
-                            $embedder = new EmbeddingService(
-                                $provider,
-                                $this->cache,
-                                (int) ($targetModel->settings['cache_ttl'] ?? 86400)
-                            );
-                        }
-                    }
-                }
-            } catch (\Throwable) {
-                // Fallback to default model if anything fails
-            }
-        }
+        $ctx = $this->buildPipelineContext($question, $options);
+        ['question' => $question, 'session' => $session, 'autoFilters' => $autoFilters,
+            'rewritten' => $rewritten, 'searchQuestion' => $searchQuestion, 'ftsQuery' => $ftsQuery,
+            'llmQuestion' => $llmQuestion, 'llm' => $llm, 'targetModel' => $targetModel,
+            'embedder' => $embedder] = $ctx;
 
         $isBurmese = preg_match('/[\x{1000}-\x{109F}]/u', $question) === 1;
 
@@ -721,8 +473,6 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         ]);
 
         $searchQueries = $this->expandQuery($searchQuestion, $llm, $options);
-        $allChunks = [];
-        $t0 = microtime(true);
 
         yield json_encode([
             'type' => 'status',
@@ -730,35 +480,9 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             'message' => $isBurmese ? 'စာရွက်စာတမ်းများတွင် ရှာဖွေနေသည်...' : 'Searching documents...',
         ]);
 
-        foreach ($searchQueries as $q) {
-            $questionVector = $embedder->embed($q);
-            // Use a very low threshold for the initial search to allow
-            // applyDynamicThreshold (elbow method) to find the best gap.
-            $minThreshold = 0.20;
-            $filters = array_merge($autoFilters, $options['document_filter'] ?? []);
-            $filters['similarity_threshold'] = $minThreshold;
-            $filters['model_name'] = $targetModel?->model ?? config('rag.embedding.model', 'text-embedding-3-small');
-            if ($rewritten->ftsQuery !== null) {
-                $filters['boolean_fts_query'] = $rewritten->ftsQuery;
-            }
-
-            $chunks = $this->searchMode === 'hybrid'
-                ? $this->vectorStore->searchHybrid($ftsQuery, $questionVector, $this->topK * 3, $filters)
-                : $this->vectorStore->search($questionVector, $this->topK * 3, $filters);
-
-            foreach ($chunks as $chunk) {
-                $key = $chunk->chunk_id;
-                if (! isset($allChunks[$key])) {
-                    $allChunks[$key] = $chunk;
-                }
-            }
-        }
-
-        $searchTime = (microtime(true) - $t0) * 1000;
-
-        usort($allChunks, fn (object $a, object $b): int => (float) $b->similarity_score <=> (float) $a->similarity_score);
-        $chunks = $this->chunkProcessor->applyDynamicThreshold(array_values($allChunks), $autoFilters, $this->similarityThreshold, $this->topK);
-        $chunks = $this->chunkProcessor->applyMMR($chunks, $this->mmrEnabled, $this->topK, $this->mmrLambda);
+        ['chunks' => $chunks, 'searchTime' => $searchTime] = $this->runSearchQueries(
+            $searchQueries, $embedder, $targetModel, $ftsQuery, $rewritten, $autoFilters, $options
+        );
 
         if ($chunks === []) {
             $refusal = $this->responseBuilder->buildRefusalResponse($session, $question, $autoFilters);
@@ -796,7 +520,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             $history = ChatMessage::where('session_id', $session->id)
                 ->orderBy('created_at', 'desc')
                 ->skip(1)
-                ->take(4)
+                ->take($this->historyWindow)
                 ->get(['role', 'content'])
                 ->reverse();
             $conversation = '';
@@ -997,6 +721,192 @@ class RAGPipelineService implements RAGPipelineServiceInterface
      *                Example: "What reports were filed on 2026-05-16?"
 
     /**
+     * Build the shared pipeline context used by both ask() and askStream().
+     *
+     * Normalises the question, resolves the session, extracts filters, rewrites
+     * the query, saves the user message, resolves filter inheritance from the
+     * prior exchange, selects the LLM, and picks the correct embedding model.
+     * @return array{question: string, session: ChatSession, autoFilters: array, rewritten: RewrittenQuery, searchQuestion: string, ftsQuery: string, llmQuestion: string, llm: LLMServiceInterface, targetModel: AiModel|null, embedder: EmbeddingServiceInterface}
+     */
+    private function buildPipelineContext(string $question, array $options): array
+    {
+        $question = $this->normalizeQuestion($question);
+        $session = $this->sessionManager->resolveSession($options['session_id'] ?? null, $options['user_id'] ?? $this->userId);
+        $this->sessionManager->checkMessageLimit($session, $this->maxMessagesPerSession);
+
+        $autoFilters = $this->filterExtractor->extract($question);
+        $rewritten = $this->queryRewriter->rewrite($question);
+
+        $searchQuestion = $this->termAliasService->expandText($rewritten->embeddingText);
+        $ftsQuery = $this->ftsQueryBuilder->refine($rewritten->ftsQuery ?? $question, $autoFilters);
+        $ftsQuery = $this->termAliasService->expandFtsQuery($ftsQuery);
+
+        $this->sessionManager->saveUserMessage($session, $question);
+
+        $llmQuestion = $this->filterExtractor->resolveTimeReferences($question);
+
+        // Inherit filters from the previous exchange when the current
+        // question doesn't specify any user or project (e.g. follow-ups).
+        $prevAssistantMsg = ChatMessage::where('session_id', $session->id)
+            ->where('role', 'assistant')
+            ->orderBy('created_at', 'desc')
+            ->first();
+
+        $wasRefusal = $prevAssistantMsg !== null && empty($prevAssistantMsg->sources);
+
+        $inherited = false;
+        if (empty($autoFilters['user_ids']) && empty($autoFilters['project'])) {
+            $prevUserMsg = ChatMessage::where('session_id', $session->id)
+                ->where('role', 'user')
+                ->orderBy('created_at', 'desc')
+                ->skip(1)
+                ->first(['content']);
+            if ($prevUserMsg !== null) {
+                $inherited = true;
+                $inheritedFilters = $this->filterExtractor->extract($prevUserMsg->content);
+
+                if (isset($inheritedFilters['user_ids'])) {
+                    $autoFilters['user_ids'] = $inheritedFilters['user_ids'];
+                }
+                if (isset($inheritedFilters['project'])) {
+                    $autoFilters['project'] = $inheritedFilters['project'];
+                }
+
+                // Inherit dates only if the previous answer was not a refusal
+                if (! $wasRefusal) {
+                    if (isset($inheritedFilters['report_date_from']) && ! isset($autoFilters['report_date_from'])) {
+                        $autoFilters['report_date_from'] = $inheritedFilters['report_date_from'];
+                        $autoFilters['report_date_to'] = $inheritedFilters['report_date_to'];
+                    }
+                }
+            }
+        }
+
+        // Scope follow-ups to the same documents cited in the previous answer
+        if ($inherited && ! $wasRefusal && $prevAssistantMsg !== null) {
+            $sources = $prevAssistantMsg->sources;
+            $ids = [];
+            if (is_array($sources)) {
+                foreach ($sources as $s) {
+                    if (isset($s['document_id'])) {
+                        $ids[] = $s['document_id'];
+                    }
+                }
+            }
+            if ($ids !== []) {
+                $autoFilters['document_ids'] = $ids;
+            }
+        }
+
+        $llm = $this->resolveLLM($options);
+
+        // Select the embedding model that matches the targeted documents
+        $targetModel = $this->activeEmbeddingModel;
+        $embedder = $this->embedder;
+
+        if (! empty($autoFilters['user_ids']) || ! empty($autoFilters['project']) || ! empty($autoFilters['report_date_from'])) {
+            try {
+                $modelQuery = Document::query();
+                if (! empty($autoFilters['user_ids'])) {
+                    $modelQuery->whereIn('user_id', (array) $autoFilters['user_ids']);
+                }
+                if (! empty($autoFilters['project'])) {
+                    $modelQuery->where('project', $autoFilters['project']);
+                }
+                if (! empty($autoFilters['report_date_from'])) {
+                    $modelQuery->where('report_date', '>=', $autoFilters['report_date_from']);
+                }
+                if (! empty($autoFilters['report_date_to'])) {
+                    $modelQuery->where('report_date', '<=', $autoFilters['report_date_to']);
+                }
+
+                $usedModelIds = $modelQuery->whereNotNull('embedding_model_id')
+                    ->distinct()
+                    ->pluck('embedding_model_id');
+
+                if ($usedModelIds->count() === 1) {
+                    $requiredId = $usedModelIds->first();
+                    if ($this->activeEmbeddingModel === null || $this->activeEmbeddingModel->id !== $requiredId) {
+                        $targetModel = AiModel::find($requiredId);
+                        if ($targetModel !== null) {
+                            $provider = $this->providerFactory->createEmbeddingProvider($targetModel);
+                            $embedder = new EmbeddingService(
+                                $provider,
+                                $this->cache,
+                                (int) ($targetModel->settings['cache_ttl'] ?? 86400)
+                            );
+                        }
+                    }
+                }
+            } catch (\Throwable) {
+                // Fallback to default model if anything fails
+            }
+        }
+
+        return compact('question', 'session', 'autoFilters', 'rewritten', 'searchQuestion',
+            'ftsQuery', 'llmQuestion', 'llm', 'targetModel', 'embedder');
+    }
+
+    /**
+     * Execute search queries and apply threshold + MMR filtering.
+     *
+     * Runs each query through vector or hybrid search, deduplicates chunks,
+     * applies the elbow-method dynamic threshold, and applies MMR diversity.
+     *
+     * @param  array  $searchQueries  One or more query strings from expandQuery().
+     * @param  EmbeddingServiceInterface  $embedder  Resolved embedding service.
+     * @param  AiModel|null  $targetModel  Resolved embedding model (for model_name filter).
+     * @param  string  $ftsQuery  Refined FTS query string.
+     * @param  RewrittenQuery  $rewritten  Rewritten query (for boolean_fts_query).
+     * @param  array  $autoFilters  Extracted + inherited filters.
+     * @param  array  $options  Request options (document_filter override, etc.).
+     * @return array{chunks: array, searchTime: float}
+     */
+    private function runSearchQueries(
+        array $searchQueries,
+        EmbeddingServiceInterface $embedder,
+        ?AiModel $targetModel,
+        string $ftsQuery,
+        RewrittenQuery $rewritten,
+        array $autoFilters,
+        array $options,
+    ): array {
+        $allChunks = [];
+        $t0 = microtime(true);
+
+        foreach ($searchQueries as $q) {
+            $questionVector = $embedder->embed($q);
+            $filters = array_merge($autoFilters, $options['document_filter'] ?? []);
+            $filters['similarity_threshold'] = $this->minInitialThreshold;
+            $filters['model_name'] = $targetModel?->model ?? config('rag.embedding.model', 'text-embedding-3-small');
+            if ($rewritten->ftsQuery !== null) {
+                $filters['boolean_fts_query'] = $rewritten->ftsQuery;
+            }
+
+            $chunks = $this->searchMode === 'hybrid'
+                ? $this->vectorStore->searchHybrid($ftsQuery, $questionVector, $this->topK * 3, $filters)
+                : $this->vectorStore->search($questionVector, $this->topK * 3, $filters);
+
+            foreach ($chunks as $chunk) {
+                $key = $chunk->chunk_id;
+                if (! isset($allChunks[$key])) {
+                    $allChunks[$key] = $chunk;
+                }
+            }
+        }
+
+        $searchTime = (microtime(true) - $t0) * 1000;
+
+        usort($allChunks, fn (object $a, object $b): int => (float) $b->similarity_score <=> (float) $a->similarity_score);
+        $chunks = $this->chunkProcessor->applyDynamicThreshold(
+            array_values($allChunks), $autoFilters, $this->similarityThreshold, $this->topK
+        );
+        $chunks = $this->chunkProcessor->applyMMR($chunks, $this->mmrEnabled, $this->topK, $this->mmrLambda);
+
+        return ['chunks' => $chunks, 'searchTime' => $searchTime];
+    }
+
+    /**
      * Expand a search query into multiple reformulations
      *
      * When query expansion is enabled, asks the LLM to generate
@@ -1004,6 +914,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
      * to improve document retrieval recall. The original question is
      * prepended as the first query. If the LLM call fails, falls back
      * to returning only the original question.
+     *
      * @return array<string> Array of query strings, with the original first.
      *                       Example: ["Q3 revenue report", "third quarter revenue", "Q3 financial results"]
      */
@@ -1177,6 +1088,12 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             $overrides['think'] = (bool) $requestOptions['think'];
         } elseif ($this->think !== null) {
             $overrides['think'] = $this->think;
+        }
+
+        if ($this->activeLlmModel !== null && $this->activeLlmModel->max_context_tokens !== null) {
+            $overrides['num_ctx'] = (int) $this->activeLlmModel->max_context_tokens;
+        } else {
+            $overrides['num_ctx'] = (int) config('rag.llm.max_context_tokens', 32768);
         }
 
         return $overrides;

@@ -88,6 +88,10 @@ class OllamaLLMProvider implements LLMProviderInterface
             $payload['options']['num_predict'] = $options['max_tokens'];
         }
 
+        if (isset($options['num_ctx'])) {
+            $payload['options']['num_ctx'] = (int) $options['num_ctx'];
+        }
+
         if (isset($options['think'])) {
             $payload['think'] = (bool) $options['think'];
         } elseif ($this->isQwenModel()) {
@@ -139,6 +143,10 @@ class OllamaLLMProvider implements LLMProviderInterface
 
         if (isset($options['max_tokens'])) {
             $payload['options']['num_predict'] = $options['max_tokens'];
+        }
+
+        if (isset($options['num_ctx'])) {
+            $payload['options']['num_ctx'] = (int) $options['num_ctx'];
         }
 
         if (isset($options['think'])) {

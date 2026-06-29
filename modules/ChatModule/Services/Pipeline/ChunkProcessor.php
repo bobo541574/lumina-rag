@@ -8,6 +8,22 @@ use Carbon\Carbon;
 
 class ChunkProcessor
 {
+    private float $gapSignificance;
+
+    private float $filteredBase;
+
+    private float $scoreScaling;
+
+    private float $fallbackMin;
+
+    public function __construct()
+    {
+        $this->gapSignificance = (float) config('rag.search.threshold.gap_significance', 0.15);
+        $this->filteredBase = (float) config('rag.search.threshold.filtered_base', 0.45);
+        $this->scoreScaling = (float) config('rag.search.threshold.score_scaling', 0.85);
+        $this->fallbackMin = (float) config('rag.search.threshold.fallback_min', 0.25);
+    }
+
     public function applyDynamicThreshold(array $chunks, array $filters = [], float $similarityThreshold = 0.65, int $topK = 5): array
     {
         if ($chunks === []) {
@@ -33,14 +49,14 @@ class ChunkProcessor
 
         $baseThreshold = $similarityThreshold;
         if (! empty($filters['user_ids']) || ! empty($filters['project']) || ! empty($filters['report_date_from'])) {
-            $baseThreshold = 0.45;
+            $baseThreshold = $this->filteredBase;
         }
 
         $cutoff = $baseThreshold;
-        if ($maxGap > 0.15) {
+        if ($maxGap > $this->gapSignificance) {
             $cutoff = max($cutoff, $scores[$gapIndex + 1]);
         } else {
-            $scaled = (float) $scores[0] * 0.85;
+            $scaled = (float) $scores[0] * $this->scoreScaling;
             $cutoff = max($cutoff, $scaled);
         }
 
@@ -50,7 +66,7 @@ class ChunkProcessor
 
         $filtered = array_slice($filtered, 0, $topK);
 
-        if ($filtered === [] && $chunks !== [] && $scores[0] >= 0.25) {
+        if ($filtered === [] && $chunks !== [] && $scores[0] >= $this->fallbackMin) {
             return array_slice($chunks, 0, min(1, $topK));
         }
 
@@ -78,7 +94,7 @@ class ChunkProcessor
                 $maxSimToSelected = 0.0;
 
                 foreach ($selected as $sel) {
-                    $penalty = $cand->document_id === $sel->document_id ? 1.0 : 0.0;
+                    $penalty = $this->contentJaccard($cand->content ?? '', $sel->content ?? '');
                     if ($penalty > $maxSimToSelected) {
                         $maxSimToSelected = $penalty;
                     }
@@ -105,13 +121,27 @@ class ChunkProcessor
 
     public function assessConfidence(array $chunks): string
     {
-        $aboveThreshold = count($chunks);
+        if ($chunks === []) {
+            return 'none';
+        }
+
+        $avgSim = array_sum(array_map(fn (object $c): float => (float) $c->similarity_score, $chunks)) / count($chunks);
 
         return match (true) {
-            $aboveThreshold >= 3 => 'high',
-            $aboveThreshold >= 1 => 'low',
+            count($chunks) >= 3 && $avgSim >= 0.60 => 'high',
+            count($chunks) >= 1 => 'low',
             default => 'none',
         };
+    }
+
+    private function contentJaccard(string $a, string $b): float
+    {
+        $wA = array_unique(preg_split('/\s+/u', mb_strtolower($a), -1, PREG_SPLIT_NO_EMPTY));
+        $wB = array_unique(preg_split('/\s+/u', mb_strtolower($b), -1, PREG_SPLIT_NO_EMPTY));
+        $intersection = count(array_intersect($wA, $wB));
+        $union = count(array_unique(array_merge($wA, $wB)));
+
+        return $union > 0 ? $intersection / $union : 0.0;
     }
 
     public function reorderForLostInTheMiddle(array $chunks): array

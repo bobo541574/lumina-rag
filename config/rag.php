@@ -81,6 +81,21 @@ return [
         'mode' => env('RAG_SEARCH_MODE', 'hybrid'),
         'top_k' => (int) env('RAG_SEARCH_TOP_K', 5),
         'similarity_threshold' => (float) env('RAG_SEARCH_SIMILARITY_THRESHOLD', 0.65),
+        // Floor passed to the vector store on every search; the elbow method
+        // then finds the natural cutoff above this value.
+        'min_initial_threshold' => (float) env('RAG_SEARCH_MIN_INITIAL_THRESHOLD', 0.20),
+        // Reciprocal Rank Fusion rank constant (k in 1/(k+rank)).
+        'rrf_k' => (int) env('RAG_SEARCH_RRF_K', 60),
+        'threshold' => [
+            // Minimum gap between consecutive scores to trigger the elbow cut.
+            'gap_significance' => (float) env('RAG_THRESHOLD_GAP_SIGNIFICANCE', 0.15),
+            // Base threshold used when user/project/date filters narrow the search.
+            'filtered_base' => (float) env('RAG_THRESHOLD_FILTERED_BASE', 0.45),
+            // Scales the top score when no significant gap is found.
+            'score_scaling' => (float) env('RAG_THRESHOLD_SCORE_SCALING', 0.85),
+            // Minimum top-score required to return a single fallback chunk.
+            'fallback_min' => (float) env('RAG_THRESHOLD_FALLBACK_MIN', 0.25),
+        ],
         'query_expansion' => [
             'enabled' => (bool) env('RAG_QUERY_EXPANSION_ENABLED', false),
             'num_queries' => (int) env('RAG_QUERY_EXPANSION_NUM_QUERIES', 3),
@@ -113,6 +128,10 @@ return [
     'chat' => [
         'max_question_length' => (int) env('RAG_MAX_QUESTION_LENGTH', 1000),
         'max_messages_per_session' => (int) env('RAG_MAX_MESSAGES_PER_SESSION', 100),
+        // Hours of inactivity before a session is considered expired.
+        'session_timeout_hours' => (int) env('RAG_SESSION_TIMEOUT_HOURS', 24),
+        // Number of prior message pairs injected as conversation history for LLM context.
+        'history_window' => (int) env('RAG_CHAT_HISTORY_WINDOW', 4),
     ],
 
     /*

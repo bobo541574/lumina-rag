@@ -16,8 +16,9 @@ use Modules\SettingsModule\Models\TermAlias;
  * Populates embedding models (nomic, mxbai, MiniLM), LLM models (Qwen,
  * Gemma, Qwen Coder), and a curated set of Burmese→English term aliases.
  *
- * Uses firstOrCreate to be idempotent — safe to run multiple times without
- * creating duplicate entries. The seeder is organized into embedding model
+ * Uses updateOrCreate to be idempotent — safe to run multiple times without
+ * creating duplicate entries, and updates existing records with latest defaults.
+ * The seeder is organized into embedding model
  * seeding, LLM model seeding, and term alias seeding.
  */
 class SettingsModuleSeeder extends Seeder
@@ -27,7 +28,7 @@ class SettingsModuleSeeder extends Seeder
      *
      * Seeds embedding models (3 defaults), LLM models (4 defaults), and
      * term aliases (18 mappings covering project names, technical terms,
-     * and abbreviations). Each seed uses firstOrCreate to ensure idempotency.
+     * and abbreviations). Each seed uses updateOrCreate to ensure idempotency.
      */
     public function run(): void
     {
@@ -125,13 +126,13 @@ class SettingsModuleSeeder extends Seeder
                 'provider' => 'ollama',
                 'model' => 'gemma4:e4b',
                 'base_url' => 'http://localhost:11434',
-                'temperature' => 0.3,
+                'temperature' => 0.1,
                 'max_context_tokens' => 16384,
                 'timeout' => 120,
                 'is_active' => true,
                 'sort_order' => 3,
-                'description' => 'Google Gemma 4 — efficient 16K context. Great for concise Q&A and summarization.',
-                'settings' => ['max_tokens' => 4096],
+                'description' => 'Google Gemma 4 — efficient 16K context, low temperature for focused concise answers.',
+                'settings' => ['max_tokens' => 8192],
             ],
             [
                 'name' => 'Qwen 2.5 Coder',
@@ -206,14 +207,14 @@ class SettingsModuleSeeder extends Seeder
         ];
 
         foreach ($embeddingModels as $model) {
-            AiModel::firstOrCreate(
+            AiModel::updateOrCreate(
                 ['type' => 'embedding', 'model' => $model['model']],
                 $model,
             );
         }
 
         foreach ($llmModels as $model) {
-            AiModel::firstOrCreate(
+            AiModel::updateOrCreate(
                 ['type' => 'llm', 'model' => $model['model']],
                 $model,
             );

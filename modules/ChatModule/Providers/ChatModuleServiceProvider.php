@@ -74,6 +74,8 @@ class ChatModuleServiceProvider extends ServiceProvider
             mmrEnabled: (bool) config('rag.search.mmr.enabled', true),
             mmrLambda: (float) config('rag.search.mmr.lambda', 0.7),
             maxTokens: (int) config('rag.llm.max_tokens', 4096),
+            minInitialThreshold: (float) config('rag.search.min_initial_threshold', 0.20),
+            historyWindow: (int) config('rag.chat.history_window', 4),
             activeEmbeddingModelId: null,
             activeLlmModelId: null,
         ));

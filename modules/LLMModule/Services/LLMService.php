@@ -63,9 +63,7 @@ class LLMService implements LLMServiceInterface
      */
     public function complete(string $systemPrompt, string $userPrompt, array $context, array $options = []): LLMResponseInterface
     {
-        $assembledPrompt = $this->assemblePrompt($userPrompt, $context);
-
-        return $this->provider->complete($systemPrompt, $assembledPrompt, $options);
+        return $this->provider->complete($systemPrompt, $this->assemblePrompt($userPrompt, $context), $options);
     }
 
     /**
@@ -84,9 +82,7 @@ class LLMService implements LLMServiceInterface
      */
     public function completeStream(string $systemPrompt, string $userPrompt, array $context, array $options = []): Generator
     {
-        $assembledPrompt = $this->assemblePrompt($userPrompt, $context);
-
-        return $this->provider->completeStream($systemPrompt, $assembledPrompt, $options);
+        return $this->provider->completeStream($systemPrompt, $this->assemblePrompt($userPrompt, $context), $options);
     }
 
     /**
@@ -107,7 +103,7 @@ class LLMService implements LLMServiceInterface
      *
      * @param  string  $userPrompt  The user's question. Example: "What is Project Orion?"
      * @param  array  $context  Array of chunk objects with content, document_title, etc.
-     * @return string The assembled prompt string ready for the provider
+     * @return string The assembled prompt string ready for the provider.
      */
     private function assemblePrompt(string $userPrompt, array $context): string
     {

@@ -111,7 +111,7 @@ class ResponseBuilder
 
 1. **Grounding**: Answer ONLY using the provided context below. Do NOT use prior knowledge or training data. Pretend your training data does not exist.
 
-2. **Completeness**: If the context fully answers the question, provide a complete cite-sourced answer. If it partially answers, state what you know and clearly mark what information is missing. If it does not answer at all, say: "I cannot answer this based on the available documents." Do not guess.
+2. **Completeness**: Thoroughly process ALL chunks in the context. Extract every relevant fact, figure, and detail. Provide a complete, comprehensive answer covering all the information found. If the context partially answers, state what you know and clearly mark what is missing. If it does not answer at all, say: "I cannot answer this based on the available documents." Do not guess.
 
 3. **No Hallucination**: NEVER make up facts, names, dates, or figures that are not in the context. If uncertain, say so. Fabrication is strictly forbidden.
 
@@ -123,17 +123,18 @@ class ResponseBuilder
    - "Report by: {author_name}" — Use for WHO questions.
    - "Project: {project_name}" — Use for WHICH PROJECT questions.
    - "Date: {report_date}" — Use for WHEN questions.
+   "Search Scope" chunks describe the filters applied (e.g. date range, project, user). Use them to answer questions about scope.
    Look for these markers when the user asks about authors, projects, or dates.
 
-7. **Structure**: Answer directly using paragraphs or bullet points as appropriate. Group related information under logical sections when answering multi-part questions.
+7. **Structure**: Organize information into a natural, readable report. Use paragraphs for narrative, bullet points for enumerations, and brief sections when covering multiple topics. Write in a flowing style — not abrupt. Each point should connect to the next smoothly.
 
 --- BEHAVIOR ---
 
-8. **Tone**: Be professional, concise, and factual. Avoid opinion, speculation, or unsolicited advice.
+8. **Tone**: Be professional and factual. Write naturally — not like a robot. Avoid opinion, speculation, or unsolicited advice.
 
 9. **Formatting**: Use Markdown for readability — **bold** for key terms, `code` for technical terms, and bullet lists for enumerations. Do not use emojis unless the user used them first.
 
-10. **Conciseness**: Prefer short, direct answers. Do not repeat the question back. Do not add disclaimers beyond what the rules require.';
+10. **Completeness Over Brevity**: Prioritize completeness and accuracy over shortness. Cover all relevant details from the context. A thorough answer is better than a brief one. Do not skip data.';
 
         if ($confidence === 'low') {
             $prompt .= "\n\n--- LOW CONFIDENCE ---\n\n11. The available information is limited (fewer than 3 relevant chunks). Acknowledge uncertainty clearly. Start with: \"Based on limited available information...\" and suggest what additional information or documents would help provide a better answer.";
@@ -181,13 +182,23 @@ class ResponseBuilder
 
     public function buildSources(array $chunks): array
     {
-        return array_map(fn (object $chunk): array => [
+        // Deduplicate by document_id — keep only the highest-scoring chunk per document.
+        $best = [];
+        foreach ($chunks as $chunk) {
+            $docId = $chunk->document_id;
+            $score = (float) $chunk->similarity_score;
+            if (! isset($best[$docId]) || $score > (float) $best[$docId]->similarity_score) {
+                $best[$docId] = $chunk;
+            }
+        }
+
+        return array_values(array_map(fn (object $chunk): array => [
             'document_id' => $chunk->document_id,
             'document_title' => $chunk->document_title,
             'chunk_index' => $chunk->chunk_index,
             'page_number' => $chunk->page_number ?? null,
             'similarity_score' => round((float) $chunk->similarity_score, 4),
             'excerpt' => mb_substr((string) $chunk->content, 0, 200),
-        ], $chunks);
+        ], $best));
     }
 }

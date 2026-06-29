@@ -146,7 +146,7 @@ class FtsQueryBuilder
             $fallback = trim(preg_replace('/\s+/', ' ', $fallback, -1));
             $fallback = implode(' ', array_filter(explode(' ', $fallback), fn (string $w): bool => mb_strlen($w) > 2));
 
-            return $fallback !== '' ? $fallback : 'report';
+            return $fallback;
         }
 
         return $result;
