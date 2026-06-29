@@ -238,7 +238,7 @@ flowchart TD
 | [PROJECT_RULES.md](PROJECT_RULES.md) | Coding standards (typing, DI, naming, testing, module isolation) |
 | [docs/DATABASE_SCHEMA.md](docs/DATABASE_SCHEMA.md) | Per-table column reference |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Production deployment notes |
-| [CLAUDE.md](CLAUDE.md) / [AGENTS.md](AGENTS.md) | AI-agent reference for working in this codebase |
+| [AGENTS.md](AGENTS.md) | AI-agent reference for working in this codebase |
 | [LEARNING.md](LEARNING.md) | Tutorial-style walkthrough of the codebase for new developers |
 
 ---
