@@ -88,7 +88,7 @@ flowchart TB
 
         EmbedMod["EmbeddingModule\n• EmbeddingService\n• MD5-cached 24h\n• OpenAI / Ollama / Gemini"]:::module
 
-        LLMMod["LLMModule\n• LLMService::complete()\n• Streaming via SSE\n• Temperature 0.3\n• 5 providers (OpenAI / Ollama\n  Gemini / Claude / DeepSeek)"]:::module
+        LLMMod["LLMModule\n• LLMService::complete()\n• Streaming via SSE\n• Temperature from AiModel\n• think param (Qwen auto-disable)\n• 5 providers (OpenAI / Ollama\n  Gemini / Claude / DeepSeek)"]:::module
 
         VectorMod["VectorStoreModule\n• pgvector shard tables\n• IVFFlat indexes\n• Hybrid search (cosine + FTS)\n• Reciprocal rank fusion"]:::module
 
@@ -165,7 +165,7 @@ flowchart TD
     CheckHash -->|"New file"| CreateRec["Create pending document\n(status: processing)"]:::process
     CreateRec --> DispatchJob["Dispatch ProcessDocumentJob\n(Laravel queue — async)"]:::async
 
-    ConfigFile["config/rag.php — global defaults:\n• Provider selection\n• chunk_size/overlap\n• similarity_threshold\n• topK / MMR params"]:::config -.-> DispatchJob
+    ConfigFile["config/rag.php — global defaults:\n• Provider selection\n• chunk_size/overlap\n• similarity_threshold\n• topK / MMR params\n• AiModel DB columns override all"]:::config -.-> DispatchJob
 
     TermAliases["term_aliases table:\n• alias → canonical\n• Redis-cached 24h"]:::config -.->|"alias expansion"| DispatchJob
 
@@ -191,7 +191,7 @@ flowchart TD
 
     Rewrite --> EmbedQuestion["Embed question\n(uses rewritten embeddingText, MD5-cached 24h)"]:::process
 
-    AiModelDb -.->|"reads active model"| EmbedQuestion
+    AiModelDb -.->|"reads active model\n(provider, timeout, dims,\nbase_url, api_key<br>override config)"| EmbedQuestion
 
     EmbedQuestion --> SearchType{"Search\nmode?"}:::decision
     SearchType -->|"hybrid"| VecSearch["Vector cosine search\n<=> distance · ORDER BY · topK"]:::process
@@ -215,9 +215,9 @@ flowchart TD
     QExpand -->|"No"| StreamLLM
     ExpandQueries --> StreamLLM
 
-    AiModelDb -.->|"reads active model"| StreamLLM
+    AiModelDb -.->|"reads active model\n(temperature, max_context_tokens,\ntimeout, think, api_key<br>override config)"| StreamLLM
 
-    StreamLLM["Call LLM · temperature 0.3\nSSE stream /api/chat/stream\nLLMService.complete()"]:::process
+    StreamLLM["Call LLM · temperature from AiModel\nnum_ctx from max_context_tokens\nthink param for reasoning models\nSSE stream /api/chat/stream\nLLMService.complete()"]:::process
     StreamLLM --> AttachSources["Attach sources:\ndoc_id · title · page · score · excerpt"]:::process
     AttachSources --> SaveAssistant["Save assistant message\ncontent + sources (JSONB)"]:::process
     SaveAssistant --> Response["Return to user\n{ message, session_id, sources }"]:::user

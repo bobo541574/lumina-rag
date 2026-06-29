@@ -71,7 +71,8 @@ interface EmbeddingProviderInterface
 - Base URL: https://generativelanguage.googleapis.com/v1beta
 
 ### Provider Configuration
-Configured in `config/rag.php`:
+Base defaults in `config/rag.php`, but active embedding model's DB columns (`ai_models` table) always win at runtime — `RAGPipelineService` constructor overrides `$this->embedder` via `ProviderFactory::createEmbeddingService($activeModel)`, which reads `provider`, `model`, `base_url`, `timeout`, `dimensions`, `batch_size`, `cache_ttl`, `api_key` from the DB record.
+
 ```php
 'embedding' => [
     'provider' => 'openai',  // or 'ollama', 'gemini'
@@ -103,7 +104,7 @@ Configured in `config/rag.php`:
 ## Error Handling
 
 ### API Failures
-- Timeout: 30 seconds per request
+- Timeout: dynamic from AiModel `timeout` column (default 30s)
 - Retry: 3 attempts with exponential backoff
 - Circuit breaker: Pause requests for 60s after 5 consecutive failures
 

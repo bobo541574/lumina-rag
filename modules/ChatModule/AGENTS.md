@@ -29,6 +29,8 @@ Submit a question for RAG-based answering.
   "question": "string (required, max:1000)",
   "session_id": "integer|null (optional)",
   "stream": "boolean (optional, default: true)",
+  "llm_model_id": "string|null (optional, ULID to override LLM model)",
+  "think": "boolean|null (optional, force reasoning models to think; Qwen auto-disabled)",
   "document_filter": {
     "document_ids": [1, 2, 3],
     "date_from": "2024-01-01",
@@ -93,12 +95,14 @@ Soft-delete session and mark for archival.
 - Minimum similarity threshold: 0.65
 - If no chunks above threshold → Polite refusal message
 - If 1-2 relevant chunks → Answer with low-confidence note
-- Context window: 4000 tokens max
-- Query rewriting: `QueryRewriterService` scores complexity; SIMPLE (score <5) uses rule-based rewrite (spelling, dates, synonyms), COMPLEX (≥5) triggers LLM reformulation via `expandQuery()`
+- Context window: active LLM model's `max_context_tokens` column (Ollama receives `num_ctx` from this value)
+- Query rewriting: `QueryRewriterService` scores complexity; SIMPLE (score <5) uses rule-based rewrite (spelling, dates, synonyms, boolean FTS operators), COMPLEX (≥5) triggers LLM reformulation via `expandQuery()`. Rewrite info (score, mode) emitted as SSE `rewrite_info` event during streaming.
+- Boolean FTS: `sanitiseBooleanFts()` strips non-ASCII, dates, bare numbers; inserts `&` between adjacent word tokens to prevent tsquery syntax errors. Falls back to `plainto_tsquery` when no English tokens survive.
 
 ### Response Generation
-- System prompt: Strict context-only instruction with rules for grounding, completeness, no hallucination, citation, language matching, metadata awareness, structure, tone, markdown formatting, conciseness. Low-confidence and old-document warnings appended when applicable.
-- Temperature: 0.3 for factual accuracy
+- System prompt: Strict context-only instruction with rules for grounding, completeness (Rule 2: "Thoroughly process ALL chunks"), no hallucination, citation, language matching, metadata awareness, structure, tone, markdown formatting, completeness over brevity (Rule 10). Low-confidence and old-document warnings appended when applicable.
+- Temperature: dynamic from active LLM model's `temperature` column (fallback `config('rag.llm.temperature', 0.3)`)
+- `think` parameter: auto-disabled for Qwen reasoning models unless overridden via request body or AiModel `settings.think`
 - Always include source citations
 - Streaming enabled by default
 
@@ -118,17 +122,30 @@ Soft-delete session and mark for archival.
 ### Data Flow
 ```
 ChatController
-  ↓ (validated request)
+  ↓ (validated request: question, stream, llm_model_id, think, document_filter)
 RAGPipelineService
-  ├→ QueryRewriterService.rewrite(question) → {embeddingText, ftsQuery, mode}
-  │    (SIMPLE: rule-based rewrite; COMPLEX: LLM reformulation)
+  ├→ Constructor overrides $this->llm and $this->embedder
+  │    from active AiModel DB records via ProviderFactory
+  │    (timeout, model, base_url, api_key, dimensions, etc. from ai_models)
+  ├→ QueryRewriterService.rewrite(question) → RewrittenQuery
+  │    {embeddingText, ftsQuery, mode, score}
+  │    SIMPLE (score<5): rule-based → boolean FTS with & | ! operators
+  │    COMPLEX (score≥5): same + LLM expandQuery() reformulation
+  │    → yields rewrite_info SSE event (score, mode)
   ├→ EmbeddingService.embed(embeddingText) → Vector
+  │    (uses active embedding model's provider, timeout, dimensions)
   ├→ VectorStoreService.searchHybrid(ftsQuery, vector, topK, filters)
-  │    (uses to_tsquery with AND/OR/NOT when boolean ftsQuery available)
+  │    (to_tsquery with & | ! when boolean ftsQuery; plainto_tsquery fallback)
   ├→ LLMService.complete(systemPrompt, context, question) → Answer
+  │    (temperature from active LLM model; think param for reasoning models;
+  │     Ollama receives num_ctx from max_context_tokens)
   └→ Save ChatMessage (user + assistant roles)
   ↓
-StreamingService (if streaming enabled)
+StreamingService → SSE events (if streaming enabled)
+  ├→ rewrite_info {score, mode}
+  ├→ chunk {content}
+  ├→ done {sources, tokens_used}
+  └→ error {message}
 ```
 
 ## Vue Components

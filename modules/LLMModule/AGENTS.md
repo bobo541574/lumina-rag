@@ -56,12 +56,13 @@ Orchestrates provider calls with prompt management.
 - Models: gpt-4o (default)
 - Streaming: Native SSE support via raw curl
 - Token limit: 128K
-- Temperature: 0.3 default
+- Temperature: dynamic from AiModel column (fallback 0.3)
 
 ### Ollama
 - Models: qwen3.5:9b, gemma4:e4b, qwen2.5-coder (local)
 - Streaming: SSE via raw curl
-- Token limit: depends on model
+- Token limit: depends on model; `num_ctx` from AiModel `max_context_tokens`
+- `think` param: auto-disabled for Qwen reasoning models unless overridden
 - Base URL: http://localhost:11434
 
 ### Gemini
@@ -142,7 +143,7 @@ data: {"finish_reason": "stop", "total_tokens": 150}
 ```
 
 ### Error Responses
-- Timeout after 60 seconds
+- Timeout: dynamic from AiModel `timeout` column (default 60s)
 - Rate limit → Retry with backoff
 - Content filter → Safe fallback message
 - Context too long → Automatic truncation
@@ -151,10 +152,10 @@ data: {"finish_reason": "stop", "total_tokens": 150}
 
 ### Token Budget Allocation
 - System prompt: ~100 tokens
-- Context: Up to 4000 tokens (configurable)
+- Context: Up to AiModel `max_context_tokens` (default 4000); Ollama receives `num_ctx` from this value
 - Question: Up to 500 tokens
-- Response: Up to 1000 tokens
-- Total budget: ~5600 tokens (well within model limits)
+- Response: Up to AiModel `max_tokens` (default 4096)
+- Total budget: varies per model
 
 ### Context Truncation Strategy
 1. Sort chunks by similarity score (highest first)
