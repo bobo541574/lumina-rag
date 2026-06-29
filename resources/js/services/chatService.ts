@@ -149,6 +149,7 @@ export const chatService = {
                 switch (data.type) {
                   case 'chunk':
                     callbacks.onChunk(data.content)
+                    await Promise.resolve()
                     break
                   case 'sources':
                     callbacks.onSources(data.sources)

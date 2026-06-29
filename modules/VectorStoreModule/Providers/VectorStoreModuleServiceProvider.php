@@ -34,6 +34,7 @@ class VectorStoreModuleServiceProvider extends ServiceProvider
     {
         $this->app->singleton(PgvectorDriver::class, fn ($app): PgvectorDriver => new PgvectorDriver(
             db: $app->make(DatabaseManager::class),
+            rrfK: (int) config('rag.search.rrf_k', 60),
         ));
 
         $this->app->singleton(VectorStoreInterface::class, fn ($app): VectorStoreService => new VectorStoreService(

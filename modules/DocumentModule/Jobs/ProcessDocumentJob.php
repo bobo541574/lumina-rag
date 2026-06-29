@@ -11,6 +11,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Modules\DocumentModule\Contracts\TextChunkingServiceInterface;
@@ -93,6 +94,7 @@ class ProcessDocumentJob implements ShouldQueue
 
             $embedderToUse = $this->resolveEmbedder($document, $embedder, $providerFactory, $cache);
             $this->generateEmbeddings($document, $chunks, $embedderToUse, $vectorStore);
+            $this->validateEmbedCount($document, $chunks);
 
             $document->update([
                 'status' => 'completed',
@@ -352,6 +354,54 @@ class ProcessDocumentJob implements ShouldQueue
                 metadata: $allMetadata,
                 chunkId: $allChunkIds,
                 namespace: "document_{$document->id}",
+            );
+        }
+    }
+
+    /**
+     * Validate that every chunk has a vector row after embedding
+     *
+     * Counts actual vector rows across all ve_* shard tables for the document's
+     * chunks and logs a warning when the count does not match the expected total.
+     * Does not throw — a mismatch is recoverable via `rag:reembed --missing`.
+     *
+     * @param  Document  $document  The processed document. Example: Document::findOrFail($id)
+     * @param  array  $chunks  Array of saved DocumentChunk models. Example: [DocumentChunk { id: "01J..." }]
+     */
+    private function validateEmbedCount(Document $document, array $chunks): void
+    {
+        if ($chunks === []) {
+            return;
+        }
+
+        $chunkIds = array_map(fn (DocumentChunk $c): string => $c->id, $chunks);
+        $expected = count($chunkIds);
+
+        // Count stored vectors across all shard tables (PostgreSQL only).
+        // On SQLite (tests) the vector_embeddings table is the single store.
+        if (DB::getDriverName() !== 'sqlite') {
+            $dimTables = ['ve_384', 've_768', 've_1024', 've_1536', 've_3072'];
+            $actual = 0;
+            foreach ($dimTables as $table) {
+                try {
+                    $actual += DB::table($table)->whereIn('chunk_id', $chunkIds)->count();
+                } catch (\Throwable) {
+                    // Table may not exist for this installation — skip.
+                }
+            }
+        } else {
+            $actual = DB::table('vector_embeddings')->whereIn('chunk_id', $chunkIds)->count();
+        }
+
+        if ($actual < $expected) {
+            Log::channel(config('rag.logging.channel', 'rag'))->warning(
+                'ProcessDocumentJob: embed count mismatch',
+                [
+                    'document_id' => $document->id,
+                    'expected' => $expected,
+                    'actual' => $actual,
+                    'missing' => $expected - $actual,
+                ]
             );
         }
     }

@@ -42,13 +42,18 @@ class PgvectorDriver implements VectorStoreInterface
     /** @var bool Whether the database driver is SQLite (triggers fallback) */
     private bool $isSqlite;
 
+    /** @var int Reciprocal Rank Fusion rank constant */
+    private int $rrfK;
+
     /**
      * @param  DatabaseManager  $db  Laravel database manager. Example: app(DatabaseManager::class)
+     * @param  int  $rrfK  RRF rank constant (k in 1/(k+rank)). Example: 60
      */
-    public function __construct(DatabaseManager $db)
+    public function __construct(DatabaseManager $db, int $rrfK = 60)
     {
         $this->db = $db;
         $this->isSqlite = $db->getDriverName() === 'sqlite';
+        $this->rrfK = $rrfK;
     }
 
     /**
@@ -161,62 +166,65 @@ class PgvectorDriver implements VectorStoreInterface
         $booleanFtsQuery = $filters['boolean_fts_query'] ?? null;
         unset($filters['boolean_fts_query']);
 
+        // Resolve which FTS strategy to use.
+        // Prefer boolean to_tsquery when available; fall back to plainto_tsquery;
+        // skip FTS entirely when there is no meaningful text to search.
+        $sanitisedBoolean = null;
         if ($booleanFtsQuery !== null && $booleanFtsQuery !== '') {
-            $sanitised = $this->sanitiseBooleanFts($booleanFtsQuery);
-            $tsQuery = $this->db->table('document_chunks as dc')
-                ->select(
-                    'dc.id',
-                    'dc.id as chunk_id',
-                    'dc.content',
-                    'dc.metadata',
-                    'd.id as document_id',
-                    'd.title as document_title',
-                    'd.user_id as document_user_id',
-                    'd.project as document_project',
-                    'd.report_date as document_report_date',
-                    'dc.chunk_index',
-                    'dc.page_number',
-                    'd.created_at as document_created_at',
-                )
-                ->selectRaw('0.0 as similarity_score')
-                ->selectRaw('ts_rank(dc.tsv_content, to_tsquery(\'english\', ?)) as fts_score', [$sanitised])
-                ->join('documents as d', 'd.id', '=', 'dc.document_id')
-                ->whereNull('d.deleted_at')
-                ->whereRaw('dc.tsv_content @@ to_tsquery(\'english\', ?)', [$sanitised])
-                ->orderByRaw('ts_rank(dc.tsv_content, to_tsquery(\'english\', ?)) desc', [$sanitised])
-                ->limit($topK * 3);
-        } else {
-            $tsQuery = $this->db->table('document_chunks as dc')
-                ->select(
-                    'dc.id',
-                    'dc.id as chunk_id',
-                    'dc.content',
-                    'dc.metadata',
-                    'd.id as document_id',
-                    'd.title as document_title',
-                    'd.user_id as document_user_id',
-                    'd.project as document_project',
-                    'd.report_date as document_report_date',
-                    'dc.chunk_index',
-                    'dc.page_number',
-                    'd.created_at as document_created_at',
-                )
-                ->selectRaw('0.0 as similarity_score')
-                ->selectRaw('ts_rank(dc.tsv_content, plainto_tsquery(\'english\', ?)) as fts_score', [$queryText])
-                ->join('documents as d', 'd.id', '=', 'dc.document_id')
-                ->whereNull('d.deleted_at')
-                ->whereRaw('dc.tsv_content @@ plainto_tsquery(\'english\', ?)', [$queryText])
-                ->orderByRaw('ts_rank(dc.tsv_content, plainto_tsquery(\'english\', ?)) desc', [$queryText])
-                ->limit($topK * 3);
+            $s = $this->sanitiseBooleanFts($booleanFtsQuery);
+            if ($s !== '') {
+                $sanitisedBoolean = $s;
+            }
+        }
+
+        $skipFts = ($sanitisedBoolean === null && $queryText === '');
+
+        $ftsBase = $this->db->table('document_chunks as dc')
+            ->select(
+                'dc.id',
+                'dc.id as chunk_id',
+                'dc.content',
+                'dc.metadata',
+                'd.id as document_id',
+                'd.title as document_title',
+                'd.user_id as document_user_id',
+                'd.project as document_project',
+                'd.report_date as document_report_date',
+                'dc.chunk_index',
+                'dc.page_number',
+                'd.created_at as document_created_at',
+            )
+            ->selectRaw('0.0 as similarity_score')
+            ->join('documents as d', 'd.id', '=', 'dc.document_id')
+            ->whereNull('d.deleted_at')
+            ->limit($topK * 3);
+
+        if (! $skipFts) {
+            if ($sanitisedBoolean !== null) {
+                $tsQuery = (clone $ftsBase)
+                    ->selectRaw('ts_rank(dc.tsv_content, to_tsquery(\'english\', ?)) as fts_score', [$sanitisedBoolean])
+                    ->whereRaw('dc.tsv_content @@ to_tsquery(\'english\', ?)', [$sanitisedBoolean])
+                    ->orderByRaw('ts_rank(dc.tsv_content, to_tsquery(\'english\', ?)) desc', [$sanitisedBoolean]);
+            } else {
+                $tsQuery = (clone $ftsBase)
+                    ->selectRaw('ts_rank(dc.tsv_content, plainto_tsquery(\'english\', ?)) as fts_score', [$queryText])
+                    ->whereRaw('dc.tsv_content @@ plainto_tsquery(\'english\', ?)', [$queryText])
+                    ->orderByRaw('ts_rank(dc.tsv_content, plainto_tsquery(\'english\', ?)) desc', [$queryText]);
+            }
         }
 
         $vectorQuery = $this->applyFiltersVector($vectorQuery, $filters, 've');
-        $tsQuery = $this->applyFiltersFts($tsQuery, $filters);
 
         $threshold = (float) ($filters['similarity_threshold'] ?? 0.65);
 
         $vectorResults = $vectorQuery->get()->toArray();
-        $ftsResults = $tsQuery->get()->toArray();
+
+        if ($skipFts) {
+            $ftsResults = [];
+        } else {
+            $tsQuery = $this->applyFiltersFts($tsQuery, $filters);
+            $ftsResults = $tsQuery->get()->toArray();
+        }
 
         $vectorResults = array_values(
             array_filter($vectorResults, fn (object $row): bool => $row->similarity_score >= $threshold)
@@ -601,7 +609,7 @@ class PgvectorDriver implements VectorStoreInterface
      */
     private function fuseResults(array $vectorResults, array $ftsResults, int $topK): array
     {
-        $k = 60;
+        $k = $this->rrfK;
         $scores = [];
 
         foreach ($vectorResults as $i => $row) {
