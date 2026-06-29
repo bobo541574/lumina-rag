@@ -53,7 +53,7 @@ test('high_confidence_prompt_contains_behavior_rules', function (): void {
     expect($prompt)->toContain('Tone');
     expect($prompt)->toContain('Formatting');
     expect($prompt)->toContain('Markdown');
-    expect($prompt)->toContain('Conciseness');
+    expect($prompt)->toContain('Completeness Over Brevity');
 });
 
 test('low_confidence_prompt_contains_uncertainty_guidance', function (): void {
