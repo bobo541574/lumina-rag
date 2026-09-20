@@ -5,16 +5,22 @@ declare(strict_types=1);
 namespace Modules\ChatModule\Providers;
 
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
 use Modules\ChatModule\Commands\CleanupExpiredSessions;
 use Modules\ChatModule\Contracts\RAGPipelineServiceInterface;
+use Modules\ChatModule\Events\KnowledgeChanged;
+use Modules\ChatModule\Listeners\InvalidateSemanticCache;
 use Modules\ChatModule\Services\Pipeline\ChunkProcessor;
 use Modules\ChatModule\Services\Pipeline\FilterExtractor;
 use Modules\ChatModule\Services\Pipeline\FtsQueryBuilder;
 use Modules\ChatModule\Services\Pipeline\QueryRewriterService;
 use Modules\ChatModule\Services\Pipeline\ResponseBuilder;
 use Modules\ChatModule\Services\Pipeline\SessionManager;
+use Modules\ChatModule\Services\QuestionClassifier;
 use Modules\ChatModule\Services\RAGPipelineService;
+use Modules\ChatModule\Services\RerankerService;
+use Modules\ChatModule\Services\SemanticCacheService;
 use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
 use Modules\EmbeddingModule\Services\ProviderFactory;
 use Modules\LLMModule\Contracts\LLMServiceInterface;
@@ -47,6 +53,8 @@ class ChatModuleServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
+        $this->app->singleton(SemanticCacheService::class, fn ($app): SemanticCacheService => new SemanticCacheService);
+
         $this->app->singleton(RAGPipelineServiceInterface::class, fn ($app): RAGPipelineService => new RAGPipelineService(
             embedder: $app->make(EmbeddingServiceInterface::class),
             vectorStore: $app->make(VectorStoreInterface::class),
@@ -64,6 +72,16 @@ class ChatModuleServiceProvider extends ServiceProvider
             chunkProcessor: $app->make(ChunkProcessor::class),
             responseBuilder: $app->make(ResponseBuilder::class),
             sessionManager: $app->make(SessionManager::class),
+            semanticCache: $app->make(SemanticCacheService::class),
+            questionClassifier: $app->make(QuestionClassifier::class),
+            reranker: new RerankerService(
+                enabled: true,
+                baseUrl: (string) config('rag.embedding.base_url', 'http://localhost:11434'),
+                model: (string) config('rag.reranker.model', 'bge-reranker:latest'),
+                candidateK: (int) config('rag.reranker.candidate_k', 8),
+                finalK: (int) config('rag.reranker.final_k', 5),
+                timeout: (float) config('rag.llm.timeout', 120),
+            ),
             topK: (int) config('rag.search.top_k', 5),
             similarityThreshold: (float) config('rag.search.similarity_threshold', 0.65),
             maxQuestionLength: (int) config('rag.chat.max_question_length', 1000),
@@ -76,6 +94,10 @@ class ChatModuleServiceProvider extends ServiceProvider
             maxTokens: (int) config('rag.llm.max_tokens', 4096),
             minInitialThreshold: (float) config('rag.search.min_initial_threshold', 0.20),
             historyWindow: (int) config('rag.chat.history_window', 4),
+            cacheEnabled: (bool) config('rag.cache.enabled', true),
+            rerankerEnabled: (bool) config('rag.reranker.enabled', false),
+            rerankerCandidateK: (int) config('rag.reranker.candidate_k', 8),
+            rerankerFinalK: (int) config('rag.reranker.final_k', 5),
             activeEmbeddingModelId: null,
             activeLlmModelId: null,
         ));
@@ -99,6 +121,8 @@ class ChatModuleServiceProvider extends ServiceProvider
 
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
         $this->loadRoutesFrom(__DIR__.'/../Routes/chat.php');
+
+        Event::listen(KnowledgeChanged::class, InvalidateSemanticCache::class);
 
         if ($this->app->runningInConsole()) {
             $this->commands([

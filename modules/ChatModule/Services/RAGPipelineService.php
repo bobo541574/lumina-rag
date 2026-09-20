@@ -131,6 +131,22 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
     private SessionManager $sessionManager;
 
+    private SemanticCacheService $semanticCache;
+
+    private QuestionClassifier $questionClassifier;
+
+    private RerankerService $reranker;
+
+    private string $questionType = QuestionClassifier::TYPE_GENERIC;
+
+    private bool $cacheEnabled;
+
+    private bool $rerankerEnabled;
+
+    private int $rerankerCandidateK;
+
+    private int $rerankerFinalK;
+
     /**
      * Create a new RAGPipelineService instance
      *
@@ -173,6 +189,9 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         ChunkProcessor $chunkProcessor,
         ResponseBuilder $responseBuilder,
         SessionManager $sessionManager,
+        SemanticCacheService $semanticCache,
+        QuestionClassifier $questionClassifier,
+        RerankerService $reranker,
         int $topK = 5,
         float $similarityThreshold = 0.65,
         int $maxQuestionLength = 1000,
@@ -185,6 +204,10 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         int $maxTokens = 4096,
         float $minInitialThreshold = 0.20,
         int $historyWindow = 4,
+        bool $cacheEnabled = true,
+        bool $rerankerEnabled = false,
+        int $rerankerCandidateK = 8,
+        int $rerankerFinalK = 5,
         ?string $userId = null,
         ?string $activeEmbeddingModelId = null,
         ?string $activeLlmModelId = null,
@@ -201,6 +224,13 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $this->chunkProcessor = $chunkProcessor;
         $this->responseBuilder = $responseBuilder;
         $this->sessionManager = $sessionManager;
+        $this->semanticCache = $semanticCache;
+        $this->questionClassifier = $questionClassifier;
+        $this->reranker = $reranker;
+        $this->cacheEnabled = $cacheEnabled;
+        $this->rerankerEnabled = $rerankerEnabled;
+        $this->rerankerCandidateK = $rerankerCandidateK;
+        $this->rerankerFinalK = $rerankerFinalK;
         $this->topK = $topK;
         $this->similarityThreshold = $similarityThreshold;
         $this->maxQuestionLength = $maxQuestionLength;
@@ -327,6 +357,13 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             'llmQuestion' => $llmQuestion, 'llm' => $llm, 'targetModel' => $targetModel,
             'embedder' => $embedder] = $ctx;
 
+        // Semantic cache lookup: if a near-identical question was answered against
+        // the same knowledge version, return it without retrieval + LLM cost.
+        $cacheHit = $this->lookupSemanticCache($searchQuestion, $embedder, $session, $options);
+        if ($cacheHit !== null) {
+            return $this->persistCacheHit($session, $cacheHit, $question);
+        }
+
         $searchQueries = $this->expandQuery($searchQuestion, $llm, $options);
         ['chunks' => $chunks, 'searchTime' => $searchTime] = $this->runSearchQueries(
             $searchQueries, $embedder, $targetModel, $ftsQuery, $rewritten, $autoFilters, $options
@@ -334,6 +371,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         if ($chunks === []) {
             $answer = $this->responseBuilder->buildRefusalResponse($session, $question, $autoFilters);
+            $this->writeSemanticCache($searchQuestion, $embedder, $session->user_id, $question, (string) ($answer['message']['content'] ?? ''), [], true);
             $totalTime = (microtime(true) - $start) * 1000;
             Log::channel(config('rag.logging.channel', 'rag'))->info('RAG pipeline: refusal (no chunks)', [
                 'session_id' => $session->id,
@@ -395,6 +433,8 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         }
         $sources = $this->responseBuilder->buildSources($chunks);
         $message = $this->sessionManager->saveAssistantMessage($session, $content, $sources);
+
+        $this->writeSemanticCache($searchQuestion, $embedder, $session->user_id, $question, $content, $sources, false);
 
         $totalTime = (microtime(true) - $start) * 1000;
         Log::channel(config('rag.logging.channel', 'rag'))->info('RAG pipeline: complete', [
@@ -464,6 +504,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             'mode' => $rewritten->mode,
             'embedding_text' => $rewritten->embeddingText,
             'fts_query' => $rewritten->ftsQuery,
+            'question_type' => $this->questionType,
         ]);
 
         yield json_encode([
@@ -471,6 +512,31 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             'stage' => 'embedding',
             'message' => $isBurmese ? 'မေးခွန်းအား ထည့်သွင်းနေသည်...' : 'Embedding question...',
         ]);
+
+        // Semantic cache lookup before retrieval. On hit, stream the cached
+        // answer as a single chunk and skip retrieval + LLM generation.
+        $cacheHit = $this->lookupSemanticCache($searchQuestion, $embedder, $session, $options);
+        if ($cacheHit !== null) {
+            $answer = (string) ($cacheHit['message']['content'] ?? $cacheHit['answer'] ?? '');
+            $cachedSources = $cacheHit['message']['sources'] ?? $cacheHit['sources'] ?? [];
+            $this->sessionManager->saveAssistantMessage($session, $answer, $cachedSources);
+            $totalTime = (microtime(true) - $start) * 1000;
+
+            yield json_encode(['type' => 'cached', 'sources' => $cachedSources]);
+            yield json_encode(['type' => 'sources', 'sources' => $cachedSources]);
+            yield json_encode(['type' => 'chunk', 'content' => $answer]);
+            yield json_encode([
+                'type' => 'done',
+                'session_id' => $session->id,
+                'search_time_ms' => 0,
+                'llm_time_ms' => 0,
+                'total_time_ms' => round($totalTime, 1),
+                'tokens_used' => 0,
+                'cached' => true,
+            ]);
+
+            return;
+        }
 
         $searchQueries = $this->expandQuery($searchQuestion, $llm, $options);
 
@@ -486,6 +552,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         if ($chunks === []) {
             $refusal = $this->responseBuilder->buildRefusalResponse($session, $question, $autoFilters);
+            $this->writeSemanticCache($searchQuestion, $embedder, $session->user_id, $question, (string) ($refusal['message']['content'] ?? ''), [], true);
             $totalTime = (microtime(true) - $start) * 1000;
             Log::channel(config('rag.logging.channel', 'rag'))->info('RAG pipeline (stream): refusal (no chunks)', [
                 'session_id' => $session->id,
@@ -565,6 +632,8 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $llmTime = (microtime(true) - $t0) * 1000;
 
         $this->sessionManager->saveAssistantMessage($session, $fullContent, $sources);
+
+        $this->writeSemanticCache($searchQuestion, $embedder, $session->user_id, $question, $fullContent, $sources, false);
 
         $totalTime = (microtime(true) - $start) * 1000;
         Log::channel(config('rag.logging.channel', 'rag'))->info('RAG pipeline (stream): complete', [
@@ -731,6 +800,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
     private function buildPipelineContext(string $question, array $options): array
     {
         $question = $this->normalizeQuestion($question);
+        $this->questionType = $this->questionClassifier->classify($question)['type'];
         $session = $this->sessionManager->resolveSession($options['session_id'] ?? null, $options['user_id'] ?? $this->userId);
         $this->sessionManager->checkMessageLimit($session, $this->maxMessagesPerSession);
 
@@ -848,6 +918,125 @@ class RAGPipelineService implements RAGPipelineServiceInterface
     }
 
     /**
+     * Look up the semantic cache for a semantically-equivalent question.
+     *
+     * Embeds the search question once (reusing the embedding cache) and asks
+     * SemanticCacheService for a matching answer. Returns null on miss or when
+     * caching is disabled. Scopes the lookup by the active user and LLM config.
+     *
+     * @param  string  $searchQuestion  The rewritten/expanded search question. Example: "Q3 revenue"
+     * @param  EmbeddingServiceInterface  $embedder  Embedding service. Example: mock(EmbeddingServiceInterface::class)
+     * @param  ChatSession  $session  Resolved chat session (for user scoping). Example: ChatSession{...}
+     * @param  array  $options  Request options. Example: []
+     * @return null|array{question: string, message: array} Cached payload, or null. Example: ["question" => "...", "message" => ["content" => "..."]]
+     */
+    private function lookupSemanticCache(string $searchQuestion, EmbeddingServiceInterface $embedder, ChatSession $session, array $options = []): ?array
+    {
+        if (! $this->cacheEnabled) {
+            return null;
+        }
+        // Follow-up questions rely on conversation history, so skip caching
+        // when there is prior context in the session.
+        if ($session->message_count > 1) {
+            return null;
+        }
+
+        try {
+            $vector = $embedder->embed($searchQuestion);
+            $modelHash = SemanticCacheService::modelHash(
+                $this->activeLlmModel?->model ?? config('rag.llm.model', ''),
+                $this->temperature,
+                $this->maxTokens,
+            );
+
+            return $this->semanticCache->get($vector, $session->user_id, $modelHash, $this->cacheEnabled);
+        } catch (\Throwable $e) {
+            Log::channel(config('rag.logging.channel', 'rag'))->warning('Semantic cache lookup failed', [
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    /**
+     * Prepare a cached answer as a ChatMessage and return the response envelope.
+     *
+     * Because the cache bypasses the normal message-save path, the assistant
+     * message is persisted here so it appears in the session history.
+     *
+     * @param  ChatSession  $session  Resolved chat session. Example: ChatSession{...}
+     * @param  array  $payload  Cache payload with question/message keys. Example: ["question" => "...", "message" => [...]]
+     * @param  string  $question  Original user question. Example: "What is Q3 revenue?"
+     * @return array{session_id: string, message: array} Response envelope. Example: ["session_id" => "...", "message" => [...]]
+     */
+    private function persistCacheHit(ChatSession $session, array $payload, string $question): array
+    {
+        $content = (string) ($payload['message']['content'] ?? $payload['answer'] ?? '');
+        $sources = $payload['message']['sources'] ?? $payload['sources'] ?? [];
+        $logQuestion = $payload['question'] ?? $question;
+
+        Log::channel(config('rag.logging.channel', 'rag'))->info('RAG pipeline: semantic cache hit', [
+            'session_id' => $session->id,
+            'cached_question' => $logQuestion,
+        ]);
+
+        $message = $this->sessionManager->saveAssistantMessage($session, $content, $sources);
+
+        return [
+            'session_id' => $session->id,
+            'message' => [
+                'id' => $message->id,
+                'role' => 'assistant',
+                'content' => $content,
+                'sources' => $sources,
+                'tokens_used' => 0,
+                'created_at' => $message->created_at->toIso8601String(),
+                'cached' => true,
+            ],
+        ];
+    }
+
+    /**
+     * Persist a generated answer into the semantic cache.
+     *
+     * @param  string  $searchQuestion  The search question used for retrieval. Example: "Q3 revenue"
+     * @param  EmbeddingServiceInterface  $embedder  Embedding service. Example: mock(EmbeddingServiceInterface::class)
+     * @param  string|null  $userId  Owning user ULID. Example: "01J..."
+     * @param  string  $question  Original/normalised question. Example: "What is Q3 revenue?"
+     * @param  string  $answer  Generated answer text. Example: "Revenue was $45.2M."
+     * @param  array  $sources  Source citations. Example: [["document_id" => "01J..."]]
+     * @param  bool  $isRefusal  Whether this was a refusal answer. Example: false
+     */
+    private function writeSemanticCache(
+        string $searchQuestion,
+        EmbeddingServiceInterface $embedder,
+        ?string $userId,
+        string $question,
+        string $answer,
+        array $sources,
+        bool $isRefusal = false,
+    ): void {
+        if (! $this->cacheEnabled) {
+            return;
+        }
+
+        try {
+            $vector = $embedder->embed($searchQuestion);
+            $modelHash = SemanticCacheService::modelHash(
+                $this->activeLlmModel?->model ?? config('rag.llm.model', ''),
+                $this->temperature,
+                $this->maxTokens,
+            );
+            $this->semanticCache->put($vector, $question, $answer, $sources, $userId, $modelHash, $isRefusal, $this->cacheEnabled);
+        } catch (\Throwable $e) {
+            Log::channel(config('rag.logging.channel', 'rag'))->warning('Semantic cache write failed', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
      * Execute search queries and apply threshold + MMR filtering.
      *
      * Runs each query through vector or hybrid search, deduplicates chunks,
@@ -874,6 +1063,15 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $allChunks = [];
         $t0 = microtime(true);
 
+        // Adaptive routing: factual/keyword-heavy questions benefit from FTS +
+        // vector fusion regardless of the global search mode, because exact
+        // terms (names, numbers, dates) match best lexically. Other types use
+        // the configured mode. This is the observable counterpart of the
+        // classifier's `keyword_boost` hint (see QuestionClassifier).
+        $effectiveMode = $this->questionType === QuestionClassifier::TYPE_FACTUAL
+            ? 'hybrid'
+            : $this->searchMode;
+
         foreach ($searchQueries as $q) {
             $questionVector = $embedder->embed($q);
             $filters = array_merge($autoFilters, $options['document_filter'] ?? []);
@@ -883,7 +1081,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
                 $filters['boolean_fts_query'] = $rewritten->ftsQuery;
             }
 
-            $chunks = $this->searchMode === 'hybrid'
+            $chunks = $effectiveMode === 'hybrid'
                 ? $this->vectorStore->searchHybrid($ftsQuery, $questionVector, $this->topK * 3, $filters)
                 : $this->vectorStore->search($questionVector, $this->topK * 3, $filters);
 
@@ -899,8 +1097,16 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         usort($allChunks, fn (object $a, object $b): int => (float) $b->similarity_score <=> (float) $a->similarity_score);
         $chunks = $this->chunkProcessor->applyDynamicThreshold(
-            array_values($allChunks), $autoFilters, $this->similarityThreshold, $this->topK
+            array_values($allChunks), $autoFilters, $this->similarityThreshold, $this->topK * 2
         );
+
+        // Cross-encoder rerank (optional) refines the initial ordering with a
+        // dedicated relevance model before MMR diversity selection.
+        $rerankQuestion = $searchQueries[0] ?? '';
+        if ($this->rerankerEnabled && $rerankQuestion !== '') {
+            $chunks = $this->reranker->rerank($rerankQuestion, $chunks);
+        }
+
         $chunks = $this->chunkProcessor->applyMMR($chunks, $this->mmrEnabled, $this->topK, $this->mmrLambda);
 
         return ['chunks' => $chunks, 'searchTime' => $searchTime];
@@ -920,13 +1126,22 @@ class RAGPipelineService implements RAGPipelineServiceInterface
      */
     private function expandQuery(string $question, LLMServiceInterface $llm, array $requestOptions = []): array
     {
-        if (! $this->queryExpansionEnabled) {
+        // Let expansive question types (analytical/comparative) trigger
+        // multi-query expansion even when the global toggle is off, because
+        // recall matters most there (adaptive routing).
+        $recallBoost = in_array($this->questionType, [
+            QuestionClassifier::TYPE_ANALYTICAL,
+            QuestionClassifier::TYPE_COMPARATIVE,
+        ], true);
+
+        if (! $this->queryExpansionEnabled && ! $recallBoost) {
             return [$question];
         }
 
-        try {
-            $prompt = "You are a search query optimizer. Generate {$this->numExpansionQueries} different reformulations of the given question to improve document retrieval. Return ONE reformulation per line, no numbering, no extra text.\n\nQuestion: {$question}";
+        $numQueries = $this->numExpansionQueries;
+        $prompt = "You are a search query optimizer. Generate {$numQueries} different reformulations of the given question to improve document retrieval. Return ONE reformulation per line, no numbering, no extra text.\n\nQuestion: {$question}";
 
+        try {
             $response = $llm->complete(
                 systemPrompt: '',
                 userPrompt: $prompt,

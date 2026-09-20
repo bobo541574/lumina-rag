@@ -12,7 +12,10 @@ use Modules\ChatModule\Services\Pipeline\QueryRewriterService;
 use Modules\ChatModule\Services\Pipeline\ResponseBuilder;
 use Modules\ChatModule\Services\Pipeline\RewrittenQuery;
 use Modules\ChatModule\Services\Pipeline\SessionManager;
+use Modules\ChatModule\Services\QuestionClassifier;
 use Modules\ChatModule\Services\RAGPipelineService;
+use Modules\ChatModule\Services\RerankerService;
+use Modules\ChatModule\Services\SemanticCacheService;
 use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
 use Modules\EmbeddingModule\Services\ProviderFactory;
 use Modules\LLMModule\Contracts\LLMResponseInterface;
@@ -41,6 +44,7 @@ function makePipeline(
     EmbeddingServiceInterface $embedder,
     VectorStoreInterface $vectorStore,
     LLMServiceInterface $llm,
+    array $config = [],
 ): RAGPipelineService {
     $providerFactory = mock(ProviderFactory::class);
     $cache = mock(CacheRepository::class);
@@ -91,7 +95,7 @@ function makePipeline(
         return $msg;
     });
 
-    return new RAGPipelineService($embedder, $vectorStore, $llm, $providerFactory, $cache, $termAliasService, $filterExtractor, $ftsQueryBuilder, $queryRewriter, $chunkProcessor, $responseBuilder, $sessionManager);
+    return new RAGPipelineService($embedder, $vectorStore, $llm, $providerFactory, $cache, $termAliasService, $filterExtractor, $ftsQueryBuilder, $queryRewriter, $chunkProcessor, $responseBuilder, $sessionManager, mock(SemanticCacheService::class), new QuestionClassifier, mock(RerankerService::class), ...$config);
 }
 
 /**
@@ -180,4 +184,56 @@ test('test_ask_returns_answer_with_sources', function (): void {
     expect($result['message']['content'])->toBe('This is the answer.');
     expect($result['message']['sources'])->toHaveCount(1);
     expect($result['message']['sources'][0]['document_id'])->toBe('doc_1');
+});
+
+/**
+ * A factual (keyword-heavy) question routes to hybrid search even when the
+ * configured global mode is 'vector'
+ *
+ * Adaptive retrieval routing: factual questions benefit from FTS + vector
+ * fusion, so the pipeline forces hybrid mode regardless of the configured
+ * searchMode. This test verifies searchHybrid is invoked (not search) for a
+ * factual question under an explicit 'vector' configuration.
+ *
+ * @return void
+ */
+test('test_factual_question_routes_to_hybrid_in_vector_mode', function (): void {
+    $embedder = mock(EmbeddingServiceInterface::class);
+    $embedder->shouldReceive('embed')->andReturn([0.1, 0.2]);
+
+    $chunks = [
+        (object) [
+            'chunk_id' => 'chunk_1',
+            'document_id' => 'doc_1',
+            'document_title' => 'Test Doc',
+            'content' => 'Revenue was $45M.',
+            'chunk_index' => 0,
+            'page_number' => 1,
+            'similarity_score' => 0.89,
+        ],
+    ];
+
+    $vectorStore = mock(VectorStoreInterface::class);
+    $vectorStore->shouldReceive('searchHybrid')->withArgs(function (string $ftsQuery, array $vector, int $topK, array $filters): bool {
+        expect($topK)->toBe(15);
+
+        return true;
+    })->andReturn($chunks);
+    // 'search' must NOT be called for a factual question in vector mode.
+    $vectorStore->shouldReceive('search')->never();
+
+    $response = mock(LLMResponseInterface::class);
+    $response->shouldReceive('getContent')->andReturn('Revenue was $45M.');
+    $response->shouldReceive('getTotalTokens')->andReturn(20);
+    $response->shouldReceive('getPromptTokens')->andReturn(5);
+    $response->shouldReceive('getCompletionTokens')->andReturn(15);
+    $response->shouldReceive('getFinishReason')->andReturn(null);
+
+    $llm = mock(LLMServiceInterface::class);
+    $llm->shouldReceive('complete')->andReturn($response);
+
+    $service = makePipeline($embedder, $vectorStore, $llm, ['searchMode' => 'vector']);
+    $result = $service->ask('What is the total revenue?');
+
+    expect($result['message']['content'])->toBe('Revenue was $45M.');
 });

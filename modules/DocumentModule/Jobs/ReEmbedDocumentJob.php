@@ -11,6 +11,7 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Modules\ChatModule\Events\KnowledgeChanged;
 use Modules\DocumentModule\Models\Document;
 use Modules\DocumentModule\Models\DocumentChunk;
 use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
@@ -111,6 +112,9 @@ class ReEmbedDocumentJob implements ShouldQueue
                 namespace: "document_{$document->id}",
             );
         }
+
+        // Vectors regenerated — cached answers may have changed.
+        KnowledgeChanged::dispatch([$document->id]);
     }
 
     /**

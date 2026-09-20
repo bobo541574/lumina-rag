@@ -146,6 +146,35 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Semantic Cache Configuration
+    |--------------------------------------------------------------------------
+    */
+    'cache' => [
+        // Master switch for answer-level (semantic) caching.
+        'enabled' => (bool) env('RAG_CACHE_ENABLED', true),
+        // Cosine-similarity threshold for a semantic cache hit.
+        'semantic_threshold' => (float) env('RAG_CACHE_SEMANTIC_THRESHOLD', 0.95),
+        // How long entries live before being pruned (in days).
+        'ttl_days' => (int) env('RAG_CACHE_TTL_DAYS', 7),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Reranker Configuration
+    |--------------------------------------------------------------------------
+    */
+    'reranker' => [
+        'enabled' => (bool) env('RAG_RERANKER_ENABLED', false),
+        // Cross-encoder model served via the local Ollama-compatible endpoint.
+        'model' => env('RAG_RERANKER_MODEL', 'bge-reranker:latest'),
+        // How many top retrieval candidates are sent to the cross-encoder.
+        'candidate_k' => (int) env('RAG_RERANKER_CANDIDATE_K', 8),
+        // How many candidates survive reranking for the final context.
+        'final_k' => (int) env('RAG_RERANKER_FINAL_K', 5),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Logging Configuration
     |--------------------------------------------------------------------------
     */

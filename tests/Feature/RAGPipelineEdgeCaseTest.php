@@ -14,7 +14,10 @@ use Modules\ChatModule\Services\Pipeline\QueryRewriterService;
 use Modules\ChatModule\Services\Pipeline\ResponseBuilder;
 use Modules\ChatModule\Services\Pipeline\RewrittenQuery;
 use Modules\ChatModule\Services\Pipeline\SessionManager;
+use Modules\ChatModule\Services\QuestionClassifier;
 use Modules\ChatModule\Services\RAGPipelineService;
+use Modules\ChatModule\Services\RerankerService;
+use Modules\ChatModule\Services\SemanticCacheService;
 use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
 use Modules\EmbeddingModule\Services\ProviderFactory;
 use Modules\LLMModule\Contracts\LLMResponseInterface;
@@ -121,6 +124,9 @@ function makeEdgePipeline(
         $chunkProcessor,
         $responseBuilder,
         $sessionManager,
+        mock(SemanticCacheService::class),
+        new QuestionClassifier,
+        mock(RerankerService::class),
         ...array_merge($defaults, $config),
     );
 }

@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Modules\ChatModule\Events\KnowledgeChanged;
 use Modules\DocumentModule\Contracts\TextChunkingServiceInterface;
 use Modules\DocumentModule\Contracts\TextExtractionServiceInterface;
 use Modules\DocumentModule\Models\Document;
@@ -101,6 +102,9 @@ class ProcessDocumentJob implements ShouldQueue
                 'chunks_count' => count($chunks),
                 'processed_at' => now(),
             ]);
+
+            // New knowledge is available — invalidate cached RAG answers.
+            KnowledgeChanged::dispatch([$document->id]);
         } catch (\Throwable $e) {
             $document->update([
                 'status' => 'failed',

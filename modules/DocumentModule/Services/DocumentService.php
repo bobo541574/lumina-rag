@@ -8,6 +8,7 @@ use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
+use Modules\ChatModule\Events\KnowledgeChanged;
 use Modules\DocumentModule\Contracts\DocumentServiceInterface;
 use Modules\DocumentModule\Contracts\TextChunkingServiceInterface;
 use Modules\DocumentModule\Contracts\TextExtractionServiceInterface;
@@ -227,6 +228,9 @@ class DocumentService implements DocumentServiceInterface
         $document->chunks()->delete();
         Storage::delete($document->file_path);
         $document->delete();
+
+        // Notify the RAG pipeline to invalidate cached answers referencing this doc.
+        KnowledgeChanged::dispatch([$document->id]);
     }
 
     /**
@@ -260,6 +264,9 @@ class DocumentService implements DocumentServiceInterface
 
         if ($updateData !== []) {
             $document->update($updateData);
+
+            // Metadata (project/date) can change retrieval scope, invalidate cache.
+            KnowledgeChanged::dispatch([$document->id]);
         }
 
         return $document->fresh();
