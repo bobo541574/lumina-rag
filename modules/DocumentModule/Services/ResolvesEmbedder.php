@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Modules\DocumentModule\Jobs;
+namespace Modules\DocumentModule\Services;
 
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Modules\DocumentModule\Models\Document;

@@ -18,16 +18,19 @@ use Modules\DocumentModule\Models\Document;
  */
 function createDocumentTestUser(): array
 {
+    // The DB stores only the SHA-256 digest; the raw token is used in headers.
+    $rawToken = 'doc-test-token-'.bin2hex(random_bytes(8));
+
     $user = User::create([
         'name' => 'Doc Test User',
         'email' => 'doc-test@example.com',
         'password' => Hash::make('password123'),
-        'api_token' => 'doc-test-token-'.bin2hex(random_bytes(8)),
+        'api_token' => hash('sha256', $rawToken),
     ]);
 
     return [
         'user' => $user,
-        'headers' => ['Authorization' => 'Bearer '.$user->api_token],
+        'headers' => ['Authorization' => 'Bearer '.$rawToken],
     ];
 }
 

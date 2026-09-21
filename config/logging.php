@@ -135,6 +135,17 @@ return [
             'replace_placeholders' => true,
         ],
 
+        // Dedicated audit trail for sensitive/security-relevant events
+        // (auth, privileged settings changes) with a defined retention window
+        // (ISO 27002:5.15, 8.15, 8.16).
+        'security' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/security.log'),
+            'level' => env('SECURITY_LOG_LEVEL', 'info'),
+            'days' => env('SECURITY_LOG_DAYS', 90),
+            'replace_placeholders' => true,
+        ],
+
     ],
 
 ];

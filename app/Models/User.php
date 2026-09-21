@@ -43,7 +43,7 @@ use Modules\DocumentModule\Models\Document;
  *
  * @throws ModelNotFoundException When not found via ULID
  */
-#[Fillable(['name', 'email', 'password', 'api_token'])]
+#[Fillable(['name', 'email', 'password', 'api_token', 'api_token_expires_at', 'is_admin'])]
 #[Hidden(['password', 'remember_token', 'api_token'])]
 class User extends Authenticatable
 {
@@ -59,8 +59,20 @@ class User extends Authenticatable
     {
         return [
             'email_verified_at' => 'datetime',
+            'api_token_expires_at' => 'datetime',
             'password' => 'hashed',
+            'is_admin' => 'boolean',
         ];
+    }
+
+    /**
+     * Determine whether the user holds the admin role.
+     *
+     * @return bool True for privileged users. Example: true
+     */
+    public function isAdmin(): bool
+    {
+        return (bool) $this->is_admin;
     }
 
     /**

@@ -6,7 +6,7 @@ use Illuminate\Support\Facades\Route;
 use Modules\SettingsModule\Controllers\AiModelController;
 use Modules\SettingsModule\Controllers\TermAliasController;
 
-Route::prefix('api/settings')->middleware('auth.token')->group(function (): void {
+Route::prefix('api/settings')->middleware(['auth.token', 'auth.admin'])->group(function (): void {
     Route::get('ai-models', [AiModelController::class, 'index']);
     Route::post('ai-models', [AiModelController::class, 'store']);
     Route::get('ai-models/{id}', [AiModelController::class, 'show'])->whereUlid('id');

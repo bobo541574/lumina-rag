@@ -28,7 +28,8 @@ class RegisterRequest extends FormRequest
             'name.required' => 'Name is required.',
             'email.required' => 'Email is required.',
             'email.email' => 'Please provide a valid email address.',
-            'email.unique' => 'A user with this email already exists.',
+            // Generic message to avoid account enumeration via the unique rule.
+            'email.unique' => 'Unable to register with these details.',
             'password.required' => 'Password is required.',
             'password.min' => 'Password must be at least 8 characters.',
         ];

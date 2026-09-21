@@ -81,6 +81,13 @@ class ChatRequest extends FormRequest
                 'nullable',
                 'date',
             ],
+            // Metadata keys are deliberately not enumerated: the vector store
+            // whitelists queryable metadata keys regardless (see B6).
+            'document_filter.meta' => [
+                'nullable',
+                'array',
+                'max:10',
+            ],
             'think' => [
                 'nullable',
                 'boolean',

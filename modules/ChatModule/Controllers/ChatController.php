@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace Modules\ChatModule\Controllers;
 
+use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
 use Modules\ChatModule\Contracts\RAGPipelineServiceInterface;
 use Modules\ChatModule\Requests\ChatRequest;
+use Modules\DocumentModule\Models\Document;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
@@ -63,7 +65,7 @@ class ChatController extends Controller
                 $request->input('question'),
                 [
                     'session_id' => $request->input('session_id'),
-                    'document_filter' => $request->input('document_filter', []),
+                    'document_filter' => $this->scopeDocumentFilter($request->input('document_filter', []), $user),
                     'user_id' => $user?->id,
                     'llm_model_id' => $request->input('llm_model_id'),
                     'think' => $request->input('think'),
@@ -179,6 +181,37 @@ class ChatController extends Controller
     }
 
     /**
+     * Whitelist and tenant-scope a client-supplied document filter.
+     *
+     * Removes any unknown keys (e.g. user_ids), and — when tenant isolation
+     * is enabled — restricts document_ids to documents owned by the requester.
+     * The pipeline applies the same scoping again as a backstop.
+     *
+     * @param  array  $filter  Raw document_filter from the request.
+     * @param  User|null  $user  The authenticated user (nullable).
+     * @return array Scoped, whitelisted filter array.
+     */
+    private function scopeDocumentFilter(array $filter, ?User $user): array
+    {
+        $allowed = ['document_ids', 'date_from', 'date_to', 'meta'];
+        $scoped = array_intersect_key($filter, array_flip($allowed));
+
+        if (! config('rag.security.tenant_isolation', true) || $user === null) {
+            return $scoped;
+        }
+
+        $documentIds = $scoped['document_ids'] ?? null;
+        if ($documentIds !== null) {
+            $scoped['document_ids'] = Document::whereIn('id', (array) $documentIds)
+                ->where('user_id', $user->id)
+                ->pluck('id')
+                ->all();
+        }
+
+        return $scoped;
+    }
+
+    /**
      * Generate a streaming SSE response
      *
      * Sets up Server-Sent Event headers and streams pipeline events (status updates,
@@ -205,7 +238,7 @@ class ChatController extends Controller
                     $request->input('question'),
                     [
                         'session_id' => $request->input('session_id'),
-                        'document_filter' => $request->input('document_filter', []),
+                        'document_filter' => $this->scopeDocumentFilter($request->input('document_filter', []), $user),
                         'user_id' => $user?->id,
                         'llm_model_id' => $request->input('llm_model_id'),
                         'think' => $request->input('think'),

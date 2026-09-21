@@ -80,8 +80,8 @@
               </AppButton>
             </div>
           </div>
-          <!-- Description rendered as HTML (Trix output). Sanitize server-side. -->
-          <div v-if="m.description" class="mt-1 ml-1 text-xs text-surface-500" v-html="m.description" />
+          <!-- Description rendered as plain text (avoids stored-XSS via v-html). -->
+          <div v-if="m.description" class="mt-1 ml-1 text-xs text-surface-500 whitespace-pre-wrap">{{ m.description }}</div>
         </div>
       </section>
     </template>

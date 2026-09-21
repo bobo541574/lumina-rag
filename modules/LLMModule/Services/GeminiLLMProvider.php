@@ -170,7 +170,7 @@ class GeminiLLMProvider implements LLMProviderInterface
             ];
         }
 
-        $url = $this->baseUrl.'/models/'.urlencode($model).':streamGenerateContent?alt=sse&key='.$this->apiKey;
+        $url = $this->baseUrl.'/models/'.urlencode($model).':streamGenerateContent?alt=sse';
 
         $queue = [];
         $lineBuffer = '';
@@ -180,6 +180,8 @@ class GeminiLLMProvider implements LLMProviderInterface
             CURLOPT_POST => true,
             CURLOPT_HTTPHEADER => [
                 'Content-Type: application/json',
+                // Credentials travel in a header, never in the URL (ISO 27002:8.24).
+                'x-goog-api-key: '.$this->apiKey,
             ],
             CURLOPT_POSTFIELDS => json_encode($payload),
             CURLOPT_RETURNTRANSFER => false,
@@ -283,7 +285,7 @@ class GeminiLLMProvider implements LLMProviderInterface
         $maxAttempts = 3;
         $backoff = [1_000_000, 5_000_000, 25_000_000];
 
-        $url = $this->baseUrl.'/models/'.urlencode($model).':generateContent?key='.$this->apiKey;
+        $url = $this->baseUrl.'/models/'.urlencode($model).':generateContent';
 
         for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
             $ch = curl_init($url);
@@ -291,6 +293,8 @@ class GeminiLLMProvider implements LLMProviderInterface
                 CURLOPT_POST => true,
                 CURLOPT_HTTPHEADER => [
                     'Content-Type: application/json',
+                    // Credentials travel in a header, never in the URL (ISO 27002:8.24).
+                    'x-goog-api-key: '.$this->apiKey,
                 ],
                 CURLOPT_POSTFIELDS => json_encode($payload),
                 CURLOPT_RETURNTRANSFER => true,

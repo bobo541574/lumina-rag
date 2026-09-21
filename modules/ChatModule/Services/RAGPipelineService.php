@@ -868,6 +868,9 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             }
         }
 
+        // Enforce tenant isolation: a user may only search documents they own.
+        $autoFilters = $this->applyTenantIsolation($autoFilters, $options['user_id'] ?? $this->userId);
+
         $llm = $this->resolveLLM($options);
 
         // Select the embedding model that matches the targeted documents
@@ -915,6 +918,40 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         return compact('question', 'session', 'autoFilters', 'rewritten', 'searchQuestion',
             'ftsQuery', 'llmQuestion', 'llm', 'targetModel', 'embedder');
+    }
+
+    /**
+     * Constrain search filters to the authenticated user's own documents.
+     *
+     * When tenant isolation is enabled, drops any user_ids not belonging to
+     * the requester and prunes document_ids to documents the requester owns.
+     * Keeps project/date/meta filters intact. Satisfies ISO 27701 (PII data
+     * minimisation) and ISO 27002:8.3 (data access restriction).
+     *
+     * @param  array  $filters  Merged auto/request filters.
+     * @param  string|null  $userId  The authenticated user id (or null for unauthenticated/system contexts).
+     * @return array Filtered, tenant-safe filter array.
+     */
+    private function applyTenantIsolation(array $filters, ?string $userId): array
+    {
+        if (! config('rag.security.tenant_isolation', true)) {
+            return $filters;
+        }
+
+        if ($userId !== null) {
+            $filters['user_ids'] = [$userId];
+        }
+
+        $documentIds = $filters['document_ids'] ?? null;
+        if ($documentIds !== null) {
+            $query = Document::whereIn('id', (array) $documentIds);
+            if ($userId !== null) {
+                $query->where('user_id', $userId);
+            }
+            $filters['document_ids'] = $query->pluck('id')->all();
+        }
+
+        return $filters;
     }
 
     /**
@@ -1074,7 +1111,15 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         foreach ($searchQueries as $q) {
             $questionVector = $embedder->embed($q);
-            $filters = array_merge($autoFilters, $options['document_filter'] ?? []);
+
+            // Tenant isolation (ISO 27001/27701): regardless of what the client
+            // sent or which user-name matched, a user may only search their own
+            // documents. The controller already scopes the request filter; this
+            // is the defense-in-depth backstop inside the pipeline.
+            $filters = $this->applyTenantIsolation(
+                array_merge($autoFilters, $options['document_filter'] ?? []),
+                $options['user_id'] ?? $this->userId,
+            );
             $filters['similarity_threshold'] = $this->minInitialThreshold;
             $filters['model_name'] = $targetModel?->model ?? config('rag.embedding.model', 'text-embedding-3-small');
             if ($rewritten->ftsQuery !== null) {

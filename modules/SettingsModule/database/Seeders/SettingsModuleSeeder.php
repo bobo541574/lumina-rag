@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Modules\SettingsModule\Database\Seeders;
 
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\Crypt;
+use Illuminate\Support\Facades\DB;
 use Modules\SettingsModule\Models\AiModel;
 use Modules\SettingsModule\Models\TermAlias;
 
@@ -32,6 +34,11 @@ class SettingsModuleSeeder extends Seeder
      */
     public function run(): void
     {
+        // Re-run safety net: upgrade any legacy plaintext API keys to encrypted
+        // values so the AiModel encrypted cast never has to decrypt plaintext.
+        // Must run before the Eloquent writes below (which read existing rows).
+        $this->encryptLegacyApiKeys();
+
         $embeddingModels = [
             [
                 'name' => 'nomic-embed-text',
@@ -221,6 +228,32 @@ class SettingsModuleSeeder extends Seeder
         }
 
         $this->seedTermAliases();
+    }
+
+    /**
+     * Encrypt any legacy plaintext API keys remaining on ai_models rows.
+     *
+     * The AiModel `encrypted` cast encrypts on write, but rows created before
+     * the cast existed may still hold plaintext. Runs on every seed so a
+     * re-run of `db:seed` upgrades them (idempotent; already-encrypted values
+     * start with the Laravel ciphertext prefix "eyJ"). ISO 27002:8.24.
+     */
+    private function encryptLegacyApiKeys(): void
+    {
+        if (! DB::getSchemaBuilder()->hasTable('ai_models')) {
+            return;
+        }
+
+        DB::table('ai_models')
+            ->whereNotNull('api_key')
+            ->where('api_key', '<>', '')
+            ->where('api_key', 'not like', 'eyJ%')
+            ->orderBy('id')
+            ->each(function (object $model): void {
+                DB::table('ai_models')->where('id', $model->id)->update([
+                    'api_key' => Crypt::encryptString($model->api_key),
+                ]);
+            });
     }
 
     /**

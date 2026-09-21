@@ -7,15 +7,18 @@ namespace Modules\UserModule\Controllers;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
+use Illuminate\Support\Facades\Log;
 use Modules\UserModule\Contracts\AuthServiceInterface;
 use Modules\UserModule\Requests\LoginRequest;
 use Modules\UserModule\Requests\RegisterRequest;
+use Modules\UserModule\Services\AccountDeletionService;
 
 /**
  * Auth Controller
  *
- * Handles HTTP requests for user registration, login, logout, and profile
- * retrieval. Delegates all business logic to AuthServiceInterface.
+ * Handles HTTP requests for user registration, login, logout, profile
+ * retrieval, and account erasure. Delegates all business logic to
+ * AuthServiceInterface (and AccountDeletionService for deletion).
  *
  * All responses use the standard envelope format: { success, message, data, errors }.
  * Errors from the service layer are caught and returned as JSON error responses
@@ -30,12 +33,16 @@ class AuthController extends Controller
     /** @var AuthServiceInterface The authentication service handling business logic */
     private AuthServiceInterface $authService;
 
+    private AccountDeletionService $deletionService;
+
     /**
      * @param  AuthServiceInterface  $authService  The authentication service. Example: app(AuthServiceInterface::class)
+     * @param  AccountDeletionService  $deletionService  The account erasure service. Example: app(AccountDeletionService::class)
      */
-    public function __construct(AuthServiceInterface $authService)
+    public function __construct(AuthServiceInterface $authService, AccountDeletionService $deletionService)
     {
         $this->authService = $authService;
+        $this->deletionService = $deletionService;
     }
 
     /**
@@ -61,6 +68,10 @@ class AuthController extends Controller
                 'data' => $result,
             ], 201);
         } catch (\InvalidArgumentException $e) {
+            Log::channel('security')->warning('user.register_conflict', [
+                'email' => $request->input('email'),
+            ]);
+
             return response()->json([
                 'success' => false,
                 'message' => $e->getMessage(),
@@ -165,6 +176,40 @@ class AuthController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'An error occurred.',
+            ], 500);
+        }
+    }
+
+    /**
+     * Delete the authenticated account and all associated personal data
+     *
+     * Erases documents, chunks, vectors, chat history, and semantic-cache
+     * entries owned by the user, then removes the user record. Satisfies
+     * the right to erasure (ISO 27701:8.2.4).
+     *
+     * @param  Request  $request  The incoming request with authenticated_user. Example: request()
+     * @return JsonResponse Confirmation on success, 500 on failure. Example: response()->json(["success" => true, "message" => "Account deleted."])
+     */
+    public function destroy(Request $request): JsonResponse
+    {
+        $user = $request->input('authenticated_user');
+
+        try {
+            $this->deletionService->delete($user);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Account deleted.',
+            ]);
+        } catch (\Throwable $e) {
+            Log::channel('security')->error('user.delete_failed', [
+                'user_id' => $user->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Unable to delete the account.',
             ], 500);
         }
     }

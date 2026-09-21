@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
+use Illuminate\Support\Facades\Log;
 use Modules\SettingsModule\Contracts\AiModelServiceInterface;
 
 /**
@@ -85,6 +86,13 @@ class AiModelController extends Controller
         try {
             $model = $this->modelService->create($data);
 
+            Log::channel('security')->info('ai_model.created', [
+                'model_id' => $model->id,
+                'name' => $model->name,
+                'type' => $model->type,
+                'provider' => $model->provider,
+            ]);
+
             return response()->json([
                 'success' => true,
                 'message' => 'AI model created successfully.',
@@ -96,9 +104,11 @@ class AiModelController extends Controller
                 'message' => 'Referenced model not found.',
             ], 404);
         } catch (\Throwable $e) {
+            Log::channel('security')->error('ai_model.store_failed', ['error' => $e->getMessage()]);
+
             return response()->json([
                 'success' => false,
-                'message' => $e->getMessage(),
+                'message' => 'Unable to create the AI model.',
             ], 422);
         }
     }
@@ -130,9 +140,11 @@ class AiModelController extends Controller
                 'message' => 'AI model not found.',
             ], 404);
         } catch (\Throwable $e) {
+            Log::channel('security')->error('ai_model.show_failed', ['error' => $e->getMessage()]);
+
             return response()->json([
                 'success' => false,
-                'message' => $e->getMessage(),
+                'message' => 'Unable to load the AI model.',
             ], 500);
         }
     }
@@ -168,6 +180,11 @@ class AiModelController extends Controller
             $data = $request->validate($rules);
             $model = $this->modelService->update($id, $data);
 
+            Log::channel('security')->info('ai_model.updated', [
+                'model_id' => $id,
+                'changed' => array_keys($data),
+            ]);
+
             return response()->json([
                 'success' => true,
                 'message' => 'AI model updated successfully.',
@@ -179,9 +196,11 @@ class AiModelController extends Controller
                 'message' => 'AI model not found.',
             ], 404);
         } catch (\Throwable $e) {
+            Log::channel('security')->error('ai_model.update_failed', ['error' => $e->getMessage()]);
+
             return response()->json([
                 'success' => false,
-                'message' => $e->getMessage(),
+                'message' => 'Unable to update the AI model.',
             ], 422);
         }
     }
@@ -203,6 +222,8 @@ class AiModelController extends Controller
         try {
             $this->modelService->delete($id);
 
+            Log::channel('security')->info('ai_model.deleted', ['model_id' => $id]);
+
             return response()->json([
                 'success' => true,
                 'message' => 'AI model deleted successfully.',
@@ -213,9 +234,14 @@ class AiModelController extends Controller
                 'message' => 'AI model not found.',
             ], 404);
         } catch (\Throwable $e) {
+            Log::channel('security')->error('ai_model.delete_failed', [
+                'model_id' => $id,
+                'error' => $e->getMessage(),
+            ]);
+
             return response()->json([
                 'success' => false,
-                'message' => $e->getMessage(),
+                'message' => 'Unable to delete the AI model.',
             ], 500);
         }
     }

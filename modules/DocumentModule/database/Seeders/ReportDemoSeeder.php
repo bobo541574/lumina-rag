@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Modules\DocumentModule\Database\Seeders;
 
 use App\Models\User;
+use App\Support\ApiToken;
 use Carbon\Carbon;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
@@ -287,7 +288,7 @@ class ReportDemoSeeder extends Seeder
                 ['email' => $user['email']],
                 [
                     ...$user,
-                    'api_token' => bin2hex(random_bytes(40)),
+                    'api_token' => ApiToken::hash(ApiToken::make()),
                 ],
             );
         }

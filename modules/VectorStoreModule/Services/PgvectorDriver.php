@@ -26,10 +26,27 @@ use Modules\VectorStoreModule\Models\VectorEmbedding;
  *
  * @param  DatabaseManager  $db  Laravel database manager. Example: app(DatabaseManager::class)
  *
+ * Metadata filter keys are restricted to an allow-list so client-supplied keys
+ * can never be interpolated into raw SQL (injection defence).
+ *
  * @throws \RuntimeException On database connection failures or query errors
  */
 class PgvectorDriver implements VectorStoreInterface
 {
+    /**
+     * Metadata keys that may be used as search filters when clients pass a
+     * `meta` filter. Any other key is silently dropped.
+     */
+    public const ALLOWED_META_KEYS = [
+        'section',
+        'quarter',
+        'project',
+        'user_name',
+        'report_date',
+        'document_title',
+        'page_number',
+    ];
+
     /** @var DatabaseManager Laravel database manager for executing queries */
     private DatabaseManager $db;
 
@@ -529,14 +546,17 @@ class PgvectorDriver implements VectorStoreInterface
             $query->where("{$alias}.model_name", $filters['model_name']);
         }
         if (isset($filters['meta']) && is_array($filters['meta'])) {
-            if (! $this->isSqlite) {
-                foreach ($filters['meta'] as $key => $value) {
-                    $jsonCondition = json_encode([$key => $value]);
-                    $query->whereRaw('dc.metadata @> ?::jsonb', [$jsonCondition]);
-                }
-            } elseif ($this->isSqlite) {
-                foreach ($filters['meta'] as $key => $value) {
-                    $query->whereRaw("json_extract(dc.metadata, '$.\"{$key}\"') = ?", [$value]);
+            $meta = $this->whitelistMetaKeys($filters['meta']);
+            if ($meta !== []) {
+                if (! $this->isSqlite) {
+                    foreach ($meta as $key => $value) {
+                        $jsonCondition = json_encode([$key => $value]);
+                        $query->whereRaw('dc.metadata @> ?::jsonb', [$jsonCondition]);
+                    }
+                } else {
+                    foreach ($meta as $key => $value) {
+                        $query->whereRaw("json_extract(dc.metadata, '$.\"{$key}\"') = ?", [$value]);
+                    }
                 }
             }
         }
@@ -579,19 +599,36 @@ class PgvectorDriver implements VectorStoreInterface
             $query->where('d.report_date', '<=', $filters['report_date_to']);
         }
         if (isset($filters['meta']) && is_array($filters['meta'])) {
-            if (! $this->isSqlite) {
-                foreach ($filters['meta'] as $key => $value) {
-                    $jsonCondition = json_encode([$key => $value]);
-                    $query->whereRaw('dc.metadata @> ?::jsonb', [$jsonCondition]);
-                }
-            } elseif ($this->isSqlite) {
-                foreach ($filters['meta'] as $key => $value) {
-                    $query->whereRaw("json_extract(dc.metadata, '$.\"{$key}\"') = ?", [$value]);
+            $meta = $this->whitelistMetaKeys($filters['meta']);
+            if ($meta !== []) {
+                if (! $this->isSqlite) {
+                    foreach ($meta as $key => $value) {
+                        $jsonCondition = json_encode([$key => $value]);
+                        $query->whereRaw('dc.metadata @> ?::jsonb', [$jsonCondition]);
+                    }
+                } else {
+                    foreach ($meta as $key => $value) {
+                        $query->whereRaw("json_extract(dc.metadata, '$.\"{$key}\"') = ?", [$value]);
+                    }
                 }
             }
         }
 
         return $query;
+    }
+
+    /**
+     * Keep only metadata keys that are safe to use as search filters.
+     *
+     * Client-supplied meta filters are narrowed to the allow-list so unknown
+     * or malicious keys are never interpolated into raw SQL.
+     *
+     * @param  array  $meta  Raw metadata filters. Example: ["section" => "Revenue", "evil" => "x"]
+     * @return array Filtered metadata keyed by allow-listed key only. Example: ["section" => "Revenue"]
+     */
+    private function whitelistMetaKeys(array $meta): array
+    {
+        return array_intersect_key($meta, array_flip(self::ALLOWED_META_KEYS));
     }
 
     /**

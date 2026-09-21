@@ -18,16 +18,19 @@ use Modules\ChatModule\Models\ChatSession;
  */
 function createAuthenticatedUser(): array
 {
+    // The DB stores only the SHA-256 digest; the raw token is used in headers.
+    $rawToken = 'chat-test-token-'.bin2hex(random_bytes(8));
+
     $user = User::create([
         'name' => 'Chat Test User',
         'email' => 'chat-test@example.com',
         'password' => Hash::make('password123'),
-        'api_token' => 'chat-test-token-'.bin2hex(random_bytes(8)),
+        'api_token' => hash('sha256', $rawToken),
     ]);
 
     return [
         'user' => $user,
-        'headers' => ['Authorization' => 'Bearer '.$user->api_token],
+        'headers' => ['Authorization' => 'Bearer '.$rawToken],
     ];
 }
 

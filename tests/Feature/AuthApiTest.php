@@ -72,30 +72,34 @@ test('test_auth_login_rejects_invalid_credentials', function (): void {
 });
 
 test('test_auth_logout_invalidates_token', function (): void {
-    $user = User::create([
-        'name' => 'Test User',
-        'email' => 'test@example.com',
-        'password' => Hash::make('password123'),
-        'api_token' => 'test-token-123',
-    ]);
+    // The DB stores only the SHA-256 digest; the raw token is used in headers.
+    $rawToken = 'test-token-123';
 
-    $response = $this->withHeaders(['Authorization' => 'Bearer test-token-123'])
-        ->postJson('/api/auth/logout');
-
-    $response->assertStatus(200);
-    $user->refresh();
-    expect($user->api_token)->toBeNull();
-});
-
-test('test_auth_me_returns_authenticated_user', function (): void {
     User::create([
         'name' => 'Test User',
         'email' => 'test@example.com',
         'password' => Hash::make('password123'),
-        'api_token' => 'test-token-123',
+        'api_token' => hash('sha256', $rawToken),
     ]);
 
-    $response = $this->withHeaders(['Authorization' => 'Bearer test-token-123'])
+    $response = $this->withHeaders(['Authorization' => 'Bearer '.$rawToken])
+        ->postJson('/api/auth/logout');
+
+    $response->assertStatus(200);
+    $this->assertDatabaseMissing('users', ['api_token' => hash('sha256', $rawToken)]);
+});
+
+test('test_auth_me_returns_authenticated_user', function (): void {
+    $rawToken = 'test-token-123';
+
+    User::create([
+        'name' => 'Test User',
+        'email' => 'test@example.com',
+        'password' => Hash::make('password123'),
+        'api_token' => hash('sha256', $rawToken),
+    ]);
+
+    $response = $this->withHeaders(['Authorization' => 'Bearer '.$rawToken])
         ->getJson('/api/auth/me');
 
     $response->assertStatus(200);

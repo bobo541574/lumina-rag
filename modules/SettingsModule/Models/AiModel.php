@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\SettingsModule\Models;
 
+use App\Casts\EncryptedString;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
@@ -64,11 +65,22 @@ class AiModel extends Model
         'sort_order',
     ];
 
+    // Provider credentials are never serialized to API responses (exposed only
+    // as a boolean has_api_key to the UI). At rest, api_key is encrypted.
+    protected $hidden = [
+        'api_key',
+    ];
+
+    protected $appends = [
+        'has_api_key',
+    ];
+
     /**
      * Get the attribute casting configuration
      *
      * Defines type casts for integer, float, boolean, and array attributes
-     * to ensure proper hydration from the database.
+     * to ensure proper hydration from the database. api_key is encrypted at
+     * rest (ISO 27002:8.24).
      *
      * @return array<string, string> Attribute cast map
      *                               Example: ["dimensions" => "integer", "is_active" => "boolean", "settings" => "array"]
@@ -85,7 +97,18 @@ class AiModel extends Model
             'settings' => 'array',
             'is_active' => 'boolean',
             'sort_order' => 'integer',
+            'api_key' => EncryptedString::class,
         ];
+    }
+
+    /**
+     * Report whether this model has a credential configured (without exposing it).
+     *
+     * @return bool True when api_key is present. Example: true
+     */
+    public function getHasApiKeyAttribute(): bool
+    {
+        return $this->api_key !== null && $this->api_key !== '';
     }
 
     /**

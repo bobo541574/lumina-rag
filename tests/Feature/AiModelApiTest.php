@@ -9,16 +9,21 @@ use Modules\SettingsModule\Models\AiModel;
 
 function createAiModelTestUser(): array
 {
+    // The DB stores only the SHA-256 digest; the raw token is used in headers.
+    // Settings endpoints are admin-gated, so the helper creates an admin user.
+    $rawToken = 'model-test-token-'.bin2hex(random_bytes(8));
+
     $user = User::create([
         'name' => 'Model Test User',
         'email' => 'model-test@example.com',
         'password' => Hash::make('password123'),
-        'api_token' => 'model-test-token-'.bin2hex(random_bytes(8)),
+        'api_token' => hash('sha256', $rawToken),
+        'is_admin' => true,
     ]);
 
     return [
         'user' => $user,
-        'headers' => ['Authorization' => 'Bearer '.$user->api_token],
+        'headers' => ['Authorization' => 'Bearer '.$rawToken],
     ];
 }
 
@@ -59,6 +64,24 @@ test('test_ai_model_create_requires_authentication', function (): void {
     ]);
 
     $response->assertStatus(401);
+});
+
+test('test_ai_model_settings_requires_admin_role', function (): void {
+    $rawToken = 'model-user-token-'.bin2hex(random_bytes(8));
+    $user = User::create([
+        'name' => 'Model Member User',
+        'email' => 'model-member@example.com',
+        'password' => Hash::make('password123'),
+        'api_token' => hash('sha256', $rawToken),
+        'is_admin' => false,
+    ]);
+
+    $this->assertFalse($user->isAdmin());
+
+    $response = $this->withHeaders(['Authorization' => 'Bearer '.$rawToken])
+        ->getJson('/api/settings/ai-models');
+
+    $response->assertStatus(403);
 });
 
 test('test_ai_model_create_validates_required_fields', function (): void {

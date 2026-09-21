@@ -132,6 +132,22 @@ return [
         'session_timeout_hours' => (int) env('RAG_SESSION_TIMEOUT_HOURS', 24),
         // Number of prior message pairs injected as conversation history for LLM context.
         'history_window' => (int) env('RAG_CHAT_HISTORY_WINDOW', 4),
+        // Per-user request ceiling for the chat endpoint (per minute) to bound
+        // provider spend and worker load (ISO 27002:8.6 capacity management).
+        'max_requests_per_minute' => (int) env('RAG_CHAT_MAX_REQUESTS_PER_MINUTE', 20),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Security Configuration
+    |--------------------------------------------------------------------------
+    */
+    'security' => [
+        // Scope vector retrieval to the authenticated user's own documents.
+        // Disable only for an explicitly shared (org-wide) corpus.
+        'tenant_isolation' => (bool) env('RAG_TENANT_ISOLATION', true),
+        // Lifetime of an API token in days before expiry / sliding renewal.
+        'api_token_ttl_days' => (int) env('RAG_API_TOKEN_TTL_DAYS', 30),
     ],
 
     /*

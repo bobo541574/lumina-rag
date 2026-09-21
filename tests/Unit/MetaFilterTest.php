@@ -91,14 +91,14 @@ test('apply_filters_fts_adds_multiple_meta_where_clauses', function (): void {
         ->join('documents as d', 'd.id', '=', 'dc.document_id');
 
     $query = callApplyFiltersFts($query, [
-        'meta' => ['project' => 'Orion', 'user_id' => '01J123'],
+        'meta' => ['project' => 'Orion', 'user_name' => 'John'],
     ]);
 
     $bindings = $query->getBindings();
 
     expect($bindings)->toHaveCount(2);
     expect($bindings[0])->toBe('Orion');
-    expect($bindings[1])->toBe('01J123');
+    expect($bindings[1])->toBe('John');
 });
 
 test('apply_filters_fts_ignores_empty_meta', function (): void {
