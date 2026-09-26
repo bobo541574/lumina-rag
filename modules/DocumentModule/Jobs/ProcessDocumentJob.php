@@ -42,14 +42,16 @@ class ProcessDocumentJob implements ShouldQueue
     /**
      * Execute the job
      *
-     * Delegates to ProcessDocumentService. On any Throwable the service marks
-     * the document "failed" and re-throws so the queue worker can manage retries.
+     * Delegates to ProcessDocumentService. Only the last attempt marks the
+     * document "failed"; earlier failures keep it "processing" so a manual
+     * retry cannot start a duplicate run while the queue retries. failed()
+     * is the safety net for timeouts and killed workers.
      *
      * @param  ProcessDocumentService  $service  The document processing service. Example: app(ProcessDocumentService::class)
      */
     public function handle(ProcessDocumentService $service): void
     {
-        $service->process($this->documentId);
+        $service->process($this->documentId, finalAttempt: $this->attempts() >= $this->tries);
     }
 
     /**

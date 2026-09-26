@@ -59,6 +59,9 @@ class PgvectorDriver implements VectorStoreInterface
     /** @var bool Whether the database driver is SQLite (triggers fallback) */
     private bool $isSqlite;
 
+    /** @var array<string>|null Memoized list of existing shard tables */
+    private ?array $existingShardTables = null;
+
     /** @var int Reciprocal Rank Fusion rank constant */
     private int $rrfK;
 
@@ -362,6 +365,7 @@ class PgvectorDriver implements VectorStoreInterface
             ->select(
                 've.id',
                 've.chunk_id',
+                've.embedding',
                 'dc.content',
                 'dc.metadata',
                 'd.id as document_id',
@@ -375,8 +379,7 @@ class PgvectorDriver implements VectorStoreInterface
             )
             ->join('document_chunks as dc', 'dc.id', '=', 've.chunk_id')
             ->join('documents as d', 'd.id', '=', 'dc.document_id')
-            ->whereNull('d.deleted_at')
-            ->limit($topK);
+            ->whereNull('d.deleted_at');
 
         $query = $this->applyFiltersVector($query, $filters, 've');
 
@@ -385,6 +388,7 @@ class PgvectorDriver implements VectorStoreInterface
             $embedding = $row->embedding ?? '[]';
             $stored = is_string($embedding) ? json_decode($embedding, true) : (array) $embedding;
             $row->similarity_score = $this->cosineSimilarity($queryVector, $stored);
+            unset($row->embedding);
 
             return $row;
         }, $results);
@@ -394,15 +398,16 @@ class PgvectorDriver implements VectorStoreInterface
             array_filter($results, fn (object $row): bool => $row->similarity_score >= $threshold)
         );
 
-        return $results;
+        // Score in PHP first, then cut to top K — a SQL LIMIT would drop
+        // rows before they were ranked.
+        return array_slice($results, 0, $topK);
     }
 
     /**
      * Delete vectors by their ULIDs.
      *
      * Removes records from both the dimension shard tables (PostgreSQL only)
-     * and the vector_embeddings metadata table. Shard table deletions are
-     * wrapped in try/catch since the table may not exist for all dimensions.
+     * and the vector_embeddings metadata table.
      *
      * @param  array  $ids  Array of vector ULIDs to delete. Example: ["01JAR...", "01JAS..."]
      *
@@ -410,14 +415,8 @@ class PgvectorDriver implements VectorStoreInterface
      */
     public function delete(array $ids): void
     {
-        if (! $this->isSqlite) {
-            foreach (self::DIM_TABLES as $dim) {
-                try {
-                    $this->db->table("ve_{$dim}")->whereIn('id', $ids)->delete();
-                } catch (\RuntimeException) {
-                    // Shard table may not exist — skip.
-                }
-            }
+        foreach ($this->shardTables() as $table) {
+            $this->db->table($table)->whereIn('id', $ids)->delete();
         }
         VectorEmbedding::whereIn('id', $ids)->delete();
     }
@@ -443,21 +442,61 @@ class PgvectorDriver implements VectorStoreInterface
             return;
         }
 
-        if (! $this->isSqlite) {
-            foreach (self::DIM_TABLES as $dim) {
-                try {
-                    $this->db->table("ve_{$dim}")
-                        ->whereIn('chunk_id', $chunkIds)
-                        ->delete();
-                } catch (\RuntimeException) {
-                    // Shard table may not exist — skip.
-                }
-            }
+        foreach ($this->shardTables() as $table) {
+            $this->db->table($table)->whereIn('chunk_id', $chunkIds)->delete();
         }
 
         $this->db->table('vector_embeddings')
             ->whereIn('chunk_id', $chunkIds)
             ->delete();
+    }
+
+    /**
+     * Count stored vectors for the given chunks.
+     *
+     * On PostgreSQL the vectors live in the shard tables; on SQLite in
+     * vector_embeddings.
+     *
+     * @param  array<string>  $chunkIds  Chunk ULIDs. Example: ["01JAR...", "01JAS..."]
+     * @return int Number of stored vectors. Example: 42
+     */
+    public function countByChunkIds(array $chunkIds): int
+    {
+        if ($chunkIds === []) {
+            return 0;
+        }
+
+        if ($this->isSqlite) {
+            return $this->db->table('vector_embeddings')->whereIn('chunk_id', $chunkIds)->count();
+        }
+
+        $count = 0;
+        foreach ($this->shardTables() as $table) {
+            $count += $this->db->table($table)->whereIn('chunk_id', $chunkIds)->count();
+        }
+
+        return $count;
+    }
+
+    /**
+     * Shard tables that exist on this installation (none on SQLite).
+     *
+     * Checked up front instead of catching errors per table: on PostgreSQL a
+     * failed statement aborts the surrounding transaction, so a missing shard
+     * table must never be queried.
+     *
+     * @return array<string> Existing shard table names. Example: ["ve_768", "ve_1536"]
+     */
+    private function shardTables(): array
+    {
+        if ($this->isSqlite) {
+            return [];
+        }
+
+        return $this->existingShardTables ??= array_values(array_filter(
+            array_map(fn (int $dim): string => "ve_{$dim}", self::DIM_TABLES),
+            fn (string $table): bool => $this->db->connection()->getSchemaBuilder()->hasTable($table),
+        ));
     }
 
     /**

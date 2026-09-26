@@ -70,6 +70,17 @@ class ChatSession extends Model
     }
 
     /**
+     * Scope a query to sessions owned by the given user.
+     *
+     * @param  Builder  $query  The query builder instance
+     * @param  string  $userId  Owner ULID. Example: "01J..."
+     */
+    public function scopeOwnedBy(Builder $query, string $userId): void
+    {
+        $query->where('user_id', $userId);
+    }
+
+    /**
      * Scope: active sessions
      *
      * Filters sessions that are not soft-deleted and have had activity

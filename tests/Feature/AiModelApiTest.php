@@ -157,3 +157,46 @@ test('test_ai_model_delete_removes_model', function (): void {
     $response->assertStatus(200);
     expect(AiModel::find($model->id))->toBeNull();
 });
+
+test('test_ai_model_create_accepts_every_provider_the_factory_supports', function (string $type, string $provider): void {
+    $auth = createAiModelTestUser();
+
+    $this->withHeaders($auth['headers'])
+        ->postJson('/api/settings/ai-models', [
+            'name' => "{$provider} {$type}",
+            'type' => $type,
+            'provider' => $provider,
+            'model' => 'some-model',
+        ])
+        ->assertStatus(201);
+})->with([
+    ['llm', 'gemini'],
+    ['llm', 'claude'],
+    ['llm', 'deepseek'],
+    ['embedding', 'gemini'],
+]);
+
+test('test_ai_model_create_rejects_llm_only_provider_for_embedding', function (): void {
+    $auth = createAiModelTestUser();
+
+    $this->withHeaders($auth['headers'])
+        ->postJson('/api/settings/ai-models', [
+            'name' => 'Claude embedding',
+            'type' => 'embedding',
+            'provider' => 'claude',
+            'model' => 'x',
+        ])
+        ->assertStatus(422)
+        ->assertJsonValidationErrors(['provider']);
+});
+
+test('test_ai_model_update_returns_field_errors_on_validation_failure', function (): void {
+    $auth = createAiModelTestUser();
+    $model = AiModel::create(['name' => 'M', 'type' => 'llm', 'provider' => 'openai', 'model' => 'gpt-4o', 'is_active' => true, 'sort_order' => 1]);
+
+    $this->withHeaders($auth['headers'])
+        ->putJson("/api/settings/ai-models/{$model->id}", ['temperature' => 5])
+        ->assertStatus(422)
+        ->assertJsonPath('success', false)
+        ->assertJsonValidationErrors(['temperature']);
+});

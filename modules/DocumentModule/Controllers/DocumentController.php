@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace Modules\DocumentModule\Controllers;
 
+use App\Http\Responses\ApiResponse;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
 use Modules\DocumentModule\Contracts\DocumentServiceInterface;
+use Modules\DocumentModule\Exceptions\InvalidDocumentStateException;
 use Modules\DocumentModule\Models\Document;
 use Modules\DocumentModule\Requests\UploadDocumentRequest;
 
@@ -49,32 +51,21 @@ class DocumentController extends Controller
     public function upload(UploadDocumentRequest $request): JsonResponse
     {
         try {
-            $user = $request->input('authenticated_user');
             $document = $this->documentService->upload(
                 $request->file('file'),
                 $request->input('title'),
-                $user?->id,
+                $request->input('authenticated_user')->id,
                 $request->input('embedding_model'),
                 $request->input('embedding_model_id'),
                 $request->input('report_date'),
                 $request->input('project'),
             );
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Document uploaded successfully and queued for processing.',
-                'data' => $document->toArray(),
-            ], 201);
-        } catch (\RuntimeException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => $e->getMessage(),
-            ], 409);
+            return ApiResponse::success($document->toArray(), 'Document uploaded successfully and queued for processing.', 201);
         } catch (\InvalidArgumentException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => $e->getMessage(),
-            ], 400);
+            return ApiResponse::error($e->getMessage(), 400);
+        } catch (\RuntimeException $e) {
+            return ApiResponse::error($e->getMessage(), 409);
         }
     }
 
@@ -92,29 +83,15 @@ class DocumentController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $user = $request->input('authenticated_user');
         $filters = $request->only(['status', 'per_page', 'page', 'search', 'sort_key', 'sort_dir']);
         $filters['per_page'] = min(
             (int) ($filters['per_page'] ?? config('rag.pagination.per_page')),
             (int) config('rag.pagination.max_per_page'),
         );
-        $documents = $this->documentService->listDocuments(
-            $filters,
-            $user?->id,
-        );
 
-        return response()->json([
-            'success' => true,
-            'data' => $documents['data'],
-            'meta' => [
-                'current_page' => $documents['current_page'],
-                'last_page' => $documents['last_page'],
-                'per_page' => $documents['per_page'],
-                'total' => $documents['total'],
-                'from' => $documents['from'],
-                'to' => $documents['to'],
-            ],
-        ]);
+        return ApiResponse::paginated(
+            $this->documentService->listDocuments($filters, $request->input('authenticated_user')->id),
+        );
     }
 
     /**
@@ -128,30 +105,13 @@ class DocumentController extends Controller
      * @return JsonResponse 200 with document data, or 404 if not found.
      *                      Example: { success: true, data: { id: "01J...", chunks_count: 15, ... } }
      *
-     * @throws ModelNotFoundException Caught and returned as 404
+     * @throws ModelNotFoundException Rendered as 404 by ApiExceptionRenderer
      */
     public function show(Request $request, string $id): JsonResponse
     {
-        try {
-            $user = $request->input('authenticated_user');
-            $query = Document::withCount('chunks')->where('id', $id);
+        $document = $this->documentService->getDocument($id, $request->input('authenticated_user')->id);
 
-            if ($user !== null) {
-                $query->where('user_id', $user->id);
-            }
-
-            $document = $query->firstOrFail();
-
-            return response()->json([
-                'success' => true,
-                'data' => $document->toArray(),
-            ]);
-        } catch (ModelNotFoundException) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Document not found.',
-            ], 404);
-        }
+        return ApiResponse::success($document->toArray());
     }
 
     /**
@@ -166,36 +126,19 @@ class DocumentController extends Controller
      * @return JsonResponse 200 with status data, or 404 if not found.
      *                      Example: { success: true, data: { id: "01J...", status: "completed", chunks_count: 15 } }
      *
-     * @throws ModelNotFoundException Caught and returned as 404
+     * @throws ModelNotFoundException Rendered as 404 by ApiExceptionRenderer
      */
     public function status(Request $request, string $id): JsonResponse
     {
-        try {
-            $user = $request->input('authenticated_user');
-            $query = Document::where('id', $id);
+        $document = $this->documentService->getDocument($id, $request->input('authenticated_user')->id);
 
-            if ($user !== null) {
-                $query->where('user_id', $user->id);
-            }
-
-            $document = $query->firstOrFail();
-
-            return response()->json([
-                'success' => true,
-                'data' => [
-                    'id' => $document->id,
-                    'status' => $document->status,
-                    'chunks_count' => $document->chunks_count,
-                    'error_message' => $document->error_message,
-                    'processed_at' => $document->processed_at,
-                ],
-            ]);
-        } catch (ModelNotFoundException) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Document not found.',
-            ], 404);
-        }
+        return ApiResponse::success([
+            'id' => $document->id,
+            'status' => $document->status,
+            'chunks_count' => $document->chunks_count,
+            'error_message' => $document->error_message,
+            'processed_at' => $document->processed_at,
+        ]);
     }
 
     /**
@@ -209,29 +152,16 @@ class DocumentController extends Controller
      * @return JsonResponse 200 with updated document data, 400 if not retryable, 404 if not found.
      *                      Example: { success: true, message: "Document retry initiated.", data: { id: "01J...", status: "pending" } }
      *
-     * @throws \RuntimeException Caught and returned as 400 (e.g. document not in "failed" status)
+     * @throws InvalidDocumentStateException Caught and returned as 400 (document not in "failed" status)
      */
     public function retry(Request $request, string $id): JsonResponse
     {
         try {
-            $user = $request->input('authenticated_user');
-            $document = $this->documentService->retryDocument($id, $user?->id);
+            $document = $this->documentService->retryDocument($id, $request->input('authenticated_user')->id);
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Document retry initiated.',
-                'data' => $document->toArray(),
-            ]);
-        } catch (\RuntimeException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => $e->getMessage(),
-            ], 400);
-        } catch (\Throwable $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Document not found.',
-            ], 404);
+            return ApiResponse::success($document->toArray(), 'Document retry initiated.');
+        } catch (InvalidDocumentStateException $e) {
+            return ApiResponse::error($e->getMessage(), 400);
         }
     }
 
@@ -243,37 +173,20 @@ class DocumentController extends Controller
      *
      * @param  Request  $request  The incoming request with authenticated_user and optional fields. Example: request()
      * @param  string  $id  The document ULID. Example: "01J..."
-     * @return JsonResponse 200 with updated document data, 404 if not found, 500 on error.
+     * @return JsonResponse 200 with updated document data or 404 if not found.
      *                      Example: { success: true, message: "Document updated successfully.", data: { ... } }
      *
-     * @throws ModelNotFoundException Caught and returned as 404
+     * @throws ModelNotFoundException Rendered as 404 by ApiExceptionRenderer
      */
     public function update(Request $request, string $id): JsonResponse
     {
-        try {
-            $user = $request->input('authenticated_user');
-            $document = $this->documentService->updateDocument(
-                $id,
-                $request->only(['title', 'description', 'report_date', 'project']),
-                $user?->id,
-            );
+        $document = $this->documentService->updateDocument(
+            $id,
+            $request->only(['title', 'description', 'report_date', 'project']),
+            $request->input('authenticated_user')->id,
+        );
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Document updated successfully.',
-                'data' => $document->toArray(),
-            ]);
-        } catch (ModelNotFoundException) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Document not found.',
-            ], 404);
-        } catch (\Throwable $e) {
-            return response()->json([
-                'success' => false,
-                'message' => $e->getMessage(),
-            ], 500);
-        }
+        return ApiResponse::success($document->toArray(), 'Document updated successfully.');
     }
 
     /**
@@ -284,31 +197,15 @@ class DocumentController extends Controller
      *
      * @param  Request  $request  The incoming request with authenticated_user. Example: request()
      * @param  string  $id  The document ULID. Example: "01J..."
-     * @return JsonResponse 200 on success, 404 if not found, 500 on error.
+     * @return JsonResponse 200 on success or 404 if not found.
      *                      Example: { success: true, message: "Document deleted successfully." }
      *
-     * @throws ModelNotFoundException Caught and returned as 404
+     * @throws ModelNotFoundException Rendered as 404 by ApiExceptionRenderer
      */
     public function destroy(Request $request, string $id): JsonResponse
     {
-        try {
-            $user = $request->input('authenticated_user');
-            $this->documentService->deleteDocument($id, $user?->id);
+        $this->documentService->deleteDocument($id, $request->input('authenticated_user')->id);
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Document deleted successfully.',
-            ]);
-        } catch (ModelNotFoundException) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Document not found.',
-            ], 404);
-        } catch (\Throwable $e) {
-            return response()->json([
-                'success' => false,
-                'message' => $e->getMessage(),
-            ], 500);
-        }
+        return ApiResponse::success(message: 'Document deleted successfully.');
     }
 }

@@ -11,6 +11,8 @@ use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
+use Modules\DocumentModule\Enums\DocumentStatus;
+use Modules\DocumentModule\Services\ChunkWriter;
 use Modules\DocumentModule\Services\TextChunkingService;
 use Modules\SettingsModule\Models\AiModel;
 
@@ -30,6 +32,7 @@ class ReportDemoSeeder extends Seeder
         $this->command?->info('Generating report data...');
 
         $chunker = app(TextChunkingService::class);
+        $chunkWriter = app(ChunkWriter::class);
         $users = User::all()->keyBy('id');
         $assignments = $this->getAssignments();
         $templates = $this->getContentTemplates();
@@ -49,7 +52,7 @@ class ReportDemoSeeder extends Seeder
             }
             if ($activeEmbedding !== null) {
                 $embeddingModelId = $activeEmbedding->id;
-                $embeddingModel = $activeEmbedding->model;
+                $embeddingModel = $activeEmbedding->modelName();
             }
         } catch (\Throwable) {
             // DB not ready
@@ -92,9 +95,7 @@ class ReportDemoSeeder extends Seeder
                         }
                         $body = implode("\n\n", $paragraphs);
 
-                        // Chunk the body, then prepend metadata to each chunk
                         $chunks = $chunker->chunk($body, self::CHUNK_SIZE, self::CHUNK_OVERLAP);
-                        $header = "Report by: {$user->name}\nProject: {$projectName}\nDate: {$d->format('Y-m-d')}\n\n";
                         $numChunks = count($chunks);
 
                         $docId = (string) Str::ulid();
@@ -110,7 +111,7 @@ class ReportDemoSeeder extends Seeder
                             'file_size' => random_int(5_000, 80_000),
                             'mime_type' => 'text/markdown',
                             'file_hash' => md5($title.$d->format('Y-m-d').$user->id.random_int(0, PHP_INT_MAX)),
-                            'status' => 'completed',
+                            'status' => DocumentStatus::Completed->value,
                             'embedding_model_id' => $embeddingModelId,
                             'embedding_model' => $embeddingModel,
                             'chunks_count' => $numChunks,
@@ -120,29 +121,18 @@ class ReportDemoSeeder extends Seeder
                         ];
                         $totalDocs++;
 
-                        foreach ($chunks as $i => $chunk) {
-                            $prefixed = $header.$chunk['content'];
-                            $allChunkRecords[] = [
-                                'id' => (string) Str::ulid(),
-                                'document_id' => $docId,
-                                'content' => $prefixed,
-                                'chunk_index' => $i,
-                                'page_number' => $chunk['page_number'] ?? null,
-                                'char_start' => $chunk['char_start'],
-                                'char_end' => $chunk['char_end'],
-                                'token_count' => (int) ceil(mb_strlen($prefixed) / 4),
-                                'metadata' => json_encode([
-                                    'project' => $projectName,
-                                    'user' => $user->name,
-                                    'report_date' => $d->format('Y-m-d'),
-                                ]),
-                                'created_at' => $d->format('Y-m-d H:i:s'),
-                            ];
-                        }
+                        // Same header + metadata keys as ProcessDocumentService.
+                        array_push($allChunkRecords, ...$chunkWriter->buildRecords($docId, $chunks, [
+                            'user_id' => $user->id,
+                            'user_name' => $user->name,
+                            'project' => $projectName,
+                            'report_date' => $d->format('Y-m-d'),
+                            'document_title' => $title,
+                        ], $d->format('Y-m-d H:i:s')));
                         $totalChunks += $numChunks;
 
                         if (count($allDocRecords) >= self::BATCH_SIZE) {
-                            $this->flushBatch($allDocRecords, $allChunkRecords);
+                            $this->flushBatch($chunkWriter, $allDocRecords, $allChunkRecords);
                             $allDocRecords = [];
                             $allChunkRecords = [];
                         }
@@ -152,10 +142,9 @@ class ReportDemoSeeder extends Seeder
         }
 
         if ($allDocRecords !== []) {
-            $this->flushBatch($allDocRecords, $allChunkRecords);
+            $this->flushBatch($chunkWriter, $allDocRecords, $allChunkRecords);
         }
 
-        DB::statement("UPDATE document_chunks SET tsv_content = to_tsvector('english', content) WHERE tsv_content IS NULL");
         $ftsCount = DB::selectOne('SELECT count(*) as cnt FROM document_chunks WHERE tsv_content IS NOT NULL')->cnt;
 
         $elapsed = round(microtime(true) - $startTime, 2);
@@ -319,33 +308,13 @@ class ReportDemoSeeder extends Seeder
         ];
     }
 
-    private function flushBatch(array $docRecords, array $chunkRecords): void
+    private function flushBatch(ChunkWriter $chunkWriter, array $docRecords, array $chunkRecords): void
     {
-        DB::transaction(function () use ($docRecords, $chunkRecords): void {
+        DB::transaction(function () use ($chunkWriter, $docRecords, $chunkRecords): void {
             foreach (array_chunk($docRecords, 200) as $batch) {
                 DB::table('documents')->insert($batch);
             }
-            foreach (array_chunk($chunkRecords, 500) as $batch) {
-                $columns = implode(', ', array_keys($batch[0]));
-                $values = [];
-                $bindings = [];
-                foreach ($batch as $row) {
-                    $placeholders = [];
-                    foreach ($row as $col => $val) {
-                        if ($col === 'metadata' && is_string($val)) {
-                            $placeholders[] = '?::jsonb';
-                        } else {
-                            $placeholders[] = '?';
-                        }
-                        $bindings[] = $val;
-                    }
-                    $values[] = '('.implode(', ', $placeholders).')';
-                }
-                DB::statement(
-                    "INSERT INTO document_chunks ({$columns}) VALUES ".implode(', ', $values),
-                    $bindings,
-                );
-            }
+            $chunkWriter->insert($chunkRecords);
         });
     }
 

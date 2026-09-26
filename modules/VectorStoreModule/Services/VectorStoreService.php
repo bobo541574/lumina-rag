@@ -105,6 +105,17 @@ class VectorStoreService implements VectorStoreInterface
     }
 
     /**
+     * Delegate the stored-vector count to the underlying driver.
+     *
+     * @param  array<string>  $chunkIds  Chunk ULIDs. Example: ["01JAR...", "01JAS..."]
+     * @return int Number of stored vectors. Example: 42
+     */
+    public function countByChunkIds(array $chunkIds): int
+    {
+        return $this->driver->countByChunkIds($chunkIds);
+    }
+
+    /**
      * Delegate stats retrieval to the underlying driver.
      *
      * @return array Stats including total_vectors, by_dimensions, by_model. Example: ["total_vectors" => 1500, "by_dimensions" => [768 => 500]]

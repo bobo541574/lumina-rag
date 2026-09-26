@@ -31,6 +31,9 @@ class TermAlias extends Model
 {
     use HasUlids;
 
+    /** Allowed values for the `type` column. */
+    public const TYPES = ['project', 'technical', 'general'];
+
     protected $table = 'term_aliases';
 
     protected $fillable = [

@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace Modules\SettingsModule\Controllers;
 
+use App\Http\Responses\ApiResponse;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 use Modules\SettingsModule\Contracts\AiModelServiceInterface;
 
 /**
@@ -47,19 +49,14 @@ class AiModelController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $type = $request->input('type');
         $perPage = $request->integer('per_page') ?: null;
         $result = $this->modelService->getAll(
-            $type,
+            $request->input('type'),
             $request->integer('page') ?: null,
             $perPage !== null ? min($perPage, (int) config('rag.pagination.max_per_page')) : null,
         );
 
-        return response()->json([
-            'success' => true,
-            'data' => $result['data'],
-            'meta' => $result['meta'],
-        ]);
+        return ApiResponse::success($result['data'], meta: $result['meta']);
     }
 
     /**
@@ -73,80 +70,48 @@ class AiModelController extends Controller
      * @return JsonResponse JSON response with created model data
      *                      Example: {"success": true, "message": "AI model created successfully.", "data": {"id": "01J...", "name": "gpt-4o", ...}}
      *
-     * @throws ModelNotFoundException When a referenced model is not found
-     * @throws \Throwable On validation or processing failures (caught and returned as 422)
+     * @throws ValidationException Rendered as 422 with field errors by ApiExceptionRenderer
+     * @throws \Throwable Persistence failures are logged and returned as a generic 422
      */
     public function store(Request $request): JsonResponse
     {
-        $type = $request->input('type', 'embedding');
-        $rules = $this->modelService->getValidationRules($type);
-
-        $data = $request->validate($rules);
+        $data = $request->validate(
+            $this->modelService->getValidationRules($request->input('type', 'embedding')),
+        );
 
         try {
             $model = $this->modelService->create($data);
-
-            Log::channel('security')->info('ai_model.created', [
-                'model_id' => $model->id,
-                'name' => $model->name,
-                'type' => $model->type,
-                'provider' => $model->provider,
-            ]);
-
-            return response()->json([
-                'success' => true,
-                'message' => 'AI model created successfully.',
-                'data' => $model->toArray(),
-            ], 201);
-        } catch (ModelNotFoundException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Referenced model not found.',
-            ], 404);
         } catch (\Throwable $e) {
             Log::channel('security')->error('ai_model.store_failed', ['error' => $e->getMessage()]);
 
-            return response()->json([
-                'success' => false,
-                'message' => 'Unable to create the AI model.',
-            ], 422);
+            return ApiResponse::error('Unable to create the AI model.', 422);
         }
+
+        Log::channel('security')->info('ai_model.created', [
+            'model_id' => $model->id,
+            'name' => $model->name,
+            'type' => $model->type,
+            'provider' => $model->provider,
+        ]);
+
+        return ApiResponse::success($model->toArray(), 'AI model created successfully.', 201);
     }
 
     /**
      * Show a single AI model
      *
      * Returns the full model data for the given ULID. Returns 404 if the
-     * model does not exist, 500 on unexpected errors.
+     * model does not exist.
      *
      * @param  string  $id  The ULID of the model. Example: "01JARQ3Z7KZXJ6Y6Y6Y6Y6Y6Y6"
      * @return JsonResponse JSON response with model data
      *                      Example: {"success": true, "data": {"id": "01J...", "name": "nomic-embed-text", ...}}
      *
-     * @throws ModelNotFoundException When no model matches the ID (caught and returned as 404)
+     * @throws ModelNotFoundException When no model matches the ID (rendered as 404 by ApiExceptionRenderer)
      */
     public function show(string $id): JsonResponse
     {
-        try {
-            $model = $this->modelService->find($id);
-
-            return response()->json([
-                'success' => true,
-                'data' => $model->toArray(),
-            ]);
-        } catch (ModelNotFoundException) {
-            return response()->json([
-                'success' => false,
-                'message' => 'AI model not found.',
-            ], 404);
-        } catch (\Throwable $e) {
-            Log::channel('security')->error('ai_model.show_failed', ['error' => $e->getMessage()]);
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Unable to load the AI model.',
-            ], 500);
-        }
+        return ApiResponse::success($this->modelService->find($id)->toArray());
     }
 
     /**
@@ -161,48 +126,31 @@ class AiModelController extends Controller
      * @return JsonResponse JSON response with updated model data
      *                      Example: {"success": true, "message": "AI model updated successfully.", "data": {"id": "01J...", "temperature": 0.5, ...}}
      *
-     * @throws ModelNotFoundException When no model matches the ID (caught and returned as 404)
-     * @throws \Throwable On validation or processing failures (caught and returned as 422)
+     * @throws ModelNotFoundException When no model matches the ID (rendered as 404 by ApiExceptionRenderer)
+     * @throws \Throwable Persistence failures are logged and returned as a generic 422
      */
     public function update(Request $request, string $id): JsonResponse
     {
+        $rules = array_map(
+            fn (array $rule): array => ['sometimes', ...$rule],
+            $this->modelService->getValidationRules($this->modelService->find($id)->type),
+        );
+        $data = $request->validate($rules);
+
         try {
-            $existing = $this->modelService->find($id);
-            $type = $existing->type;
-            $rules = $this->modelService->getValidationRules($type);
-
-            foreach ($rules as $key => $rule) {
-                if (is_array($rule)) {
-                    $rules[$key] = array_merge(['sometimes'], $rule);
-                }
-            }
-
-            $data = $request->validate($rules);
             $model = $this->modelService->update($id, $data);
-
-            Log::channel('security')->info('ai_model.updated', [
-                'model_id' => $id,
-                'changed' => array_keys($data),
-            ]);
-
-            return response()->json([
-                'success' => true,
-                'message' => 'AI model updated successfully.',
-                'data' => $model->toArray(),
-            ]);
-        } catch (ModelNotFoundException) {
-            return response()->json([
-                'success' => false,
-                'message' => 'AI model not found.',
-            ], 404);
         } catch (\Throwable $e) {
             Log::channel('security')->error('ai_model.update_failed', ['error' => $e->getMessage()]);
 
-            return response()->json([
-                'success' => false,
-                'message' => 'Unable to update the AI model.',
-            ], 422);
+            return ApiResponse::error('Unable to update the AI model.', 422);
         }
+
+        Log::channel('security')->info('ai_model.updated', [
+            'model_id' => $id,
+            'changed' => array_keys($data),
+        ]);
+
+        return ApiResponse::success($model->toArray(), 'AI model updated successfully.');
     }
 
     /**
@@ -215,34 +163,25 @@ class AiModelController extends Controller
      * @return JsonResponse JSON response with deletion confirmation
      *                      Example: {"success": true, "message": "AI model deleted successfully."}
      *
-     * @throws ModelNotFoundException When no model matches the ID (caught and returned as 404)
+     * @throws ModelNotFoundException When no model matches the ID (rendered as 404 by ApiExceptionRenderer)
      */
     public function destroy(string $id): JsonResponse
     {
         try {
             $this->modelService->delete($id);
-
-            Log::channel('security')->info('ai_model.deleted', ['model_id' => $id]);
-
-            return response()->json([
-                'success' => true,
-                'message' => 'AI model deleted successfully.',
-            ]);
-        } catch (ModelNotFoundException) {
-            return response()->json([
-                'success' => false,
-                'message' => 'AI model not found.',
-            ], 404);
+        } catch (ModelNotFoundException $e) {
+            throw $e;
         } catch (\Throwable $e) {
             Log::channel('security')->error('ai_model.delete_failed', [
                 'model_id' => $id,
                 'error' => $e->getMessage(),
             ]);
 
-            return response()->json([
-                'success' => false,
-                'message' => 'Unable to delete the AI model.',
-            ], 500);
+            return ApiResponse::error('Unable to delete the AI model.', 500);
         }
+
+        Log::channel('security')->info('ai_model.deleted', ['model_id' => $id]);
+
+        return ApiResponse::success(message: 'AI model deleted successfully.');
     }
 }

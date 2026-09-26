@@ -9,6 +9,8 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\Log;
+use Modules\DocumentModule\Models\Document;
 use Modules\DocumentModule\Services\ReEmbedDocumentService;
 
 /**
@@ -49,5 +51,25 @@ class ReEmbedDocumentJob implements ShouldQueue
     public function handle(ReEmbedDocumentService $service): void
     {
         $service->reEmbed($this->documentId);
+    }
+
+    /**
+     * Record the final failure on the document.
+     *
+     * The service keeps the previous vectors on failure, so the document stays
+     * searchable; only the error is surfaced for operators.
+     *
+     * @param  \Throwable  $exception  The exception from the last attempt.
+     */
+    public function failed(\Throwable $exception): void
+    {
+        Document::whereKey($this->documentId)->update([
+            'error_message' => 'Re-embed failed: '.mb_substr($exception->getMessage(), 0, 1000),
+        ]);
+
+        Log::channel(config('rag.logging.channel', 'rag'))->error('Re-embed failed', [
+            'document_id' => $this->documentId,
+            'error' => $exception->getMessage(),
+        ]);
     }
 }

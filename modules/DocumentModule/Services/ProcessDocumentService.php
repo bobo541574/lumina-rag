@@ -5,11 +5,9 @@ declare(strict_types=1);
 namespace Modules\DocumentModule\Services;
 
 use App\Models\User;
-use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Str;
 use Modules\ChatModule\Events\KnowledgeChanged;
 use Modules\DocumentModule\Contracts\TextChunkingServiceInterface;
 use Modules\DocumentModule\Contracts\TextExtractionServiceInterface;
@@ -40,7 +38,8 @@ use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
  * @param  EmbeddingServiceInterface  $embedder  Default embedding service (overridable per document). Example: app(EmbeddingServiceInterface::class)
  * @param  VectorStoreInterface  $vectorStore  Persists/removes vector embeddings. Example: app(VectorStoreInterface::class)
  * @param  ProviderFactory  $providerFactory  Factory to create per-model providers. Example: app(ProviderFactory::class)
- * @param  CacheRepository  $cache  Cache repository for embedding caching. Example: app(CacheRepository::class)
+ * @param  ChunkWriter  $chunkWriter  Builds and inserts chunk rows. Example: app(ChunkWriter::class)
+ * @param  ChunkEmbedder  $chunkEmbedder  Embeds chunks and stores their vectors. Example: app(ChunkEmbedder::class)
  */
 class ProcessDocumentService
 {
@@ -56,7 +55,9 @@ class ProcessDocumentService
 
     private ProviderFactory $providerFactory;
 
-    private CacheRepository $cache;
+    private ChunkWriter $chunkWriter;
+
+    private ChunkEmbedder $chunkEmbedder;
 
     public function __construct(
         TextExtractionServiceInterface $extractor,
@@ -64,14 +65,16 @@ class ProcessDocumentService
         EmbeddingServiceInterface $embedder,
         VectorStoreInterface $vectorStore,
         ProviderFactory $providerFactory,
-        CacheRepository $cache,
+        ChunkWriter $chunkWriter,
+        ChunkEmbedder $chunkEmbedder,
     ) {
         $this->extractor = $extractor;
         $this->chunker = $chunker;
         $this->embedder = $embedder;
         $this->vectorStore = $vectorStore;
         $this->providerFactory = $providerFactory;
-        $this->cache = $cache;
+        $this->chunkWriter = $chunkWriter;
+        $this->chunkEmbedder = $chunkEmbedder;
     }
 
     /**
@@ -79,20 +82,22 @@ class ProcessDocumentService
      *
      * Loads the document, cleans up prior attempts, extracts text, chunks it,
      * generates embeddings via the resolved embedder, and upserts vectors.
-     * On success, marks the document "completed". On any Throwable, marks it
-     * "failed" and re-throws so the caller (queue worker or console) can
-     * manage retries.
+     * On success, marks the document "completed". On any Throwable it
+     * re-throws so the caller can manage retries; the document is marked
+     * "failed" only on the final attempt, otherwise it stays "processing" with
+     * the error recorded.
      *
      * @param  string  $documentId  The ULID of the document to process. Example: "01J..."
+     * @param  bool  $finalAttempt  Whether a failure is final (no queue retry left). Example: true
      *
      * @throws \RuntimeException If text extraction produces empty content or chunking yields no chunks
      *                           Example: $service->process($id) → RuntimeException("No extractable text found in document")
      * @throws \Throwable Any exception during processing is caught, logged to the document, and re-thrown
      */
-    public function process(string $documentId): void
+    public function process(string $documentId, bool $finalAttempt = true): void
     {
         $document = Document::findOrFail($documentId);
-        $document->update(['status' => 'processing']);
+        $document->markProcessing();
 
         try {
             $this->cleanupPreviousAttempt($document);
@@ -100,20 +105,22 @@ class ProcessDocumentService
             $text = $this->extractText($document);
             $chunks = $this->saveChunks($document, $text);
 
-            $embedderToUse = $this->resolveEmbedder($document, $this->embedder, $this->providerFactory, $this->cache);
-            $this->generateEmbeddings($document, $chunks, $embedderToUse);
+            $embedder = $this->resolveEmbedder($document, $this->embedder, $this->providerFactory);
+            $this->chunkEmbedder->store($document, $chunks, $this->chunkEmbedder->embed($document, $chunks, $embedder));
             $this->validateEmbedCount($document, $chunks);
 
-            $document->update([
-                'status' => 'completed',
-                'chunks_count' => count($chunks),
-                'processed_at' => now(),
-            ]);
+            $document->markCompleted(count($chunks));
 
             // New knowledge is available — invalidate cached RAG answers.
             KnowledgeChanged::dispatch([$document->id]);
         } catch (\Throwable $e) {
-            $this->markFailed($documentId, $e->getMessage());
+            if ($finalAttempt) {
+                $this->markFailed($documentId, $e->getMessage());
+            } else {
+                // The queue will retry: keep the document "processing" so the
+                // UI does not offer a manual retry that would race this one.
+                $document->update(['error_message' => $e->getMessage()]);
+            }
 
             throw $e;
         }
@@ -133,11 +140,7 @@ class ProcessDocumentService
             return;
         }
 
-        $document->update([
-            'status' => 'failed',
-            'error_message' => $errorMessage,
-        ]);
-
+        $document->markFailed($errorMessage);
         $document->chunks()->delete();
     }
 
@@ -195,10 +198,9 @@ class ProcessDocumentService
     /**
      * Split text into chunks and persist them to the database
      *
-     * Uses the TextChunkingService to split the extracted text. Prepends a metadata
-     * header (user name, project, date) to each chunk. Bulk-inserts chunks in
-     * batches of 500 using raw SQL for performance. On PostgreSQL, also populates
-     * the tsv_content full-text search vector column. Returns the inserted
+     * Uses the TextChunkingService to split the extracted text, then ChunkWriter
+     * to build rows (metadata header + JSON metadata) and bulk-insert them with
+     * their tsvector. Returns the inserted
      * DocumentChunk models ordered by chunk_index.
      *
      * @param  Document  $document  The document these chunks belong to. Example: Document::findOrFail($id)
@@ -211,149 +213,30 @@ class ProcessDocumentService
      */
     private function saveChunks(Document $document, string $text): array
     {
-        $chunkSize = (int) config('rag.chunking.chunk_size', 1000);
-        $overlap = (int) config('rag.chunking.overlap', 200);
-        $rawChunks = $this->chunker->chunk($text, $chunkSize, $overlap);
+        $rawChunks = $this->chunker->chunk(
+            $text,
+            (int) config('rag.chunking.chunk_size', 1000),
+            (int) config('rag.chunking.overlap', 200),
+        );
 
         if ($rawChunks === []) {
             throw new \RuntimeException('Text chunking produced no chunks');
         }
 
-        // Build metadata header from document fields
-        $userName = 'Unknown';
-        try {
-            $user = User::find($document->user_id);
-            if ($user !== null) {
-                $userName = $user->name;
-            }
-        } catch (\Throwable) {
-            // ignore
-        }
-        $project = $document->project ?? 'General';
-        $reportDate = $document->report_date ?? $document->created_at?->format('Y-m-d') ?? now()->format('Y-m-d');
-        $metaHeader = "Report by: {$userName}\nProject: {$project}\nDate: {$reportDate}\n\n";
-
-        // Build document-level metadata for all chunks
-        $docMeta = [
+        $records = $this->chunkWriter->buildRecords($document->id, $rawChunks, [
             'user_id' => $document->user_id,
-            'user_name' => $userName,
-            'project' => $project,
-            'report_date' => $reportDate,
+            'user_name' => User::find($document->user_id)?->name ?? 'Unknown',
+            'project' => $document->project ?? 'General',
+            'report_date' => $document->report_date?->format('Y-m-d') ?? $document->created_at?->format('Y-m-d') ?? now()->format('Y-m-d'),
             'document_title' => $document->title,
-        ];
+        ], now());
 
-        $now = now();
-        $records = [];
-        $ids = [];
+        DB::transaction(fn () => $this->chunkWriter->insert($records));
 
-        foreach ($rawChunks as $i => $chunkData) {
-            $id = (string) Str::ulid();
-            $ids[] = $id;
-            $prefixed = $metaHeader.$chunkData['content'];
-
-            // Merge chunk-level metadata with document-level metadata
-            $chunkMeta = array_merge($docMeta, [
-                'chunk_index' => $i,
-                'section' => $chunkData['section'] ?? null,
-                'page_number' => $chunkData['page_number'] ?? null,
-            ]);
-            $chunkMeta = array_filter($chunkMeta, fn ($v): bool => $v !== null);
-
-            $records[] = [
-                'id' => $id,
-                'document_id' => $document->id,
-                'content' => $prefixed,
-                'chunk_index' => $i,
-                'char_start' => $chunkData['char_start'],
-                'char_end' => $chunkData['char_end'],
-                'token_count' => $this->estimateTokenCount($prefixed),
-                'page_number' => $chunkData['page_number'] ?? null,
-                'metadata' => json_encode($chunkMeta),
-                'created_at' => $now,
-            ];
-        }
-
-        DB::transaction(function () use ($records): void {
-            foreach (array_chunk($records, 500) as $batch) {
-                $columns = implode(', ', array_keys($batch[0]));
-                $values = [];
-                $bindings = [];
-
-                foreach ($batch as $row) {
-                    $placeholders = array_fill(0, count($row), '?');
-                    $bindings = array_merge($bindings, array_values($row));
-                    $values[] = '('.implode(', ', $placeholders).')';
-                }
-
-                $sql = "INSERT INTO document_chunks ({$columns}) VALUES ".implode(', ', $values);
-                DB::statement($sql, $bindings);
-            }
-
-            if (DB::getDriverName() === 'pgsql') {
-                $ids = array_column($records, 'id');
-                foreach (array_chunk($ids, 500) as $idBatch) {
-                    $placeholders = implode(', ', array_fill(0, count($idBatch), '?'));
-                    DB::statement(
-                        "UPDATE document_chunks SET tsv_content = to_tsvector('english', content) WHERE id IN ({$placeholders}) AND tsv_content IS NULL",
-                        $idBatch,
-                    );
-                }
-            }
-        });
-
-        return DocumentChunk::whereIn('id', $ids)
+        return DocumentChunk::where('document_id', $document->id)
             ->orderBy('chunk_index')
             ->get()
             ->all();
-    }
-
-    /**
-     * Generate and store vector embeddings for all chunks
-     *
-     * Processes chunks in configurable batches (default 100). For each batch,
-     * calls the embedder to generate vectors, then upserts them into the vector
-     * store with metadata (model_name, content_hash) under the document namespace.
-     *
-     * @param  Document  $document  The document being processed (for namespace). Example: Document::findOrFail($id)
-     * @param  array  $chunks  Array of DocumentChunk models to embed. Example: [DocumentChunk { id: "01J...", content: "..." }]
-     * @param  EmbeddingServiceInterface  $embedder  The (possibly resolved) embedding service. Example: app(EmbeddingServiceInterface::class)
-     */
-    private function generateEmbeddings(
-        Document $document,
-        array $chunks,
-        EmbeddingServiceInterface $embedder,
-    ): void {
-        $batchSize = (int) config('rag.embedding.batch_size', 100);
-        $modelName = $document->embedding_model ?? (string) config('rag.embedding.model', 'text-embedding-3-small');
-
-        $texts = array_map(fn (DocumentChunk $c): string => $c->content, $chunks);
-        $textBatches = array_chunk($texts, $batchSize);
-
-        foreach ($textBatches as $batchIndex => $batch) {
-            $vectors = $embedder->embedBatch($batch, $modelName);
-            $offset = $batchIndex * $batchSize;
-
-            $allVectors = [];
-            $allChunkIds = [];
-            $allMetadata = [];
-
-            foreach ($vectors as $j => $vector) {
-                $chunk = $chunks[$offset + $j];
-                $allVectors[] = $vector;
-                $allChunkIds[] = $chunk->id;
-                $allMetadata[] = [
-                    'model_name' => $modelName,
-                    'content_hash' => md5($chunk->content),
-                ];
-            }
-
-            $this->vectorStore->upsert(
-                vectors: $allVectors,
-                metadata: $allMetadata,
-                chunkId: $allChunkIds,
-                namespace: "document_{$document->id}",
-            );
-        }
     }
 
     /**
@@ -368,28 +251,8 @@ class ProcessDocumentService
      */
     private function validateEmbedCount(Document $document, array $chunks): void
     {
-        if ($chunks === []) {
-            return;
-        }
-
-        $chunkIds = array_map(fn (DocumentChunk $c): string => $c->id, $chunks);
-        $expected = count($chunkIds);
-
-        // Count stored vectors across all shard tables (PostgreSQL only).
-        // On SQLite (tests) the vector_embeddings table is the single store.
-        if (DB::getDriverName() !== 'sqlite') {
-            $dimTables = ['ve_384', 've_768', 've_1024', 've_1536', 've_3072'];
-            $actual = 0;
-            foreach ($dimTables as $table) {
-                try {
-                    $actual += DB::table($table)->whereIn('chunk_id', $chunkIds)->count();
-                } catch (\Throwable) {
-                    // Table may not exist for this installation — skip.
-                }
-            }
-        } else {
-            $actual = DB::table('vector_embeddings')->whereIn('chunk_id', $chunkIds)->count();
-        }
+        $expected = count($chunks);
+        $actual = $this->chunkEmbedder->countStored($chunks);
 
         if ($actual < $expected) {
             Log::channel(config('rag.logging.channel', 'rag'))->warning(
@@ -402,19 +265,5 @@ class ProcessDocumentService
                 ]
             );
         }
-    }
-
-    /**
-     * Estimate the token count for a text string
-     *
-     * Uses a simple heuristic: divide character length by 4 and round up.
-     * This is a rough approximation (OpenAI uses ~4 chars per token for English).
-     *
-     * @param  string  $text  The text to estimate. Example: "Hello world"
-     * @return int Estimated token count. Example: 3 for "Hello world" (11 chars / 4 = 2.75 → 3)
-     */
-    private function estimateTokenCount(string $text): int
-    {
-        return (int) ceil(mb_strlen($text) / 4);
     }
 }

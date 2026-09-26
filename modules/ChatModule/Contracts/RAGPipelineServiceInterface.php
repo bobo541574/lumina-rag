@@ -60,12 +60,12 @@ interface RAGPipelineServiceInterface
      * Returns a paginated list of chat sessions ordered by last activity descending.
      * Optionally scoped to a specific user. Each page contains 20 sessions.
      *
-     * @param  string|null  $userId  Optional ULID to filter sessions by user. Example: "01J..."
+     * @param  string  $userId  Owner ULID; only their sessions are listed. Example: "01J..."
      * @param  int  $page  Page number (1-based). Example: 1
      * @return array{data: array, current_page: int, last_page: int, per_page: int, total: int, from: int|null, to: int|null}
      *                                                                                                                        Paginated session list. Example: ["data" => [...], "current_page" => 1, "last_page" => 3, "total" => 50]
      */
-    public function listSessions(?string $userId = null, int $page = 1): array;
+    public function listSessions(string $userId, int $page = 1): array;
 
     /**
      * Get a single session with all messages
@@ -74,14 +74,14 @@ interface RAGPipelineServiceInterface
      * Optionally scoped to a specific user for authorization.
      *
      * @param  string  $id  The session ULID. Example: "01J..."
-     * @param  string|null  $userId  Optional ULID to verify session ownership. Example: "01J..."
+     * @param  string  $userId  Owner ULID; other users' sessions are not found. Example: "01J..."
      * @return array The session array with loaded messages relation
      *               Example: ["id" => "01J...", "title" => "New Chat", "messages" => [...]]
      *
      * @throws ModelNotFoundException When session is not found
      *                                Example: $service->getSession('nonexistent') → ModelNotFoundException
      */
-    public function getSession(string $id, ?string $userId = null): array;
+    public function getSession(string $id, string $userId): array;
 
     /**
      * Delete a session and its messages
@@ -90,10 +90,10 @@ interface RAGPipelineServiceInterface
      * Optionally scoped to a specific user for authorization.
      *
      * @param  string  $id  The session ULID. Example: "01J..."
-     * @param  string|null  $userId  Optional ULID to verify session ownership. Example: "01J..."
+     * @param  string  $userId  Owner ULID; other users' sessions are not found. Example: "01J..."
      *
      * @throws ModelNotFoundException When session is not found
      *                                Example: $service->deleteSession('nonexistent') → ModelNotFoundException
      */
-    public function deleteSession(string $id, ?string $userId = null): void;
+    public function deleteSession(string $id, string $userId): void;
 }

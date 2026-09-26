@@ -4,12 +4,13 @@ declare(strict_types=1);
 
 namespace Modules\UserModule\Contracts;
 
+use App\Models\User;
 use Illuminate\Validation\ValidationException;
 
 /**
  * Auth Service Interface
  *
- * Defines the contract for authentication services, including registration, login, logout, and user retrieval.
+ * Defines the contract for authentication services: registration, login and logout.
  */
 interface AuthServiceInterface
 {
@@ -41,19 +42,9 @@ interface AuthServiceInterface
     /**
      * Logout a user
      *
-     * Invalidates the provided API token.
+     * Invalidates the user's current API token.
      *
-     * @param  string  $token  The API token to invalidate. Example: "80-char-hex-token"
+     * @param  User  $user  The authenticated user. Example: $request->input('authenticated_user')
      */
-    public function logout(string $token): void;
-
-    /**
-     * Get user by token
-     *
-     * Retrieves the user associated with the given API token.
-     *
-     * @param  string  $token  The API token to lookup. Example: "80-char-hex-token"
-     * @return array|null The user data or null if not found. Example: ["id" => "...", "name" => "...", "email" => "..."]
-     */
-    public function getUserByToken(string $token): ?array;
+    public function logout(User $user): void;
 }

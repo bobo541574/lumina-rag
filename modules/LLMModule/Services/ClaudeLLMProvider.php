@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\LLMModule\Services;
 
+use App\Support\HttpJsonClient;
 use Generator;
 use Modules\LLMModule\Contracts\LLMProviderInterface;
 
@@ -27,6 +28,8 @@ use Modules\LLMModule\Contracts\LLMProviderInterface;
  */
 class ClaudeLLMProvider implements LLMProviderInterface
 {
+    use StreamsHttpLines;
+
     /** @var string Anthropic API key */
     private string $apiKey;
 
@@ -123,7 +126,7 @@ class ClaudeLLMProvider implements LLMProviderInterface
     /**
      * Perform a streaming LLM completion via the Anthropic Messages API.
      *
-     * Uses cURL multi-handle to stream SSE events. Handles the Anthropic
+     * Uses StreamsHttpLines to stream SSE events. Handles the Anthropic
      * streaming format with event types: message_start, content_block_delta,
      * content_block_stop, message_delta, message_stop.
      *
@@ -132,7 +135,7 @@ class ClaudeLLMProvider implements LLMProviderInterface
      * @param  array  $options  Override options. Example: ["temperature" => 0.3]
      * @return Generator Yields content strings. Example: foreach ($gen as $chunk) { echo $chunk; }
      *
-     * @throws \RuntimeException When cURL multi-handle encounters a fatal error
+     * @throws \RuntimeException When the server returns an error status or the transfer fails
      */
     public function completeStream(string $systemPrompt, string $userPrompt, array $options = []): Generator
     {
@@ -158,84 +161,33 @@ class ClaudeLLMProvider implements LLMProviderInterface
 
         $url = $this->baseUrl.'/messages';
 
-        $queue = [];
-        $lineBuffer = '';
         $currentEvent = '';
 
-        $ch = curl_init($url);
-        curl_setopt_array($ch, [
-            CURLOPT_POST => true,
-            CURLOPT_HTTPHEADER => [
+        yield from $this->streamLines(
+            $url,
+            [
                 'x-api-key: '.$this->apiKey,
                 'anthropic-version: '.$this->apiVersion,
                 'Content-Type: application/json',
             ],
-            CURLOPT_POSTFIELDS => json_encode($payload),
-            CURLOPT_RETURNTRANSFER => false,
-            CURLOPT_TIMEOUT => $this->timeout,
-            CURLOPT_WRITEFUNCTION => function ($ch, $data) use (&$queue, &$lineBuffer, &$currentEvent): int {
-                $lineBuffer .= $data;
-                $lines = explode("\n", $lineBuffer);
-                $lineBuffer = array_pop($lines);
+            $payload,
+            $this->timeout,
+            'Claude',
+            function (string $line) use (&$currentEvent): array {
+                if (str_starts_with($line, 'event: ')) {
+                    $currentEvent = substr($line, 7);
 
-                foreach ($lines as $line) {
-                    $line = trim($line);
-                    if ($line === '') {
-                        continue;
-                    }
-
-                    if (str_starts_with($line, 'event: ')) {
-                        $currentEvent = substr($line, 7);
-
-                        continue;
-                    }
-
-                    if (str_starts_with($line, 'data: ')) {
-                        if ($currentEvent !== 'content_block_delta') {
-                            continue;
-                        }
-
-                        $json = substr($line, 6);
-                        try {
-                            $parsed = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
-                            if (isset($parsed['delta']['text'])) {
-                                $queue[] = $parsed['delta']['text'];
-                            }
-                        } catch (\JsonException) {
-                            // skip malformed JSON
-                        }
-                    }
+                    return [];
+                }
+                if ($currentEvent !== 'content_block_delta' || ! str_starts_with($line, 'data: ')) {
+                    return [];
                 }
 
-                return strlen($data);
+                $parsed = json_decode(substr($line, 6), true, 512, JSON_THROW_ON_ERROR);
+
+                return isset($parsed['delta']['text']) ? [$parsed['delta']['text']] : [];
             },
-        ]);
-
-        $mh = curl_multi_init();
-        curl_multi_add_handle($mh, $ch);
-
-        $running = null;
-        do {
-            $status = curl_multi_exec($mh, $running);
-            if ($status !== CURLM_OK) {
-                break;
-            }
-
-            while ($queue !== []) {
-                yield array_shift($queue);
-            }
-
-            if ($running > 0 && $queue === []) {
-                usleep(5_000);
-            }
-        } while ($running > 0);
-
-        while ($queue !== []) {
-            yield array_shift($queue);
-        }
-
-        curl_multi_remove_handle($mh, $ch);
-        curl_multi_close($mh);
+        );
     }
 
     /**
@@ -265,8 +217,7 @@ class ClaudeLLMProvider implements LLMProviderInterface
     /**
      * Execute a single HTTP request to the Anthropic Messages API.
      *
-     * Implements retry with exponential backoff (1s, 5s, 25s) for
-     * transient server errors. Client errors (4xx) throw immediately.
+     * Retries transient failures via HttpJsonClient; 4xx errors throw immediately.
      *
      * @param  array  $payload  Request payload. Example: ["model" => "claude-sonnet-4-5-20250929", "messages" => [...], "max_tokens" => 4096]
      * @return array Decoded response array. Example: ["content" => [["type" => "text", "text" => "...", "stop_reason" => "end_turn"]], "usage" => [...]]
@@ -275,47 +226,12 @@ class ClaudeLLMProvider implements LLMProviderInterface
      */
     private function sendRequest(array $payload): array
     {
-        $maxAttempts = 3;
-        $backoff = [1_000_000, 5_000_000, 25_000_000];
-
-        $url = $this->baseUrl.'/messages';
-
-        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
-            $ch = curl_init($url);
-            curl_setopt_array($ch, [
-                CURLOPT_POST => true,
-                CURLOPT_HTTPHEADER => [
-                    'x-api-key: '.$this->apiKey,
-                    'anthropic-version: '.$this->apiVersion,
-                    'Content-Type: application/json',
-                ],
-                CURLOPT_POSTFIELDS => json_encode($payload),
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_TIMEOUT => $this->timeout,
-            ]);
-
-            $response = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            $error = curl_error($ch);
-            curl_close($ch);
-
-            if ($error === '' && $httpCode === 200) {
-                return json_decode($response, true, 512, JSON_THROW_ON_ERROR);
-            }
-
-            if ($httpCode >= 400 && $httpCode < 500) {
-                throw new \RuntimeException("Claude API returned HTTP {$httpCode}: {$response}");
-            }
-
-            if ($attempt < $maxAttempts) {
-                usleep($backoff[$attempt - 1]);
-            }
-        }
-
-        if ($error !== '') {
-            throw new \RuntimeException("Claude API request failed after {$maxAttempts} attempts: {$error}");
-        }
-
-        throw new \RuntimeException("Claude API returned HTTP {$httpCode} after {$maxAttempts} attempts: {$response}");
+        return HttpJsonClient::post(
+            $this->baseUrl.'/messages',
+            ['x-api-key: '.$this->apiKey, 'anthropic-version: '.$this->apiVersion],
+            $payload,
+            $this->timeout,
+            'Claude',
+        );
     }
 }

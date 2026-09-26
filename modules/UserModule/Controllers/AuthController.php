@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\UserModule\Controllers;
 
+use App\Http\Responses\ApiResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
@@ -25,8 +26,6 @@ use Modules\UserModule\Services\AccountDeletionService;
  * with appropriate HTTP status codes (201, 401, 409, 500).
  *
  * @param  AuthServiceInterface  $authService  The authentication service implementation. Example: app(AuthServiceInterface::class)
- *
- * @throws \Throwable Caught and converted to JSON error responses in each method
  */
 class AuthController extends Controller
 {
@@ -60,22 +59,17 @@ class AuthController extends Controller
     public function register(RegisterRequest $request): JsonResponse
     {
         try {
-            $result = $this->authService->register($request->validated());
-
-            return response()->json([
-                'success' => true,
-                'message' => 'User registered successfully.',
-                'data' => $result,
-            ], 201);
+            return ApiResponse::success(
+                $this->authService->register($request->validated()),
+                'User registered successfully.',
+                201,
+            );
         } catch (\InvalidArgumentException $e) {
             Log::channel('security')->warning('user.register_conflict', [
                 'email' => $request->input('email'),
             ]);
 
-            return response()->json([
-                'success' => false,
-                'message' => $e->getMessage(),
-            ], 409);
+            return ApiResponse::error($e->getMessage(), 409);
         }
     }
 
@@ -94,90 +88,45 @@ class AuthController extends Controller
     public function login(LoginRequest $request): JsonResponse
     {
         try {
-            $result = $this->authService->login(
+            return ApiResponse::success($this->authService->login(
                 $request->input('email'),
                 $request->input('password'),
-            );
-
-            return response()->json([
-                'success' => true,
-                'data' => $result,
-            ]);
+            ));
         } catch (\InvalidArgumentException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => $e->getMessage(),
-            ], 401);
+            return ApiResponse::error($e->getMessage(), 401);
         }
     }
 
     /**
      * Logout a user
      *
-     * Invalidates the current bearer token via AuthService::logout.
-     * Always returns a success response to the client, even if no
-     * token was provided. Internal errors are caught and returned as 500.
+     * Invalidates the authenticated user's token via AuthService::logout.
+     * The auth.token middleware has already rejected missing/invalid tokens.
      *
      * @param  Request  $request  The incoming HTTP request. Example: request()
      * @return JsonResponse Logout confirmation. Example: response()->json(["success" => true, "message" => "Logged out successfully."])
-     *
-     * @throws \Throwable Caught and returned as 500 JSON response
      */
     public function logout(Request $request): JsonResponse
     {
-        try {
-            $token = $request->bearerToken();
+        $this->authService->logout($request->input('authenticated_user'));
 
-            if ($token !== null) {
-                $this->authService->logout($token);
-            }
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Logged out successfully.',
-            ]);
-        } catch (\Throwable $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Logout failed.',
-            ], 500);
-        }
+        return ApiResponse::success(message: 'Logged out successfully.');
     }
 
     /**
      * Get authenticated user profile
      *
-     * Retrieves the user record associated with the request's bearer token.
-     * Returns 401 if no valid token is provided or the token is not found.
+     * Returns the user resolved by the auth.token middleware (which answers
+     * 401 for missing, unknown or expired tokens).
      *
      * @param  Request  $request  The incoming HTTP request. Example: request()
-     * @return JsonResponse User data on success, 401 if unauthenticated. Example: response()->json(["success" => true, "data" => ["id" => "01J...", "name" => "John", "email" => "john@test.com"]])
-     *
-     * @throws \Throwable Caught and returned as 500 JSON response
+     * @return JsonResponse User data. Example: response()->json(["success" => true, "data" => ["id" => "01J...", "name" => "John", "email" => "john@test.com"]])
      */
     public function me(Request $request): JsonResponse
     {
-        try {
-            $token = $request->bearerToken();
-            $user = $token !== null ? $this->authService->getUserByToken($token) : null;
-
-            if ($user === null) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Unauthenticated.',
-                ], 401);
-            }
-
-            return response()->json([
-                'success' => true,
-                'data' => $user,
-            ]);
-        } catch (\Throwable $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'An error occurred.',
-            ], 500);
-        }
+        return ApiResponse::success(
+            $request->input('authenticated_user')->only(['id', 'name', 'email']),
+        );
     }
 
     /**
@@ -197,20 +146,14 @@ class AuthController extends Controller
         try {
             $this->deletionService->delete($user);
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Account deleted.',
-            ]);
+            return ApiResponse::success(message: 'Account deleted.');
         } catch (\Throwable $e) {
             Log::channel('security')->error('user.delete_failed', [
                 'user_id' => $user->id,
                 'error' => $e->getMessage(),
             ]);
 
-            return response()->json([
-                'success' => false,
-                'message' => 'Unable to delete the account.',
-            ], 500);
+            return ApiResponse::error('Unable to delete the account.', 500);
         }
     }
 }

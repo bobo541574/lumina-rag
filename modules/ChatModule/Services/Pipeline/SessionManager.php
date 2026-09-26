@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\ChatModule\Services\Pipeline;
 
+use Modules\ChatModule\Exceptions\ChatSessionException;
 use Modules\ChatModule\Models\ChatMessage;
 use Modules\ChatModule\Models\ChatSession;
 
@@ -27,13 +28,13 @@ class SessionManager
 
             $session = $query->first();
             if ($session === null) {
-                throw new \RuntimeException('Chat session not found.');
+                throw new ChatSessionException('Chat session not found.');
             }
             if ($session->trashed()) {
-                throw new \RuntimeException('Chat session has been deleted.');
+                throw new ChatSessionException('Chat session has been deleted.');
             }
             if ($session->last_activity_at < now()->subHours($this->sessionTimeoutHours)) {
-                throw new \RuntimeException('Chat session has expired. Please start a new chat.');
+                throw new ChatSessionException('Chat session has expired. Please start a new chat.');
             }
             $session->update(['last_activity_at' => now()]);
 
@@ -51,7 +52,7 @@ class SessionManager
     {
         $count = $session->messages()->count();
         if ($count >= $maxMessagesPerSession) {
-            throw new \RuntimeException('Session message limit reached. Please start a new chat.');
+            throw new ChatSessionException('Session message limit reached. Please start a new chat.');
         }
     }
 

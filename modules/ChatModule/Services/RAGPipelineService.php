@@ -23,7 +23,6 @@ use Modules\ChatModule\Services\Pipeline\RewrittenQuery;
 use Modules\ChatModule\Services\Pipeline\SessionManager;
 use Modules\DocumentModule\Models\Document;
 use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
-use Modules\EmbeddingModule\Services\EmbeddingService;
 use Modules\EmbeddingModule\Services\ProviderFactory;
 use Modules\LLMModule\Contracts\LLMServiceInterface;
 use Modules\LLMModule\Services\LLMService;
@@ -243,7 +242,6 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $this->maxTokens = $maxTokens;
         $this->minInitialThreshold = $minInitialThreshold;
         $this->historyWindow = $historyWindow;
-        $this->temperature = (float) config('rag.llm.temperature', 0.3);
         $this->think = null;
         $this->userId = $userId;
 
@@ -302,9 +300,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
                 $this->maxTokens = (int) $s['max_tokens'];
             }
         }
-        if ($this->activeLlmModel !== null && $this->activeLlmModel->temperature !== null) {
-            $this->temperature = (float) $this->activeLlmModel->temperature;
-        }
+        $this->temperature = AiModel::resolveTemperature($this->activeLlmModel);
         if ($this->activeLlmModel !== null && $this->activeLlmModel->settings !== null) {
             $s = $this->activeLlmModel->settings;
             if (isset($s['think'])) {
@@ -316,7 +312,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         if ($this->activeLlmModel !== null) {
             $this->llm = new LLMService(
                 provider: $this->providerFactory->createLLMProvider($this->activeLlmModel),
-                maxContextTokens: $this->activeLlmModel->max_context_tokens ?? (int) config('rag.llm.max_context_tokens', 4000),
+                maxContextTokens: $this->activeLlmModel->maxContextTokens(),
             );
         }
 
@@ -354,24 +350,24 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $ctx = $this->buildPipelineContext($question, $options);
         ['question' => $question, 'session' => $session, 'autoFilters' => $autoFilters,
             'rewritten' => $rewritten, 'searchQuestion' => $searchQuestion, 'ftsQuery' => $ftsQuery,
-            'llmQuestion' => $llmQuestion, 'llm' => $llm, 'targetModel' => $targetModel,
-            'embedder' => $embedder] = $ctx;
+            'llmQuestion' => $llmQuestion, 'llm' => $llm, 'llmProfile' => $llmProfile,
+            'targetModel' => $targetModel, 'embedder' => $embedder] = $ctx;
 
         // Semantic cache lookup: if a near-identical question was answered against
         // the same knowledge version, return it without retrieval + LLM cost.
-        $cacheHit = $this->lookupSemanticCache($searchQuestion, $embedder, $session, $options);
+        $cacheHit = $this->lookupSemanticCache($searchQuestion, $embedder, $session, $llmProfile);
         if ($cacheHit !== null) {
             return $this->persistCacheHit($session, $cacheHit, $question);
         }
 
-        $searchQueries = $this->expandQuery($searchQuestion, $llm, $options);
+        $searchQueries = $this->expandQuery($searchQuestion, $llm, $llmProfile, $options);
         ['chunks' => $chunks, 'searchTime' => $searchTime] = $this->runSearchQueries(
             $searchQueries, $embedder, $targetModel, $ftsQuery, $rewritten, $autoFilters, $options
         );
 
         if ($chunks === []) {
             $answer = $this->responseBuilder->buildRefusalResponse($session, $question, $autoFilters);
-            $this->writeSemanticCache($searchQuestion, $embedder, $session->user_id, $question, (string) ($answer['message']['content'] ?? ''), [], true);
+            $this->writeSemanticCache($searchQuestion, $embedder, $llmProfile, $session->user_id, $question, (string) ($answer['message']['content'] ?? ''), [], true);
             $totalTime = (microtime(true) - $start) * 1000;
             Log::channel(config('rag.logging.channel', 'rag'))->info('RAG pipeline: refusal (no chunks)', [
                 'session_id' => $session->id,
@@ -419,11 +415,11 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         }
 
         $t0 = microtime(true);
-        $response = $this->llm->complete(
+        $response = $llm->complete(
             systemPrompt: $systemPrompt,
             userPrompt: $llmQuestion,
             context: $context,
-            options: $this->buildLlmOptions(['temperature' => $this->temperature, 'max_tokens' => $this->maxTokens], $options),
+            options: $this->buildLlmOptions($llmProfile, ['max_tokens' => $llmProfile['max_tokens']], $options),
         );
         $llmTime = (microtime(true) - $t0) * 1000;
 
@@ -434,7 +430,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $sources = $this->responseBuilder->buildSources($chunks);
         $message = $this->sessionManager->saveAssistantMessage($session, $content, $sources);
 
-        $this->writeSemanticCache($searchQuestion, $embedder, $session->user_id, $question, $content, $sources, false);
+        $this->writeSemanticCache($searchQuestion, $embedder, $llmProfile, $session->user_id, $question, $content, $sources, false);
 
         $totalTime = (microtime(true) - $start) * 1000;
         Log::channel(config('rag.logging.channel', 'rag'))->info('RAG pipeline: complete', [
@@ -456,7 +452,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             'message' => [
                 'id' => $message->id,
                 'role' => 'assistant',
-                'content' => $response->getContent(),
+                'content' => $content,
                 'sources' => $sources,
                 'tokens_used' => $response->getTotalTokens(),
                 'created_at' => $message->created_at->toIso8601String(),
@@ -493,8 +489,8 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $ctx = $this->buildPipelineContext($question, $options);
         ['question' => $question, 'session' => $session, 'autoFilters' => $autoFilters,
             'rewritten' => $rewritten, 'searchQuestion' => $searchQuestion, 'ftsQuery' => $ftsQuery,
-            'llmQuestion' => $llmQuestion, 'llm' => $llm, 'targetModel' => $targetModel,
-            'embedder' => $embedder] = $ctx;
+            'llmQuestion' => $llmQuestion, 'llm' => $llm, 'llmProfile' => $llmProfile,
+            'targetModel' => $targetModel, 'embedder' => $embedder] = $ctx;
 
         $isBurmese = preg_match('/[\x{1000}-\x{109F}]/u', $question) === 1;
 
@@ -515,7 +511,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         // Semantic cache lookup before retrieval. On hit, stream the cached
         // answer as a single chunk and skip retrieval + LLM generation.
-        $cacheHit = $this->lookupSemanticCache($searchQuestion, $embedder, $session, $options);
+        $cacheHit = $this->lookupSemanticCache($searchQuestion, $embedder, $session, $llmProfile);
         if ($cacheHit !== null) {
             $answer = (string) ($cacheHit['message']['content'] ?? $cacheHit['answer'] ?? '');
             $cachedSources = $cacheHit['message']['sources'] ?? $cacheHit['sources'] ?? [];
@@ -538,7 +534,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             return;
         }
 
-        $searchQueries = $this->expandQuery($searchQuestion, $llm, $options);
+        $searchQueries = $this->expandQuery($searchQuestion, $llm, $llmProfile, $options);
 
         yield json_encode([
             'type' => 'status',
@@ -552,7 +548,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         if ($chunks === []) {
             $refusal = $this->responseBuilder->buildRefusalResponse($session, $question, $autoFilters);
-            $this->writeSemanticCache($searchQuestion, $embedder, $session->user_id, $question, (string) ($refusal['message']['content'] ?? ''), [], true);
+            $this->writeSemanticCache($searchQuestion, $embedder, $llmProfile, $session->user_id, $question, (string) ($refusal['message']['content'] ?? ''), [], true);
             $totalTime = (microtime(true) - $start) * 1000;
             Log::channel(config('rag.logging.channel', 'rag'))->info('RAG pipeline (stream): refusal (no chunks)', [
                 'session_id' => $session->id,
@@ -620,10 +616,11 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         $fullContent = '';
         $t0 = microtime(true);
-        $stream = $llm->completeStream($systemPrompt, $llmQuestion, $context, $this->buildLlmOptions([
-            'temperature' => $this->temperature,
-            'max_tokens' => $this->maxTokens,
-        ], $options));
+        $stream = $llm->completeStream($systemPrompt, $llmQuestion, $context, $this->buildLlmOptions(
+            $llmProfile,
+            ['max_tokens' => $llmProfile['max_tokens']],
+            $options,
+        ));
 
         foreach ($stream as $chunk) {
             $fullContent .= $chunk;
@@ -633,7 +630,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         $this->sessionManager->saveAssistantMessage($session, $fullContent, $sources);
 
-        $this->writeSemanticCache($searchQuestion, $embedder, $session->user_id, $question, $fullContent, $sources, false);
+        $this->writeSemanticCache($searchQuestion, $embedder, $llmProfile, $session->user_id, $question, $fullContent, $sources, false);
 
         $totalTime = (microtime(true) - $start) * 1000;
         Log::channel(config('rag.logging.channel', 'rag'))->info('RAG pipeline (stream): complete', [
@@ -661,23 +658,20 @@ class RAGPipelineService implements RAGPipelineServiceInterface
      * List chat sessions with pagination
      *
      * Returns sessions ordered by last_activity_at descending, 20 per page.
-     * Optionally scoped to a specific user via userId.
+     * Always scoped to the given user.
      *
-     * @param  string|null  $userId  Filter to sessions owned by this user. Example: "01J..."
+     * @param  string  $userId  Owner ULID; only their sessions are listed. Example: "01J..."
      * @param  int  $page  Page number (1-based). Example: 1
      * @return array{data: array, current_page: int, last_page: int, per_page: int, total: int, from: int|null, to: int|null}
      *                                                                                                                        Paginated result matching Laravel's paginator toArray() format.
      *                                                                                                                        Example: ["data" => [...], "current_page" => 1, "last_page" => 3, "total" => 50]
      */
-    public function listSessions(?string $userId = null, int $page = 1): array
+    public function listSessions(string $userId, int $page = 1): array
     {
-        $query = ChatSession::orderByDesc('last_activity_at');
-
-        if ($userId !== null) {
-            $query->where('user_id', $userId);
-        }
-
-        return $query->paginate(20, ['*'], 'page', $page)->toArray();
+        return ChatSession::ownedBy($userId)
+            ->orderByDesc('last_activity_at')
+            ->paginate(20, ['*'], 'page', $page)
+            ->toArray();
     }
 
     /**
@@ -687,24 +681,16 @@ class RAGPipelineService implements RAGPipelineServiceInterface
      * Optionally scoped to a specific user for ownership verification.
      *
      * @param  string  $id  The session ULID. Example: "01J..."
-     * @param  string|null  $userId  Optional user ULID for ownership check. Example: "01J..."
+     * @param  string  $userId  Owner ULID; other users' sessions are not found. Example: "01J..."
      * @return array Session data with messages, as returned by Eloquent's toArray().
      *               Example: ["id" => "01J...", "title" => "New Chat", "messages" => [["id" => "01J...", "role" => "user", "content" => "hi"]]]
      *
      * @throws ModelNotFoundException When session is not found or not owned by the user
      *                                Example: $service->getSession('nonexistent') → ModelNotFoundException
      */
-    public function getSession(string $id, ?string $userId = null): array
+    public function getSession(string $id, string $userId): array
     {
-        $query = ChatSession::with('messages')->where('id', $id);
-
-        if ($userId !== null) {
-            $query->where('user_id', $userId);
-        }
-
-        $session = $query->firstOrFail();
-
-        return $session->toArray();
+        return ChatSession::ownedBy($userId)->with('messages')->findOrFail($id)->toArray();
     }
 
     /**
@@ -714,20 +700,14 @@ class RAGPipelineService implements RAGPipelineServiceInterface
      * Optionally scoped to a user for ownership verification.
      *
      * @param  string  $id  The session ULID to delete. Example: "01J..."
-     * @param  string|null  $userId  Optional user ULID for ownership check. Example: "01J..."
+     * @param  string  $userId  Owner ULID; other users' sessions are not found. Example: "01J..."
      *
      * @throws ModelNotFoundException When session is not found or not owned by the user
      *                                Example: $service->deleteSession('nonexistent') → ModelNotFoundException
      */
-    public function deleteSession(string $id, ?string $userId = null): void
+    public function deleteSession(string $id, string $userId): void
     {
-        $query = ChatSession::where('id', $id);
-
-        if ($userId !== null) {
-            $query->where('user_id', $userId);
-        }
-
-        $session = $query->firstOrFail();
+        $session = ChatSession::ownedBy($userId)->findOrFail($id);
         $session->messages()->delete();
         $session->delete();
     }
@@ -795,7 +775,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
      * Normalises the question, resolves the session, extracts filters, rewrites
      * the query, saves the user message, resolves filter inheritance from the
      * prior exchange, selects the LLM, and picks the correct embedding model.
-     * @return array{question: string, session: ChatSession, autoFilters: array, rewritten: RewrittenQuery, searchQuestion: string, ftsQuery: string, llmQuestion: string, llm: LLMServiceInterface, targetModel: AiModel|null, embedder: EmbeddingServiceInterface}
+     * @return array{question: string, session: ChatSession, autoFilters: array, rewritten: RewrittenQuery, searchQuestion: string, ftsQuery: string, llmQuestion: string, llm: LLMServiceInterface, llmProfile: array, targetModel: AiModel|null, embedder: EmbeddingServiceInterface}
      */
     private function buildPipelineContext(string $question, array $options): array
     {
@@ -871,7 +851,9 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         // Enforce tenant isolation: a user may only search documents they own.
         $autoFilters = $this->applyTenantIsolation($autoFilters, $options['user_id'] ?? $this->userId);
 
-        $llm = $this->resolveLLM($options);
+        $llmModel = $this->resolveLlmModel($options);
+        $llm = $this->resolveLLM($llmModel);
+        $llmProfile = $this->llmProfile($llmModel);
 
         // Select the embedding model that matches the targeted documents
         $targetModel = $this->activeEmbeddingModel;
@@ -902,12 +884,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
                     if ($this->activeEmbeddingModel === null || $this->activeEmbeddingModel->id !== $requiredId) {
                         $targetModel = AiModel::find($requiredId);
                         if ($targetModel !== null) {
-                            $provider = $this->providerFactory->createEmbeddingProvider($targetModel);
-                            $embedder = new EmbeddingService(
-                                $provider,
-                                $this->cache,
-                                (int) ($targetModel->settings['cache_ttl'] ?? 86400)
-                            );
+                            $embedder = $this->providerFactory->createEmbeddingService($targetModel);
                         }
                     }
                 }
@@ -917,7 +894,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         }
 
         return compact('question', 'session', 'autoFilters', 'rewritten', 'searchQuestion',
-            'ftsQuery', 'llmQuestion', 'llm', 'targetModel', 'embedder');
+            'ftsQuery', 'llmQuestion', 'llm', 'llmProfile', 'targetModel', 'embedder');
     }
 
     /**
@@ -964,10 +941,10 @@ class RAGPipelineService implements RAGPipelineServiceInterface
      * @param  string  $searchQuestion  The rewritten/expanded search question. Example: "Q3 revenue"
      * @param  EmbeddingServiceInterface  $embedder  Embedding service. Example: mock(EmbeddingServiceInterface::class)
      * @param  ChatSession  $session  Resolved chat session (for user scoping). Example: ChatSession{...}
-     * @param  array  $options  Request options. Example: []
+     * @param  array  $llmProfile  Per-request LLM profile from llmProfile(). Example: ["cache_hash" => "a1b2..."]
      * @return null|array{question: string, message: array} Cached payload, or null. Example: ["question" => "...", "message" => ["content" => "..."]]
      */
-    private function lookupSemanticCache(string $searchQuestion, EmbeddingServiceInterface $embedder, ChatSession $session, array $options = []): ?array
+    private function lookupSemanticCache(string $searchQuestion, EmbeddingServiceInterface $embedder, ChatSession $session, array $llmProfile): ?array
     {
         if (! $this->cacheEnabled) {
             return null;
@@ -980,13 +957,8 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         try {
             $vector = $embedder->embed($searchQuestion);
-            $modelHash = SemanticCacheService::modelHash(
-                $this->activeLlmModel?->model ?? config('rag.llm.model', ''),
-                $this->temperature,
-                $this->maxTokens,
-            );
 
-            return $this->semanticCache->get($vector, $session->user_id, $modelHash, $this->cacheEnabled);
+            return $this->semanticCache->get($vector, $session->user_id, $llmProfile['cache_hash'], $this->cacheEnabled);
         } catch (\Throwable $e) {
             Log::channel(config('rag.logging.channel', 'rag'))->warning('Semantic cache lookup failed', [
                 'error' => $e->getMessage(),
@@ -1039,6 +1011,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
      *
      * @param  string  $searchQuestion  The search question used for retrieval. Example: "Q3 revenue"
      * @param  EmbeddingServiceInterface  $embedder  Embedding service. Example: mock(EmbeddingServiceInterface::class)
+     * @param  array  $llmProfile  Per-request LLM profile from llmProfile(). Example: ["cache_hash" => "a1b2..."]
      * @param  string|null  $userId  Owning user ULID. Example: "01J..."
      * @param  string  $question  Original/normalised question. Example: "What is Q3 revenue?"
      * @param  string  $answer  Generated answer text. Example: "Revenue was $45.2M."
@@ -1048,6 +1021,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
     private function writeSemanticCache(
         string $searchQuestion,
         EmbeddingServiceInterface $embedder,
+        array $llmProfile,
         ?string $userId,
         string $question,
         string $answer,
@@ -1060,12 +1034,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         try {
             $vector = $embedder->embed($searchQuestion);
-            $modelHash = SemanticCacheService::modelHash(
-                $this->activeLlmModel?->model ?? config('rag.llm.model', ''),
-                $this->temperature,
-                $this->maxTokens,
-            );
-            $this->semanticCache->put($vector, $question, $answer, $sources, $userId, $modelHash, $isRefusal, $this->cacheEnabled);
+            $this->semanticCache->put($vector, $question, $answer, $sources, $userId, $llmProfile['cache_hash'], $isRefusal, $this->cacheEnabled);
         } catch (\Throwable $e) {
             Log::channel(config('rag.logging.channel', 'rag'))->warning('Semantic cache write failed', [
                 'error' => $e->getMessage(),
@@ -1121,7 +1090,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
                 $options['user_id'] ?? $this->userId,
             );
             $filters['similarity_threshold'] = $this->minInitialThreshold;
-            $filters['model_name'] = $targetModel?->model ?? config('rag.embedding.model', 'text-embedding-3-small');
+            $filters['model_name'] = AiModel::resolveModelName($targetModel, 'embedding');
             if ($rewritten->ftsQuery !== null) {
                 $filters['boolean_fts_query'] = $rewritten->ftsQuery;
             }
@@ -1169,7 +1138,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
      * @return array<string> Array of query strings, with the original first.
      *                       Example: ["Q3 revenue report", "third quarter revenue", "Q3 financial results"]
      */
-    private function expandQuery(string $question, LLMServiceInterface $llm, array $requestOptions = []): array
+    private function expandQuery(string $question, LLMServiceInterface $llm, array $llmProfile, array $requestOptions = []): array
     {
         // Let expansive question types (analytical/comparative) trigger
         // multi-query expansion even when the global toggle is off, because
@@ -1191,7 +1160,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
                 systemPrompt: '',
                 userPrompt: $prompt,
                 context: '',
-                options: $this->buildLlmOptions(['temperature' => $this->temperature, 'max_tokens' => 500], $requestOptions),
+                options: $this->buildLlmOptions($llmProfile, ['max_tokens' => 500], $requestOptions),
             );
 
             $lines = array_filter(
@@ -1342,45 +1311,96 @@ class RAGPipelineService implements RAGPipelineServiceInterface
      * @return array Options with `think` conditionally included.
      *               Example: ['temperature' => 0.3, 'max_tokens' => 4096, 'think' => false]
      */
-    private function buildLlmOptions(array $overrides, array $requestOptions = []): array
+    private function buildLlmOptions(array $llmProfile, array $overrides, array $requestOptions = []): array
     {
+        $overrides['temperature'] = $llmProfile['temperature'];
+
         if (isset($requestOptions['think'])) {
             $overrides['think'] = (bool) $requestOptions['think'];
-        } elseif ($this->think !== null) {
-            $overrides['think'] = $this->think;
+        } elseif ($llmProfile['think'] !== null) {
+            $overrides['think'] = $llmProfile['think'];
         }
 
-        if ($this->activeLlmModel !== null && $this->activeLlmModel->max_context_tokens !== null) {
-            $overrides['num_ctx'] = (int) $this->activeLlmModel->max_context_tokens;
-        } else {
-            $overrides['num_ctx'] = (int) config('rag.llm.max_context_tokens', 32768);
-        }
+        $overrides['num_ctx'] = $llmProfile['num_ctx'];
 
         return $overrides;
     }
 
     /**
-     * Resolve LLM Service
+     * Resolve the LLM model record for a request.
      *
-     * Resolves the LLM service to use for a request. If a specific model ID
-     * is provided in the options, it will create a new LLM service with that
-     * model's provider. Otherwise, returns the default LLM service.
+     * Honors a valid `llm_model_id` override (active, type llm); otherwise
+     * returns the pipeline's default active LLM model.
      *
-     * @param  array  $options  Request options. Example: ["session_id" => "01J...", "llm_model_id" => "01J..."]
-     * @return LLMServiceInterface The configured LLM service
-     *                             Example: new LLMService(provider: new OllamaLLMProvider(...), maxContextTokens: 4000)
+     * @param  array  $options  Request options. Example: ["llm_model_id" => "01J..."]
+     * @return AiModel|null The model to generate with, or null when none is configured
      */
-    private function resolveLLM(array $options): LLMServiceInterface
+    private function resolveLlmModel(array $options): ?AiModel
     {
         $modelId = $options['llm_model_id'] ?? null;
 
-        if ($modelId === null) {
-            return $this->llm;
+        if ($modelId === null || $modelId === $this->activeLlmModel?->id) {
+            return $this->activeLlmModel;
         }
 
         $aiModel = AiModel::find($modelId);
 
         if ($aiModel === null || ! $aiModel->is_active || $aiModel->type !== 'llm') {
+            return $this->activeLlmModel;
+        }
+
+        return $aiModel;
+    }
+
+    /**
+     * Generation parameters for the model actually answering this request.
+     *
+     * The default model reuses the values resolved in the constructor; an
+     * override model reads its own columns/settings so temperature, max_tokens,
+     * think, num_ctx and the semantic-cache hash all follow the same model.
+     *
+     * @param  AiModel|null  $model  Model from resolveLlmModel(). Example: AiModel::find("01J...")
+     * @return array{temperature: float, max_tokens: int, think: bool|null, num_ctx: int, cache_hash: string}
+     */
+    private function llmProfile(?AiModel $model): array
+    {
+        if ($model === null || $model === $this->activeLlmModel) {
+            $temperature = $this->temperature;
+            $maxTokens = $this->maxTokens;
+            $think = $this->think;
+        } else {
+            $settings = $model->settings ?? [];
+            $temperature = AiModel::resolveTemperature($model);
+            $maxTokens = isset($settings['max_tokens']) ? (int) $settings['max_tokens'] : $this->maxTokens;
+            $think = isset($settings['think']) ? (bool) $settings['think'] : null;
+        }
+
+        return [
+            'temperature' => $temperature,
+            'max_tokens' => $maxTokens,
+            'think' => $think,
+            'num_ctx' => $model?->maxContextTokens() ?? (int) config('rag.llm.max_context_tokens', 32768),
+            'cache_hash' => SemanticCacheService::modelHash(
+                AiModel::resolveModelName($model, 'llm'),
+                $temperature,
+                $maxTokens,
+            ),
+        ];
+    }
+
+    /**
+     * Resolve LLM Service
+     *
+     * Returns the default LLM service for the default model, or builds a new
+     * LLM service for an override model chosen by resolveLlmModel().
+     *
+     * @param  AiModel|null  $aiModel  Model from resolveLlmModel(). Example: AiModel::find("01J...")
+     * @return LLMServiceInterface The configured LLM service
+     *                             Example: new LLMService(provider: new OllamaLLMProvider(...), maxContextTokens: 4000)
+     */
+    private function resolveLLM(?AiModel $aiModel): LLMServiceInterface
+    {
+        if ($aiModel === null || $aiModel === $this->activeLlmModel) {
             return $this->llm;
         }
 
@@ -1388,7 +1408,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
 
         return new LLMService(
             provider: $provider,
-            maxContextTokens: $aiModel->max_context_tokens ?? (int) config('rag.llm.max_context_tokens', 4000),
+            maxContextTokens: $aiModel->maxContextTokens(),
         );
     }
 }

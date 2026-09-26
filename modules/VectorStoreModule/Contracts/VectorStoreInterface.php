@@ -82,6 +82,14 @@ interface VectorStoreInterface
     public function deleteByDocumentId(string $documentId): void;
 
     /**
+     * Count stored vectors for the given chunks.
+     *
+     * @param  array<string>  $chunkIds  Chunk ULIDs. Example: ["01JAR...", "01JAS..."]
+     * @return int Number of stored vectors. Example: 42
+     */
+    public function countByChunkIds(array $chunkIds): int;
+
+    /**
      * Get storage statistics.
      *
      * @return array Stats including total_vectors, by_dimensions, by_model. Example: ["total_vectors" => 1500, "by_dimensions" => [768 => 500, 1536 => 1000]]

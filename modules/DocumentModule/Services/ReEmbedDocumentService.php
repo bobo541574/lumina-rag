@@ -4,8 +4,9 @@ declare(strict_types=1);
 
 namespace Modules\DocumentModule\Services;
 
-use Illuminate\Contracts\Cache\Repository as CacheRepository;
+use Illuminate\Support\Facades\DB;
 use Modules\ChatModule\Events\KnowledgeChanged;
+use Modules\DocumentModule\Enums\DocumentStatus;
 use Modules\DocumentModule\Models\Document;
 use Modules\DocumentModule\Models\DocumentChunk;
 use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
@@ -16,15 +17,16 @@ use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
  * Re-Embed Document Service
  *
  * Regenerates vector embeddings for an already-processed document using its
- * configured embedding model. Deletes existing vectors before regenerating,
- * so this is safe to run multiple times. Holds the business logic so the same
+ * configured embedding model. New vectors are computed first and swapped in
+ * atomically, so a provider failure leaves the old vectors in place and this
+ * is safe to run multiple times. Holds the business logic so the same
  * operation can be invoked synchronously (console, tests) or via the queue
  * wrapper ReEmbedDocumentJob.
  *
  * @param  EmbeddingServiceInterface  $defaultEmbedder  Default embedding service (overridable per document). Example: app(EmbeddingServiceInterface::class)
  * @param  VectorStoreInterface  $vectorStore  Persists/removes vector embeddings. Example: app(VectorStoreInterface::class)
  * @param  ProviderFactory  $providerFactory  Factory to create per-model providers. Example: app(ProviderFactory::class)
- * @param  CacheRepository  $cache  Cache repository for embedding caching. Example: app(CacheRepository::class)
+ * @param  ChunkEmbedder  $chunkEmbedder  Embeds chunks and stores their vectors. Example: app(ChunkEmbedder::class)
  */
 class ReEmbedDocumentService
 {
@@ -36,27 +38,27 @@ class ReEmbedDocumentService
 
     private ProviderFactory $providerFactory;
 
-    private CacheRepository $cache;
+    private ChunkEmbedder $chunkEmbedder;
 
     public function __construct(
         EmbeddingServiceInterface $defaultEmbedder,
         VectorStoreInterface $vectorStore,
         ProviderFactory $providerFactory,
-        CacheRepository $cache,
+        ChunkEmbedder $chunkEmbedder,
     ) {
         $this->defaultEmbedder = $defaultEmbedder;
         $this->vectorStore = $vectorStore;
         $this->providerFactory = $providerFactory;
-        $this->cache = $cache;
+        $this->chunkEmbedder = $chunkEmbedder;
     }
 
     /**
      * Re-embed a document
      *
-     * Loads the document, deletes all existing vectors for it, loads all chunks,
-     * resolves the embedder (respecting per-document AiModel override), generates
-     * embeddings in batches, and upserts them into the vector store. If the
-     * document has no chunks, exits silently.
+     * Loads all chunks, resolves the embedder (respecting per-document AiModel
+     * override) and generates embeddings in batches. Only once every batch
+     * succeeds are the old vectors replaced, inside one DB transaction. If the
+     * document has no chunks, its vectors are removed and the call returns.
      *
      * @param  string  $documentId  The ULID of the document to re-embed. Example: "01J..."
      *
@@ -67,66 +69,33 @@ class ReEmbedDocumentService
     {
         $document = Document::findOrFail($documentId);
 
-        $this->vectorStore->deleteByDocumentId($documentId);
-
         $chunks = DocumentChunk::where('document_id', $documentId)
             ->orderBy('chunk_index')
-            ->get();
+            ->get()
+            ->all();
 
-        if ($chunks->isEmpty()) {
+        if ($chunks === []) {
+            $this->vectorStore->deleteByDocumentId($documentId);
+
             return;
         }
 
-        $embedder = $this->resolveEmbedder($document, $this->defaultEmbedder, $this->providerFactory, $this->cache);
-        $modelName = $this->resolveModelName($document);
+        // Embed everything before touching the store: if the provider fails
+        // part-way, the document keeps its old vectors instead of none.
+        $embedder = $this->resolveEmbedder($document, $this->defaultEmbedder, $this->providerFactory);
+        $vectors = $this->chunkEmbedder->embed($document, $chunks, $embedder);
 
-        $texts = $chunks->pluck('content')->toArray();
-        $batchSize = (int) config('rag.embedding.batch_size', 100);
-        $batches = array_chunk($texts, $batchSize);
+        DB::transaction(function () use ($document, $chunks, $vectors): void {
+            $this->vectorStore->deleteByDocumentId($document->id);
+            $this->chunkEmbedder->store($document, $chunks, $vectors);
+        });
 
-        foreach ($batches as $batchIndex => $batch) {
-            $vectors = $embedder->embedBatch($batch, $modelName);
-            $offset = $batchIndex * $batchSize;
-
-            $batchVectors = [];
-            $batchChunkIds = [];
-            $batchMetadata = [];
-
-            foreach ($vectors as $j => $vector) {
-                $chunk = $chunks[$offset + $j];
-                $batchVectors[] = $vector;
-                $batchChunkIds[] = $chunk->id;
-                $batchMetadata[] = [
-                    'model_name' => $modelName,
-                    'content_hash' => md5($chunk->content),
-                ];
-            }
-
-            $this->vectorStore->upsert(
-                vectors: $batchVectors,
-                metadata: $batchMetadata,
-                chunkId: $batchChunkIds,
-                namespace: "document_{$document->id}",
-            );
+        // Clear a stale error left by an earlier failed re-embed.
+        if ($document->status === DocumentStatus::Completed && $document->error_message !== null) {
+            $document->update(['error_message' => null]);
         }
 
         // Vectors regenerated — cached answers may have changed.
         KnowledgeChanged::dispatch([$document->id]);
-    }
-
-    /**
-     * Resolve the embedding model name for a document
-     *
-     * Returns the document's per-document embedding_model if set, otherwise
-     * falls back to the global default from config.
-     *
-     * @param  Document  $document  The document to resolve the model for. Example: Document::findOrFail($id)
-     * @return string The resolved model name.
-     *                Example: "text-embedding-3-small"
-     */
-    private function resolveModelName(Document $document): string
-    {
-        return $document->embedding_model
-            ?? (string) config('rag.embedding.model', 'text-embedding-3-small');
     }
 }

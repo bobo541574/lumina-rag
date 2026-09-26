@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\LLMModule\Services;
 
+use App\Support\HttpJsonClient;
 use Generator;
 use Modules\LLMModule\Contracts\LLMProviderInterface;
 
@@ -15,9 +16,8 @@ use Modules\LLMModule\Contracts\LLMProviderInterface;
  * generateContent endpoint with system instructions passed via the
  * systemInstruction field.
  *
- * Streaming is implemented via cURL multi-handle with a WRITEFUNCTION
- * callback that parses SSE data: lines. The non-streaming path uses
- * exponential-backoff retry (3 attempts) for transient server errors.
+ * Streaming parses SSE data: lines via StreamsHttpLines; the non-streaming
+ * path retries transient failures via HttpJsonClient.
  *
  * @param  string  $apiKey  Google API key for authentication. Example: "AIza..."
  * @param  string  $model  Gemini model identifier. Example: "gemini-2.5-flash"
@@ -28,6 +28,8 @@ use Modules\LLMModule\Contracts\LLMProviderInterface;
  */
 class GeminiLLMProvider implements LLMProviderInterface
 {
+    use StreamsHttpLines;
+
     /** @var string Google API key */
     private string $apiKey;
 
@@ -128,7 +130,7 @@ class GeminiLLMProvider implements LLMProviderInterface
     /**
      * Perform a streaming LLM completion via the Gemini API.
      *
-     * Uses cURL multi-handle to stream SSE events. Parses the Gemini
+     * Uses StreamsHttpLines to stream SSE events. Parses the Gemini
      * streaming format (text/event-stream with data: JSON lines) and
      * yields content text deltas.
      *
@@ -137,7 +139,7 @@ class GeminiLLMProvider implements LLMProviderInterface
      * @param  array  $options  Override options. Example: ["temperature" => 0.3]
      * @return Generator Yields content strings. Example: foreach ($gen as $chunk) { echo $chunk; }
      *
-     * @throws \RuntimeException When cURL multi-handle encounters a fatal error
+     * @throws \RuntimeException When the server returns an error status or the transfer fails
      */
     public function completeStream(string $systemPrompt, string $userPrompt, array $options = []): Generator
     {
@@ -172,76 +174,29 @@ class GeminiLLMProvider implements LLMProviderInterface
 
         $url = $this->baseUrl.'/models/'.urlencode($model).':streamGenerateContent?alt=sse';
 
-        $queue = [];
-        $lineBuffer = '';
-
-        $ch = curl_init($url);
-        curl_setopt_array($ch, [
-            CURLOPT_POST => true,
-            CURLOPT_HTTPHEADER => [
+        yield from $this->streamLines(
+            $url,
+            [
                 'Content-Type: application/json',
                 // Credentials travel in a header, never in the URL (ISO 27002:8.24).
                 'x-goog-api-key: '.$this->apiKey,
             ],
-            CURLOPT_POSTFIELDS => json_encode($payload),
-            CURLOPT_RETURNTRANSFER => false,
-            CURLOPT_TIMEOUT => $this->timeout,
-            CURLOPT_WRITEFUNCTION => function ($ch, $data) use (&$queue, &$lineBuffer): int {
-                $lineBuffer .= $data;
-                $lines = explode("\n", $lineBuffer);
-                $lineBuffer = array_pop($lines);
-
-                foreach ($lines as $line) {
-                    $line = trim($line);
-                    if ($line === '' || ! str_starts_with($line, 'data: ')) {
-                        continue;
-                    }
-
-                    $json = substr($line, 6);
-                    try {
-                        $parsed = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
-                        if (isset($parsed['candidates'][0]['content']['parts'])) {
-                            foreach ($parsed['candidates'][0]['content']['parts'] as $part) {
-                                $text = $part['text'] ?? '';
-                                if ($text !== '') {
-                                    $queue[] = $text;
-                                }
-                            }
-                        }
-                    } catch (\JsonException) {
-                        // skip malformed JSON
-                    }
+            $payload,
+            $this->timeout,
+            'Gemini',
+            static function (string $line): array {
+                if (! str_starts_with($line, 'data: ')) {
+                    return [];
                 }
 
-                return strlen($data);
+                $parsed = json_decode(substr($line, 6), true, 512, JSON_THROW_ON_ERROR);
+
+                return array_map(
+                    static fn (array $part): string => (string) ($part['text'] ?? ''),
+                    $parsed['candidates'][0]['content']['parts'] ?? [],
+                );
             },
-        ]);
-
-        $mh = curl_multi_init();
-        curl_multi_add_handle($mh, $ch);
-
-        $running = null;
-        do {
-            $status = curl_multi_exec($mh, $running);
-            if ($status !== CURLM_OK) {
-                break;
-            }
-
-            while ($queue !== []) {
-                yield array_shift($queue);
-            }
-
-            if ($running > 0 && $queue === []) {
-                usleep(5_000);
-            }
-        } while ($running > 0);
-
-        while ($queue !== []) {
-            yield array_shift($queue);
-        }
-
-        curl_multi_remove_handle($mh, $ch);
-        curl_multi_close($mh);
+        );
     }
 
     /**
@@ -271,8 +226,7 @@ class GeminiLLMProvider implements LLMProviderInterface
     /**
      * Execute a single HTTP request to the Gemini generateContent endpoint.
      *
-     * Implements retry with exponential backoff (1s, 5s, 25s) for
-     * transient server errors. Client errors (4xx) throw immediately.
+     * Retries transient failures via HttpJsonClient; 4xx errors throw immediately.
      *
      * @param  string  $model  Model identifier. Example: "gemini-2.5-flash"
      * @param  array  $payload  Request payload. Example: ["contents" => [...], "generationConfig" => [...]]
@@ -282,47 +236,13 @@ class GeminiLLMProvider implements LLMProviderInterface
      */
     private function sendRequest(string $model, array $payload): array
     {
-        $maxAttempts = 3;
-        $backoff = [1_000_000, 5_000_000, 25_000_000];
-
-        $url = $this->baseUrl.'/models/'.urlencode($model).':generateContent';
-
-        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
-            $ch = curl_init($url);
-            curl_setopt_array($ch, [
-                CURLOPT_POST => true,
-                CURLOPT_HTTPHEADER => [
-                    'Content-Type: application/json',
-                    // Credentials travel in a header, never in the URL (ISO 27002:8.24).
-                    'x-goog-api-key: '.$this->apiKey,
-                ],
-                CURLOPT_POSTFIELDS => json_encode($payload),
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_TIMEOUT => $this->timeout,
-            ]);
-
-            $response = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            $error = curl_error($ch);
-            curl_close($ch);
-
-            if ($error === '' && $httpCode === 200) {
-                return json_decode($response, true, 512, JSON_THROW_ON_ERROR);
-            }
-
-            if ($httpCode >= 400 && $httpCode < 500) {
-                throw new \RuntimeException("Gemini API returned HTTP {$httpCode}: {$response}");
-            }
-
-            if ($attempt < $maxAttempts) {
-                usleep($backoff[$attempt - 1]);
-            }
-        }
-
-        if ($error !== '') {
-            throw new \RuntimeException("Gemini API request failed after {$maxAttempts} attempts: {$error}");
-        }
-
-        throw new \RuntimeException("Gemini API returned HTTP {$httpCode} after {$maxAttempts} attempts: {$response}");
+        return HttpJsonClient::post(
+            $this->baseUrl.'/models/'.urlencode($model).':generateContent',
+            // Credentials travel in a header, never in the URL (ISO 27002:8.24).
+            ['x-goog-api-key: '.$this->apiKey],
+            $payload,
+            $this->timeout,
+            'Gemini',
+        );
     }
 }

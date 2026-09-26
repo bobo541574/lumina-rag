@@ -4,31 +4,28 @@ declare(strict_types=1);
 
 namespace Modules\LLMModule\Services;
 
+use App\Support\HttpJsonClient;
 use Generator;
 use Modules\LLMModule\Contracts\LLMProviderInterface;
 
 /**
- * OpenAI LLM provider using raw cURL.
+ * OpenAI-compatible Chat Completions provider.
  *
- * Communicates with the OpenAI Chat Completions API
- * (https://api.openai.com/v1/chat/completions) for both synchronous and
- * streaming text generation. Supports configurable models, temperature,
- * and max_tokens.
+ * Talks to any endpoint implementing the OpenAI `/chat/completions` API
+ * (OpenAI itself, DeepSeek, vLLM, Groq, Azure-style gateways) for both
+ * synchronous and streaming text generation. The base URL and error label
+ * are the only per-vendor differences.
  *
- * Streaming is implemented via cURL multi-handle with a WRITEFUNCTION
- * callback that parses SSE data: lines and yields content deltas as they
- * arrive. The non-streaming path uses exponential-backoff retry (3 attempts)
- * for transient server errors.
- *
- * @param  string  $apiKey  OpenAI API key for bearer authentication. Example: "sk-proj-..."
- * @param  string  $model  LLM model identifier. Example: "gpt-4o"
- * @param  int  $timeout  cURL request timeout in seconds. Example: 60
+ * The non-streaming path retries transient failures via HttpJsonClient; the
+ * streaming path parses SSE `data:` lines via StreamsHttpLines.
  *
  * @throws \RuntimeException On API failure, empty response, or unexpected structure
  */
 class OpenAILLMProvider implements LLMProviderInterface
 {
-    /** @var string OpenAI API key for bearer authentication */
+    use StreamsHttpLines;
+
+    /** @var string API key for bearer authentication */
     private string $apiKey;
 
     /** @var string LLM model name (e.g. "gpt-4o") */
@@ -37,26 +34,35 @@ class OpenAILLMProvider implements LLMProviderInterface
     /** @var int cURL request timeout in seconds */
     private int $timeout;
 
+    /** @var string API base URL without trailing slash */
+    private string $baseUrl;
+
+    /** @var string Vendor name used in error messages */
+    private string $label;
+
     /**
-     * @param  string  $apiKey  OpenAI API key. Example: "sk-proj-..."
+     * @param  string  $apiKey  API key. Example: "sk-proj-..."
      * @param  string  $model  Model identifier. Example: "gpt-4o"
      * @param  int  $timeout  Request timeout in seconds. Example: 60
+     * @param  string  $baseUrl  API base URL. Example: "https://api.openai.com/v1"
+     * @param  string  $label  Vendor name for error messages. Example: "OpenAI"
      */
     public function __construct(
         string $apiKey,
         string $model = 'gpt-4o',
         int $timeout = 60,
+        string $baseUrl = 'https://api.openai.com/v1',
+        string $label = 'OpenAI',
     ) {
         $this->apiKey = $apiKey;
         $this->model = $model;
         $this->timeout = $timeout;
+        $this->baseUrl = rtrim($baseUrl, '/');
+        $this->label = $label;
     }
 
     /**
-     * Perform a synchronous LLM completion via the OpenAI Chat API.
-     *
-     * Sends system prompt and user prompt as messages, returns a structured
-     * LLMResponse with content and token usage metadata.
+     * Perform a synchronous completion via the Chat Completions API.
      *
      * @param  string  $systemPrompt  System-level instructions. Example: "You are a helpful assistant."
      * @param  string  $userPrompt  The assembled prompt (context + question). Example: "Context:\n---\n...\n---\n\nQuestion: What is X?\n\nAnswer:"
@@ -67,24 +73,15 @@ class OpenAILLMProvider implements LLMProviderInterface
      */
     public function complete(string $systemPrompt, string $userPrompt, array $options = []): LLMResponse
     {
-        $temperature = (float) ($options['temperature'] ?? 0.3);
+        $response = HttpJsonClient::post(
+            $this->baseUrl.'/chat/completions',
+            $this->headers(),
+            $this->buildPayload($systemPrompt, $userPrompt, $options),
+            $this->timeout,
+            $this->label,
+        );
 
-        $payload = [
-            'model' => $options['model'] ?? $this->model,
-            'messages' => [
-                ['role' => 'system', 'content' => $systemPrompt],
-                ['role' => 'user', 'content' => $userPrompt],
-            ],
-            'temperature' => $temperature,
-        ];
-
-        if (isset($options['max_tokens'])) {
-            $payload['max_tokens'] = $options['max_tokens'];
-        }
-
-        $response = $this->sendRequest($payload);
-
-        $choice = $response['choices'][0] ?? throw new \RuntimeException('LLM API returned no choices');
+        $choice = $response['choices'][0] ?? throw new \RuntimeException("{$this->label} API returned no choices");
 
         return new LLMResponse(
             content: $choice['message']['content'] ?? '',
@@ -97,105 +94,25 @@ class OpenAILLMProvider implements LLMProviderInterface
     }
 
     /**
-     * Perform a streaming LLM completion.
-     *
-     * Uses cURL multi-handle to stream SSE events from the OpenAI API.
-     * Yields content deltas as parsed JSON chunks from the response stream.
-     * Final [DONE] signal is consumed without yielding.
+     * Perform a streaming completion, yielding content deltas as they arrive.
      *
      * @param  string  $systemPrompt  System-level instructions. Example: "You are a helpful assistant."
      * @param  string  $userPrompt  The assembled prompt. Example: "Context:\n---\n...\n---\n\nQuestion: What is X?\n\nAnswer:"
      * @param  array  $options  Override options. Example: ["temperature" => 0.3]
      * @return Generator Yields content strings. Example: foreach ($gen as $chunk) { echo $chunk; }
      *
-     * @throws \RuntimeException When cURL multi-handle encounters a fatal error
+     * @throws \RuntimeException When the server returns an error status or the transfer fails
      */
     public function completeStream(string $systemPrompt, string $userPrompt, array $options = []): Generator
     {
-        $temperature = (float) ($options['temperature'] ?? 0.3);
-
-        $payload = [
-            'model' => $options['model'] ?? $this->model,
-            'messages' => [
-                ['role' => 'system', 'content' => $systemPrompt],
-                ['role' => 'user', 'content' => $userPrompt],
-            ],
-            'temperature' => $temperature,
-            'stream' => true,
-        ];
-
-        if (isset($options['max_tokens'])) {
-            $payload['max_tokens'] = $options['max_tokens'];
-        }
-
-        $url = 'https://api.openai.com/v1/chat/completions';
-
-        $queue = [];
-        $lineBuffer = '';
-
-        $ch = curl_init($url);
-        curl_setopt_array($ch, [
-            CURLOPT_POST => true,
-            CURLOPT_HTTPHEADER => [
-                'Authorization: Bearer '.$this->apiKey,
-                'Content-Type: application/json',
-            ],
-            CURLOPT_POSTFIELDS => json_encode($payload),
-            CURLOPT_RETURNTRANSFER => false,
-            CURLOPT_TIMEOUT => $this->timeout,
-            CURLOPT_WRITEFUNCTION => function ($ch, $data) use (&$queue, &$lineBuffer): int {
-                $lineBuffer .= $data;
-                $lines = explode("\n", $lineBuffer);
-                $lineBuffer = array_pop($lines);
-
-                foreach ($lines as $line) {
-                    $line = trim($line);
-                    if ($line === '' || $line === 'data: [DONE]') {
-                        continue;
-                    }
-                    if (str_starts_with($line, 'data: ')) {
-                        $json = substr($line, 6);
-                        try {
-                            $parsed = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
-                            $delta = $parsed['choices'][0]['delta']['content'] ?? '';
-                            if ($delta !== '') {
-                                $queue[] = $delta;
-                            }
-                        } catch (\JsonException) {
-                            // skip malformed JSON
-                        }
-                    }
-                }
-
-                return strlen($data);
-            },
-        ]);
-
-        $mh = curl_multi_init();
-        curl_multi_add_handle($mh, $ch);
-
-        $running = null;
-        do {
-            $status = curl_multi_exec($mh, $running);
-            if ($status !== CURLM_OK) {
-                break;
-            }
-
-            while ($queue !== []) {
-                yield array_shift($queue);
-            }
-
-            if ($running > 0 && $queue === []) {
-                usleep(5_000); // 5ms
-            }
-        } while ($running > 0);
-
-        while ($queue !== []) {
-            yield array_shift($queue);
-        }
-
-        curl_multi_remove_handle($mh, $ch);
-        curl_multi_close($mh);
+        yield from $this->streamLines(
+            $this->baseUrl.'/chat/completions',
+            [...$this->headers(), 'Content-Type: application/json'],
+            $this->buildPayload($systemPrompt, $userPrompt, $options) + ['stream' => true],
+            $this->timeout,
+            $this->label,
+            static fn (string $line): array => self::parseChatCompletionLine($line),
+        );
     }
 
     /**
@@ -223,58 +140,55 @@ class OpenAILLMProvider implements LLMProviderInterface
     }
 
     /**
-     * Execute a single HTTP request to the OpenAI Chat Completions API.
+     * Chat Completions request body shared by complete() and completeStream().
      *
-     * Implements retry with exponential backoff (1s, 5s, 25s) for
-     * transient server errors. Client errors (4xx) throw immediately.
-     *
-     * @param  array  $payload  Request payload. Example: ["model" => "gpt-4o", "messages" => [...], "temperature" => 0.3]
-     * @return array Decoded response array. Example: ["choices" => [...], "usage" => [...]]
-     *
-     * @throws \RuntimeException On HTTP 4xx, repeated 5xx, cURL error, or malformed JSON
+     * @param  string  $systemPrompt  System-level instructions. Example: "You are a helpful assistant."
+     * @param  string  $userPrompt  The assembled prompt. Example: "Question: What is X?"
+     * @param  array  $options  Override options. Example: ["temperature" => 0.3, "max_tokens" => 4096]
+     * @return array Request payload. Example: ["model" => "gpt-4o", "messages" => [...], "temperature" => 0.3]
      */
-    private function sendRequest(array $payload): array
+    private function buildPayload(string $systemPrompt, string $userPrompt, array $options): array
     {
-        $maxAttempts = 3;
-        $backoff = [1_000_000, 5_000_000, 25_000_000];
+        $payload = [
+            'model' => $options['model'] ?? $this->model,
+            'messages' => [
+                ['role' => 'system', 'content' => $systemPrompt],
+                ['role' => 'user', 'content' => $userPrompt],
+            ],
+            'temperature' => (float) ($options['temperature'] ?? 0.3),
+        ];
 
-        $url = 'https://api.openai.com/v1/chat/completions';
-
-        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
-            $ch = curl_init($url);
-            curl_setopt_array($ch, [
-                CURLOPT_POST => true,
-                CURLOPT_HTTPHEADER => [
-                    'Authorization: Bearer '.$this->apiKey,
-                    'Content-Type: application/json',
-                ],
-                CURLOPT_POSTFIELDS => json_encode($payload),
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_TIMEOUT => $this->timeout,
-            ]);
-
-            $response = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            $error = curl_error($ch);
-            curl_close($ch);
-
-            if ($error === '' && $httpCode === 200) {
-                return json_decode($response, true, 512, JSON_THROW_ON_ERROR);
-            }
-
-            if ($httpCode >= 400 && $httpCode < 500) {
-                throw new \RuntimeException("LLM API returned HTTP {$httpCode}: {$response}");
-            }
-
-            if ($attempt < $maxAttempts) {
-                usleep($backoff[$attempt - 1]);
-            }
+        if (isset($options['max_tokens'])) {
+            $payload['max_tokens'] = $options['max_tokens'];
         }
 
-        if ($error !== '') {
-            throw new \RuntimeException("LLM API request failed after {$maxAttempts} attempts: {$error}");
+        return $payload;
+    }
+
+    /**
+     * @return array<string> Authentication headers. Example: ["Authorization: Bearer sk-..."]
+     */
+    private function headers(): array
+    {
+        return ['Authorization: Bearer '.$this->apiKey];
+    }
+
+    /**
+     * Extract the text delta from one OpenAI-compatible SSE line.
+     *
+     * @param  string  $line  Trimmed SSE line. Example: 'data: {"choices":[{"delta":{"content":"Hi"}}]}'
+     * @return array<string> Zero or one delta. Example: ["Hi"]
+     *
+     * @throws \JsonException On malformed JSON (skipped by streamLines)
+     */
+    private static function parseChatCompletionLine(string $line): array
+    {
+        if ($line === 'data: [DONE]' || ! str_starts_with($line, 'data: ')) {
+            return [];
         }
 
-        throw new \RuntimeException("LLM API returned HTTP {$httpCode} after {$maxAttempts} attempts: {$response}");
+        $parsed = json_decode(substr($line, 6), true, 512, JSON_THROW_ON_ERROR);
+
+        return [(string) ($parsed['choices'][0]['delta']['content'] ?? '')];
     }
 }

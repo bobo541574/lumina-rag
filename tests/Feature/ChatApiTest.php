@@ -5,6 +5,7 @@ declare(strict_types=1);
 use App\Models\User;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
+use Modules\ChatModule\Contracts\RAGPipelineServiceInterface;
 use Modules\ChatModule\Models\ChatSession;
 
 /**
@@ -193,4 +194,30 @@ test('test_chat_cleanup_removes_stale_sessions', function (): void {
         ->assertSuccessful();
 
     expect(ChatSession::where('title', 'Stale Session')->count())->toBe(0);
+});
+
+test('test_chat_api_hides_internal_errors_behind_generic_message', function (): void {
+    $auth = createAuthenticatedUser();
+
+    $pipeline = mock(RAGPipelineServiceInterface::class);
+    $pipeline->shouldReceive('ask')->andThrow(new RuntimeException('DeepSeek request failed (HTTP 401): {"error":"secret detail"}'));
+    app()->instance(RAGPipelineServiceInterface::class, $pipeline);
+
+    $response = $this->withHeaders($auth['headers'])
+        ->postJson('/api/chat', ['question' => 'What happened?', 'stream' => false]);
+
+    $response->assertStatus(502)
+        ->assertJsonPath('success', false)
+        ->assertJsonPath('message', 'Unable to generate an answer right now. Please try again.');
+    expect($response->getContent())->not->toContain('secret detail');
+});
+
+test('test_chat_session_endpoints_hide_other_users_sessions', function (): void {
+    $auth = createAuthenticatedUser();
+    $session = ChatSession::create(['title' => 'Theirs', 'last_activity_at' => now(), 'user_id' => (string) Str::ulid()]);
+
+    $this->withHeaders($auth['headers'])
+        ->getJson("/api/chat/sessions/{$session->id}")
+        ->assertStatus(404)
+        ->assertJsonPath('message', 'Session not found.');
 });

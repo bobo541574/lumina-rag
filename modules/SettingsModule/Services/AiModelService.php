@@ -174,7 +174,7 @@ class AiModelService implements AiModelServiceInterface
      */
     public function getValidationRules(string $type): array
     {
-        $providers = ['openai', 'ollama'];
+        $providers = $type === 'llm' ? AiModel::LLM_PROVIDERS : AiModel::EMBEDDING_PROVIDERS;
 
         $rules = [
             'name' => ['required', 'string', 'max:255'],

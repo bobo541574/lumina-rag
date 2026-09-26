@@ -9,13 +9,15 @@ use Modules\DocumentModule\Models\Document;
 
 interface DocumentServiceInterface
 {
-    public function listDocuments(array $filters = [], ?string $userId = null): array;
+    public function listDocuments(array $filters, string $userId): array;
 
     public function upload(UploadedFile $file, ?string $title, ?string $userId, ?string $embeddingModel, ?string $embeddingModelId, ?string $reportDate, ?string $project): Document;
 
-    public function updateDocument(string $id, array $data, ?string $userId): Document;
+    public function updateDocument(string $id, array $data, string $userId): Document;
 
-    public function deleteDocument(string $id, ?string $userId): void;
+    public function deleteDocument(string $id, string $userId): void;
 
-    public function retryDocument(string $id, ?string $userId): Document;
+    public function retryDocument(string $id, string $userId): Document;
+
+    public function getDocument(string $id, string $userId): Document;
 }

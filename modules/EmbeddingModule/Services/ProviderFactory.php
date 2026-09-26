@@ -47,26 +47,27 @@ class ProviderFactory
     {
         return match ($model->provider) {
             'ollama' => new OllamaEmbeddingProvider(
-                baseUrl: $model->base_url ?? 'http://localhost:11434',
-                model: $model->model,
-                dimensions: $model->dimensions ?? 768,
-                timeout: $model->timeout,
-                batchSize: $model->batch_size ?? 100,
+                baseUrl: $model->baseUrl(),
+                model: $model->modelName(),
+                dimensions: $model->dimensions(),
+                timeout: $model->timeout(),
+                batchSize: $model->batchSize(),
             ),
             'gemini' => new GeminiEmbeddingProvider(
-                apiKey: $model->api_key ?? (string) config('rag.embedding.gemini_api_key', ''),
-                model: $model->model,
-                dimensions: $model->dimensions ?? 768,
-                timeout: $model->timeout,
-                batchSize: $model->batch_size ?? 100,
-                baseUrl: $model->base_url ?? 'https://generativelanguage.googleapis.com/v1beta',
+                apiKey: $model->apiKey(),
+                model: $model->modelName(),
+                dimensions: $model->dimensions(),
+                timeout: $model->timeout(),
+                batchSize: $model->batchSize(),
+                baseUrl: $model->baseUrl(),
             ),
             default => new OpenAIEmbeddingProvider(
-                apiKey: $model->api_key ?? (string) config('rag.embedding.api_key', ''),
-                model: $model->model,
-                dimensions: $model->dimensions ?? 1536,
-                timeout: $model->timeout,
-                batchSize: $model->batch_size ?? 100,
+                apiKey: $model->apiKey(),
+                model: $model->modelName(),
+                dimensions: $model->dimensions(),
+                timeout: $model->timeout(),
+                batchSize: $model->batchSize(),
+                baseUrl: $model->baseUrl(),
             ),
         };
     }
@@ -74,8 +75,9 @@ class ProviderFactory
     /**
      * Create an LLM provider from an AiModel config.
      *
-     * Inspects $model->provider and returns either an OllamaLLMProvider
-     * or an OpenAILLMProvider with parameters drawn from the model record.
+     * Inspects $model->provider and returns the matching provider with
+     * parameters drawn from the model record; unknown providers are treated
+     * as OpenAI-compatible (honouring the model's base_url).
      *
      * @param  AiModel  $model  Model configuration record. Example: AiModel::where('type', 'llm')->first()
      * @return LLMProviderInterface Configured LLM provider. Example: new OpenAILLMProvider(...)
@@ -86,32 +88,33 @@ class ProviderFactory
     {
         return match ($model->provider) {
             'ollama' => new OllamaLLMProvider(
-                baseUrl: $model->base_url ?? 'http://localhost:11434',
-                model: $model->model,
-                timeout: $model->timeout,
+                baseUrl: $model->baseUrl(),
+                model: $model->modelName(),
+                timeout: $model->timeout(),
             ),
             'gemini' => new GeminiLLMProvider(
-                apiKey: $model->api_key ?? (string) config('rag.llm.gemini_api_key', ''),
-                model: $model->model,
-                timeout: $model->timeout,
-                baseUrl: $model->base_url ?? 'https://generativelanguage.googleapis.com/v1beta',
+                apiKey: $model->apiKey(),
+                model: $model->modelName(),
+                timeout: $model->timeout(),
+                baseUrl: $model->baseUrl(),
             ),
             'claude' => new ClaudeLLMProvider(
-                apiKey: $model->api_key ?? (string) config('rag.llm.claude_api_key', ''),
-                model: $model->model,
-                timeout: $model->timeout,
-                baseUrl: $model->base_url ?? 'https://api.anthropic.com/v1',
+                apiKey: $model->apiKey(),
+                model: $model->modelName(),
+                timeout: $model->timeout(),
+                baseUrl: $model->baseUrl(),
             ),
             'deepseek' => new DeepSeekLLMProvider(
-                apiKey: $model->api_key ?? (string) config('rag.llm.deepseek_api_key', ''),
-                model: $model->model,
-                timeout: $model->timeout,
-                baseUrl: $model->base_url ?? 'https://api.deepseek.com/v1',
+                apiKey: $model->apiKey(),
+                model: $model->modelName(),
+                timeout: $model->timeout(),
+                baseUrl: $model->baseUrl(),
             ),
             default => new OpenAILLMProvider(
-                apiKey: $model->api_key ?? (string) config('rag.llm.api_key', ''),
-                model: $model->model,
-                timeout: $model->timeout,
+                apiKey: $model->apiKey(),
+                model: $model->modelName(),
+                timeout: $model->timeout(),
+                baseUrl: $model->baseUrl(),
             ),
         };
     }
@@ -132,7 +135,7 @@ class ProviderFactory
     {
         $provider = $this->createEmbeddingProvider($model);
         $cache = app(Repository::class);
-        $cacheTtl = $model->cache_ttl ?? (int) config('rag.embedding.cache_ttl', 86400);
+        $cacheTtl = $model->cacheTtl();
 
         return new EmbeddingService($provider, $cache, $cacheTtl);
     }

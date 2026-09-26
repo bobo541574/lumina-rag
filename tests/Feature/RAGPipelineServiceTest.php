@@ -18,9 +18,11 @@ use Modules\ChatModule\Services\RerankerService;
 use Modules\ChatModule\Services\SemanticCacheService;
 use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
 use Modules\EmbeddingModule\Services\ProviderFactory;
+use Modules\LLMModule\Contracts\LLMProviderInterface;
 use Modules\LLMModule\Contracts\LLMResponseInterface;
 use Modules\LLMModule\Contracts\LLMServiceInterface;
 use Modules\SettingsModule\Contracts\TermAliasServiceInterface;
+use Modules\SettingsModule\Models\AiModel;
 use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
 use PHPUnit\Framework\MockObject\Exception;
 
@@ -236,4 +238,71 @@ test('test_factual_question_routes_to_hybrid_in_vector_mode', function (): void 
     $result = $service->ask('What is the total revenue?');
 
     expect($result['message']['content'])->toBe('Revenue was $45M.');
+});
+
+/**
+ * ask() generates with the requested llm_model_id and that model's settings
+ *
+ * Regression: the sync path used to call the default LLM and default
+ * temperature/max_tokens/num_ctx even when a different model was requested.
+ *
+ * @return void
+ */
+test('test_ask_uses_requested_llm_model_and_its_settings', function (): void {
+    $embedder = mock(EmbeddingServiceInterface::class);
+    $embedder->shouldReceive('embed')->andReturn([0.1, 0.2]);
+
+    $vectorStore = mock(VectorStoreInterface::class);
+    $vectorStore->shouldReceive('searchHybrid')->andReturn([
+        (object) [
+            'chunk_id' => 'chunk_1',
+            'document_id' => 'doc_1',
+            'document_title' => 'Test Doc',
+            'content' => 'Test content',
+            'chunk_index' => 0,
+            'page_number' => 1,
+            'similarity_score' => 0.89,
+        ],
+    ]);
+
+    $defaultLlm = mock(LLMServiceInterface::class);
+    $defaultLlm->shouldNotReceive('complete');
+
+    // Built before the model exists so it is not picked as the default.
+    $service = makePipeline($embedder, $vectorStore, $defaultLlm);
+
+    $override = AiModel::create([
+        'name' => 'Override LLM',
+        'type' => 'llm',
+        'provider' => 'ollama',
+        'model' => 'override-model',
+        'temperature' => 0.9,
+        'max_context_tokens' => 8192,
+        'settings' => ['max_tokens' => 777, 'think' => true],
+        'is_active' => true,
+    ]);
+
+    $response = mock(LLMResponseInterface::class);
+    $response->shouldReceive('getContent')->andReturn('Override answer.');
+    $response->shouldReceive('getTotalTokens')->andReturn(10);
+    $response->shouldReceive('getPromptTokens')->andReturn(5);
+    $response->shouldReceive('getCompletionTokens')->andReturn(5);
+    $response->shouldReceive('getFinishReason')->andReturn(null);
+
+    $provider = mock(LLMProviderInterface::class);
+    $provider->shouldReceive('countTokens')->andReturn(1);
+    $provider->shouldReceive('complete')
+        ->once()
+        ->withArgs(fn (string $system, string $user, array $options): bool => $options['temperature'] === 0.9
+            && $options['max_tokens'] === 777
+            && $options['think'] === true
+            && $options['num_ctx'] === 8192)
+        ->andReturn($response);
+
+    $factory = (new ReflectionProperty(RAGPipelineService::class, 'providerFactory'))->getValue($service);
+    $factory->shouldReceive('createLLMProvider')->andReturn($provider);
+
+    $result = $service->ask('test question', ['llm_model_id' => $override->id]);
+
+    expect($result['message']['content'])->toBe('Override answer.');
 });

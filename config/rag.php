@@ -39,6 +39,7 @@ return [
         'batch_size' => (int) env('RAG_EMBEDDING_BATCH_SIZE', 100),
         'cache_ttl' => (int) env('RAG_EMBEDDING_CACHE_TTL', 86400),
         'timeout' => (int) env('RAG_EMBEDDING_TIMEOUT', 30),
+        'gemini_api_key' => env('GEMINI_API_KEY'),
     ],
 
     /*
@@ -60,6 +61,18 @@ return [
         'gemini_api_key' => env('GEMINI_API_KEY'),
         'claude_api_key' => env('CLAUDE_API_KEY'),
         'deepseek_api_key' => env('DEEPSEEK_API_KEY'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Provider HTTP Configuration
+    |--------------------------------------------------------------------------
+    |
+    | Wait (ms) before each retry of a failed LLM/embedding request; the
+    | number of entries is the number of retries. 4xx errors are not retried.
+    */
+    'http' => [
+        'retry_backoff_ms' => [1000, 5000],
     ],
 
     /*

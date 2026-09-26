@@ -5,12 +5,13 @@ declare(strict_types=1);
 namespace Modules\UserModule\Services;
 
 use App\Models\User;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Modules\ChatModule\Events\KnowledgeChanged;
 use Modules\ChatModule\Models\ChatSession;
 use Modules\ChatModule\Models\RagAnswerCache;
 use Modules\DocumentModule\Models\Document;
+use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
 
 /**
  * Account Deletion Service
@@ -23,6 +24,11 @@ use Modules\DocumentModule\Models\Document;
  */
 class AccountDeletionService
 {
+    /**
+     * @param  VectorStoreInterface  $vectorStore  Vector store that owns the embeddings. Example: app(VectorStoreInterface::class)
+     */
+    public function __construct(private VectorStoreInterface $vectorStore) {}
+
     /**
      * Purge every resource owned by the user, then delete the account.
      *
@@ -45,35 +51,29 @@ class AccountDeletionService
     /**
      * Remove the user's documents, their chunks, and all stored vectors.
      *
+     * Includes previously soft-deleted documents and hard-deletes the rows,
+     * since erasure must not leave document metadata behind.
+     *
      * @param  User  $user  The user whose documents are erased. Example: User::find($id)
      */
     private function purgeDocuments(User $user): void
     {
-        $documents = Document::where('user_id', $user->id)->get();
+        $documents = Document::withTrashed()->where('user_id', $user->id)->get();
 
         foreach ($documents as $document) {
-            $chunkIds = $document->chunks()->pluck('id')->all();
-
-            if ($chunkIds !== []) {
-                // pgvector shard tables (if present on this installation).
-                foreach (['ve_384', 've_768', 've_1024', 've_1536', 've_3072'] as $table) {
-                    try {
-                        DB::table($table)->whereIn('chunk_id', $chunkIds)->delete();
-                    } catch (\Throwable) {
-                        // Shard table may not exist — skip.
-                    }
-                }
-                // SQLite fallback store.
-                DB::table('vector_embeddings')->whereIn('chunk_id', $chunkIds)->delete();
-            }
-
+            $this->vectorStore->deleteByDocumentId($document->id);
             $document->chunks()->delete();
 
             if ($document->file_path !== null) {
                 Storage::delete($document->file_path);
             }
 
-            $document->delete();
+            $document->forceDelete();
+        }
+
+        if ($documents->isNotEmpty()) {
+            // Other users' cached answers may cite these documents.
+            KnowledgeChanged::dispatch($documents->pluck('id')->all());
         }
     }
 

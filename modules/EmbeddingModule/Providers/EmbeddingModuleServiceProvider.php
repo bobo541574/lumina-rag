@@ -9,22 +9,17 @@ use Illuminate\Support\ServiceProvider;
 use Modules\EmbeddingModule\Contracts\EmbeddingProviderInterface;
 use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
 use Modules\EmbeddingModule\Services\EmbeddingService;
-use Modules\EmbeddingModule\Services\OllamaEmbeddingProvider;
-use Modules\EmbeddingModule\Services\OpenAIEmbeddingProvider;
 use Modules\EmbeddingModule\Services\ProviderFactory;
+use Modules\SettingsModule\Models\AiModel;
 
 /**
  * Embedding Module Service Provider
  *
  * Registers the Embedding Module's core services into the Laravel container.
- * Binds the EmbeddingProviderInterface to a concrete provider (OpenAI or
- * Ollama) based on config/rag.php settings, and binds the
- * EmbeddingServiceInterface to the caching EmbeddingService wrapper.
- *
- * Also registers the ProviderFactory as a singleton for runtime provider
- * creation based on AiModel records.
- *
- * @throws \RuntimeException If the configured provider type is not supported
+ * Registers ProviderFactory, binds the EmbeddingProviderInterface to a
+ * fallback provider built by it from `AiModel::fromConfig('embedding')`
+ * (config/rag.php), and binds the EmbeddingServiceInterface to the caching
+ * EmbeddingService wrapper.
  */
 class EmbeddingModuleServiceProvider extends ServiceProvider
 {
@@ -32,40 +27,25 @@ class EmbeddingModuleServiceProvider extends ServiceProvider
      * Register module services in the container.
      *
      * Creates three singletons:
-     * 1. EmbeddingProviderInterface — concrete provider based on config
-     * 2. EmbeddingServiceInterface — caching wrapper around the provider
-     * 3. ProviderFactory — factory for creating providers per AiModel config
+     * 1. ProviderFactory — factory for creating providers per AiModel config
+     * 2. EmbeddingProviderInterface — fallback provider built from config/rag.php
+     * 3. EmbeddingServiceInterface — caching wrapper around the provider
      */
     public function register(): void
     {
-        $this->app->singleton(EmbeddingProviderInterface::class, function (): EmbeddingProviderInterface {
-            $provider = (string) config('rag.embedding.provider', 'openai');
+        // Fallback provider when no embedding AiModel is configured; built through
+        // ProviderFactory so config-based and DB-based models share one code path.
+        $this->app->singleton(ProviderFactory::class);
 
-            return match ($provider) {
-                'ollama' => new OllamaEmbeddingProvider(
-                    baseUrl: (string) config('rag.embedding.base_url', 'http://localhost:11434'),
-                    model: (string) config('rag.embedding.model', 'nomic-embed-text'),
-                    dimensions: (int) config('rag.embedding.dimensions', 768),
-                    timeout: (int) config('rag.embedding.timeout', 30),
-                    batchSize: (int) config('rag.embedding.batch_size', 100),
-                ),
-                default => new OpenAIEmbeddingProvider(
-                    apiKey: (string) config('rag.embedding.api_key', (string) env('OPENAI_API_KEY', '')),
-                    model: (string) config('rag.embedding.model', 'text-embedding-ada-002'),
-                    dimensions: (int) config('rag.embedding.dimensions', 1536),
-                    timeout: (int) config('rag.embedding.timeout', 30),
-                    batchSize: (int) config('rag.embedding.batch_size', 100),
-                ),
-            };
-        });
+        $this->app->singleton(EmbeddingProviderInterface::class, fn ($app): EmbeddingProviderInterface => $app
+            ->make(ProviderFactory::class)
+            ->createEmbeddingProvider(AiModel::fromConfig('embedding')));
 
         $this->app->singleton(EmbeddingServiceInterface::class, fn ($app): EmbeddingService => new EmbeddingService(
             provider: $app->make(EmbeddingProviderInterface::class),
             cache: $app->make(CacheRepository::class),
             cacheTtl: (int) config('rag.embedding.cache_ttl', 86400),
         ));
-
-        $this->app->singleton(ProviderFactory::class);
     }
 
     /**

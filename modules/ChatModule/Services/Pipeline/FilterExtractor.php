@@ -190,11 +190,10 @@ class FilterExtractor
             foreach ($datePatterns as $pattern) {
                 if (preg_match($pattern, $question, $matches)) {
                     $dateStr = $matches[1];
-                    if (preg_match('/^Q[1-4]/i', $dateStr)) {
-                        $quarter = (int) substr($dateStr, 1, 1);
-                        $year = (int) trim(substr($dateStr, strpos($dateStr, ' ') + 1));
-                        $filters['report_date_from'] = "{$year}-".str_pad((string) (($quarter - 1) * 3 + 1), 2, '0', STR_PAD_LEFT).'-01';
-                        $filters['report_date_to'] = "{$year}-".str_pad((string) ($quarter * 3), 2, '0', STR_PAD_LEFT).'-31';
+                    if (preg_match('/^Q([1-4])\s*(\d{4})$/i', $dateStr, $q)) {
+                        $quarterStart = Carbon::create((int) $q[2], ((int) $q[1] - 1) * 3 + 1, 1);
+                        $filters['report_date_from'] = $quarterStart->toDateString();
+                        $filters['report_date_to'] = $quarterStart->copy()->endOfQuarter()->toDateString();
                     } elseif (preg_match('/^\d{4}$/', $dateStr)) {
                         // Use digit-normalized $dateSrc so Burmese
                         // digits like "၂၀၂၆" → "2026"

@@ -5,12 +5,14 @@ declare(strict_types=1);
 namespace Modules\DocumentModule\Models;
 
 use Database\Factories\DocumentFactory;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Modules\DocumentModule\Enums\DocumentStatus;
 use Modules\SettingsModule\Models\AiModel;
 
 /**
@@ -74,6 +76,7 @@ class Document extends Model
             'file_size' => 'integer',
             'page_count' => 'integer',
             'chunks_count' => 'integer',
+            'status' => DocumentStatus::class,
             'description' => 'string',
             'report_date' => 'date:Y-m-d',
             'processed_at' => 'datetime',
@@ -107,5 +110,78 @@ class Document extends Model
     public function embeddingModel(): BelongsTo
     {
         return $this->belongsTo(AiModel::class, 'embedding_model_id');
+    }
+
+    /**
+     * Resolve the embedding model name used for this document
+     *
+     * Returns the document's per-document embedding_model column when set,
+     * otherwise the global default embedding model from config/rag.php.
+     *
+     * @return string The resolved embedding model name.
+     *                Example: "text-embedding-3-small"
+     */
+    public function embeddingModelName(): string
+    {
+        return $this->embedding_model
+            ?? (string) config('rag.embedding.model', 'text-embedding-3-small');
+    }
+
+    /**
+     * Scope a query to documents owned by the given user.
+     *
+     * @param  Builder  $query  The query builder instance
+     * @param  string  $userId  Owner ULID. Example: "01J..."
+     */
+    public function scopeOwnedBy(Builder $query, string $userId): Builder
+    {
+        return $query->where('user_id', $userId);
+    }
+
+    /**
+     * Move the document into the processing state.
+     */
+    public function markProcessing(): void
+    {
+        $this->update(['status' => DocumentStatus::Processing]);
+    }
+
+    /**
+     * Record a successful processing run.
+     *
+     * @param  int  $chunksCount  Number of chunks created. Example: 42
+     */
+    public function markCompleted(int $chunksCount): void
+    {
+        $this->update([
+            'status' => DocumentStatus::Completed,
+            'chunks_count' => $chunksCount,
+            'error_message' => null,
+            'processed_at' => now(),
+        ]);
+    }
+
+    /**
+     * Record a failed processing run.
+     *
+     * @param  string  $errorMessage  The failure reason. Example: "API timeout"
+     */
+    public function markFailed(string $errorMessage): void
+    {
+        $this->update([
+            'status' => DocumentStatus::Failed,
+            'error_message' => $errorMessage,
+        ]);
+    }
+
+    /**
+     * Reset a failed document so it can be queued again.
+     */
+    public function markPendingRetry(): void
+    {
+        $this->update([
+            'status' => DocumentStatus::Pending,
+            'error_message' => null,
+        ]);
     }
 }

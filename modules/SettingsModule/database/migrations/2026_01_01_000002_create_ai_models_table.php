@@ -14,7 +14,7 @@ return new class extends Migration
             $table->ulid('id')->primary();
             $table->string('name', 255);
             $table->string('type', 20); // 'embedding' or 'llm'
-            $table->string('provider', 50); // 'openai', 'ollama'
+            $table->string('provider', 50); // see AiModel::LLM_PROVIDERS / EMBEDDING_PROVIDERS
             $table->string('model', 255); // actual API model identifier
             $table->text('api_key')->nullable();
             $table->string('base_url', 500)->nullable();

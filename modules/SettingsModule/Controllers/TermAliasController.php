@@ -4,11 +4,15 @@ declare(strict_types=1);
 
 namespace Modules\SettingsModule\Controllers;
 
+use App\Http\Responses\ApiResponse;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\Rule;
 use Modules\SettingsModule\Contracts\TermAliasServiceInterface;
+use Modules\SettingsModule\Models\TermAlias;
 
 /**
  * Term Alias Controller
@@ -46,19 +50,14 @@ class TermAliasController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $type = $request->input('type');
         $perPage = $request->integer('per_page') ?: null;
         $result = $this->aliasService->getAll(
-            $type,
+            $request->input('type'),
             $request->integer('page') ?: null,
             $perPage !== null ? min($perPage, (int) config('rag.pagination.max_per_page')) : null,
         );
 
-        return response()->json([
-            'success' => true,
-            'data' => $result['data'],
-            'meta' => $result['meta'],
-        ]);
+        return ApiResponse::success($result['data'], meta: $result['meta']);
     }
 
     /**
@@ -73,12 +72,12 @@ class TermAliasController extends Controller
      * @return JsonResponse JSON response with created alias data
      *                      Example: {"success": true, "message": "Term alias created successfully.", "data": {"id": "01J...", "alias": "အိုရီယွန်", "canonical": "Orion", ...}}
      *
-     * @throws \Throwable On validation or processing failures (caught and returned as 422)
+     * @throws \Throwable Persistence failures are logged and returned as a generic 422
      */
     public function store(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'type' => ['required', 'string', 'in:project,technical,general'],
+            'type' => ['required', 'string', Rule::in(TermAlias::TYPES)],
             'alias' => ['required', 'string', 'max:255'],
             'canonical' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string', 'max:500'],
@@ -87,18 +86,13 @@ class TermAliasController extends Controller
 
         try {
             $alias = $this->aliasService->create($data);
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Term alias created successfully.',
-                'data' => $alias->toArray(),
-            ], 201);
         } catch (\Throwable $e) {
-            return response()->json([
-                'success' => false,
-                'message' => $e->getMessage(),
-            ], 422);
+            Log::channel('security')->error('term_alias.store_failed', ['error' => $e->getMessage()]);
+
+            return ApiResponse::error('Unable to create the term alias.', 422);
         }
+
+        return ApiResponse::success($alias->toArray(), 'Term alias created successfully.', 201);
     }
 
     /**
@@ -111,23 +105,11 @@ class TermAliasController extends Controller
      * @return JsonResponse JSON response with alias data
      *                      Example: {"success": true, "data": {"id": "01J...", "alias": "အိုရီယွန်", "canonical": "Orion", ...}}
      *
-     * @throws ModelNotFoundException When no alias matches the ID (caught and returned as 404)
+     * @throws ModelNotFoundException When no alias matches the ID (rendered as 404 by ApiExceptionRenderer)
      */
     public function show(string $id): JsonResponse
     {
-        try {
-            $alias = $this->aliasService->find($id);
-
-            return response()->json([
-                'success' => true,
-                'data' => $alias->toArray(),
-            ]);
-        } catch (ModelNotFoundException) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Term alias not found.',
-            ], 404);
-        }
+        return ApiResponse::success($this->aliasService->find($id)->toArray());
     }
 
     /**
@@ -142,40 +124,30 @@ class TermAliasController extends Controller
      * @return JsonResponse JSON response with updated alias data
      *                      Example: {"success": true, "message": "Term alias updated successfully.", "data": {"id": "01J...", "canonical": "NewOrion", ...}}
      *
-     * @throws ModelNotFoundException When no alias matches the ID (caught and returned as 404)
-     * @throws \Throwable On validation or processing failures (caught and returned as 422)
+     * @throws ModelNotFoundException When no alias matches the ID (rendered as 404 by ApiExceptionRenderer)
+     * @throws \Throwable Persistence failures are logged and returned as a generic 422
      */
     public function update(Request $request, string $id): JsonResponse
     {
+        $data = $request->validate([
+            'type' => ['sometimes', 'string', Rule::in(TermAlias::TYPES)],
+            'alias' => ['sometimes', 'string', 'max:255'],
+            'canonical' => ['sometimes', 'string', 'max:255'],
+            'description' => ['nullable', 'string', 'max:500'],
+            'is_active' => ['nullable', 'boolean'],
+        ]);
+
         try {
-            $this->aliasService->find($id);
-
-            $data = $request->validate([
-                'type' => ['sometimes', 'string', 'in:project,technical,general'],
-                'alias' => ['sometimes', 'string', 'max:255'],
-                'canonical' => ['sometimes', 'string', 'max:255'],
-                'description' => ['nullable', 'string', 'max:500'],
-                'is_active' => ['nullable', 'boolean'],
-            ]);
-
             $alias = $this->aliasService->update($id, $data);
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Term alias updated successfully.',
-                'data' => $alias->toArray(),
-            ]);
-        } catch (ModelNotFoundException) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Term alias not found.',
-            ], 404);
+        } catch (ModelNotFoundException $e) {
+            throw $e;
         } catch (\Throwable $e) {
-            return response()->json([
-                'success' => false,
-                'message' => $e->getMessage(),
-            ], 422);
+            Log::channel('security')->error('term_alias.update_failed', ['alias_id' => $id, 'error' => $e->getMessage()]);
+
+            return ApiResponse::error('Unable to update the term alias.', 422);
         }
+
+        return ApiResponse::success($alias->toArray(), 'Term alias updated successfully.');
     }
 
     /**
@@ -189,23 +161,12 @@ class TermAliasController extends Controller
      * @return JsonResponse JSON response with deletion confirmation
      *                      Example: {"success": true, "message": "Term alias deleted successfully."}
      *
-     * @throws ModelNotFoundException When no alias matches the ID (caught and returned as 404)
+     * @throws ModelNotFoundException When no alias matches the ID (rendered as 404 by ApiExceptionRenderer)
      */
     public function destroy(string $id): JsonResponse
     {
-        try {
-            $this->aliasService->find($id);
-            $this->aliasService->delete($id);
+        $this->aliasService->delete($id);
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Term alias deleted successfully.',
-            ]);
-        } catch (ModelNotFoundException) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Term alias not found.',
-            ], 404);
-        }
+        return ApiResponse::success(message: 'Term alias deleted successfully.');
     }
 }

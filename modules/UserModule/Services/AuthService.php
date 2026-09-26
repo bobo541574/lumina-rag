@@ -103,42 +103,16 @@ class AuthService implements AuthServiceInterface
     /**
      * Logout a user
      *
-     * Clears the API token for the user associated with the given token.
+     * Clears the user's API token so it can no longer authenticate.
      *
-     * @param  string  $token  The raw API token to clear. Example: "80-char-hex-token"
+     * @param  User  $user  The authenticated user. Example: $request->input('authenticated_user')
      */
-    public function logout(string $token): void
+    public function logout(User $user): void
     {
-        $user = User::where('api_token', ApiToken::hash($token))->first();
-        if ($user !== null) {
-            $user->update(['api_token' => null, 'api_token_expires_at' => null]);
+        $user->update(['api_token' => null, 'api_token_expires_at' => null]);
 
-            Log::channel('security')->info('user.logout', [
-                'user_id' => $user->id,
-            ]);
-        }
-    }
-
-    /**
-     * Get user by token
-     *
-     * Finds a user record by its API token digest and checks the token expiry.
-     *
-     * @param  string  $token  The raw API token to search for. Example: "80-char-hex-token"
-     * @return array|null User details or null if not found. Example: ["id" => "...", "name" => "..."]
-     */
-    public function getUserByToken(string $token): ?array
-    {
-        $user = User::where('api_token', ApiToken::hash($token))->first();
-
-        if ($user === null) {
-            return null;
-        }
-
-        if ($user->api_token_expires_at !== null && $user->api_token_expires_at->isPast()) {
-            return null;
-        }
-
-        return $user->only(['id', 'name', 'email']);
+        Log::channel('security')->info('user.logout', [
+            'user_id' => $user->id,
+        ]);
     }
 }

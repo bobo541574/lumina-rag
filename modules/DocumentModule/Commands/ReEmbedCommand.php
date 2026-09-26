@@ -7,6 +7,7 @@ namespace Modules\DocumentModule\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
+use Modules\DocumentModule\Enums\DocumentStatus;
 use Modules\DocumentModule\Jobs\ReEmbedDocumentJob;
 use Modules\DocumentModule\Models\Document;
 
@@ -102,7 +103,7 @@ class ReEmbedCommand extends Command
         $query = Document::query()->whereNull('deleted_at');
 
         if (! $force) {
-            $query->where('status', 'completed');
+            $query->where('status', DocumentStatus::Completed);
         }
 
         $this->applyCommonFilters($query);
@@ -133,7 +134,7 @@ class ReEmbedCommand extends Command
 
         $this->info("Found {$documents->count()} document(s) with missing vectors:");
         foreach ($documents as $doc) {
-            $this->line("  [{$doc->status}] {$doc->title} ({$doc->id})");
+            $this->line("  [{$doc->status->value}] {$doc->title} ({$doc->id})");
         }
 
         if ($dryRun) {
@@ -198,7 +199,7 @@ class ReEmbedCommand extends Command
 
         if ($dryRun) {
             foreach ($documents as $doc) {
-                $this->line("  [{$doc->status}] {$doc->title} ({$doc->id})");
+                $this->line("  [{$doc->status->value}] {$doc->title} ({$doc->id})");
             }
             $this->warn('Dry-run mode: no jobs dispatched.');
 

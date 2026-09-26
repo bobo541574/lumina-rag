@@ -45,6 +45,12 @@ class AiModel extends Model
 
     protected $table = 'ai_models';
 
+    /** Providers ProviderFactory can build an embedding client for. */
+    public const EMBEDDING_PROVIDERS = ['openai', 'ollama', 'gemini'];
+
+    /** Providers ProviderFactory can build an LLM client for. */
+    public const LLM_PROVIDERS = ['openai', 'ollama', 'gemini', 'claude', 'deepseek'];
+
     protected $fillable = [
         'name',
         'type',
@@ -126,7 +132,7 @@ class AiModel extends Model
             return $this->collection;
         }
 
-        $dims = $this->dimensions ?? 1536;
+        $dims = $this->dimensions();
 
         $dimMap = [384, 768, 1024, 1536, 3072];
         $nearest = 1536;
@@ -137,6 +143,211 @@ class AiModel extends Model
         }
 
         return "ve_{$nearest}";
+    }
+
+    /**
+     * Cache TTL for embedding results
+     *
+     * Returns the model's cache_ttl column, falling back to the embedding
+     * cache_ttl from config/rag.php when the column is null.
+     *
+     * @return int Cache TTL in seconds. Example: 86400
+     */
+    public function cacheTtl(): int
+    {
+        return $this->cache_ttl ?? (int) config('rag.embedding.cache_ttl', 86400);
+    }
+
+    /**
+     * Maximum context window for LLM generation
+     *
+     * Returns the model's max_context_tokens column, falling back to the LLM
+     * max_context_tokens from config/rag.php when the column is null.
+     *
+     * @return int Maximum context tokens. Example: 32768
+     */
+    public function maxContextTokens(): int
+    {
+        return $this->max_context_tokens ?? (int) config('rag.llm.max_context_tokens', 32768);
+    }
+
+    /**
+     * Provider model identifier
+     *
+     * Returns the model's `model` column, falling back to the type-specific
+     * model name from config/rag.php when the column is null.
+     *
+     * @return string The model identifier. Example: "nomic-embed-text:latest"
+     */
+    public function modelName(): string
+    {
+        return $this->model
+            ?? (string) config("rag.{$this->configSection()}.model", '');
+    }
+
+    /**
+     * Resolve a model identifier for a possibly-null AiModel record.
+     *
+     * Returns modelName() when a record is present, otherwise the type-specific
+     * model name from config/rag.php. Used when an active model may be absent
+     * (e.g. no DB available) but a stable identifier is still required for
+     * cache scoping and retrieval filters.
+     *
+     * @param  self|null  $model  The AiModel record, or null when unconfigured. Example: AiModel::find("01J...")
+     * @param  string  $type  Model type used for the config fallback: "embedding" or "llm". Example: "llm"
+     * @return string The resolved model identifier. Example: "qwen3.5:9b"
+     */
+    public static function resolveModelName(?self $model, string $type): string
+    {
+        return $model?->modelName() ?? (string) config($type === 'embedding' ? 'rag.embedding.model' : 'rag.llm.model', '');
+    }
+
+    /**
+     * Provider credential
+     *
+     * Returns the model's decrypted api_key when set, otherwise falls back to
+     * the provider-specific (and type-specific) API key from config/rag.php.
+     * Ollama models have no credential and are never handed this value.
+     *
+     * @return string The resolved API key. Example: "sk-proj-..."
+     */
+    public function apiKey(): string
+    {
+        if ($this->api_key !== null && $this->api_key !== '') {
+            return $this->api_key;
+        }
+
+        $section = $this->configSection();
+
+        return (string) match ($this->provider) {
+            'gemini' => config("rag.{$section}.gemini_api_key", ''),
+            'claude' => config("rag.{$section}.claude_api_key", ''),
+            'deepseek' => config("rag.{$section}.deepseek_api_key", ''),
+            default => config("rag.{$section}.api_key", ''),
+        };
+    }
+
+    /**
+     * Provider API base URL
+     *
+     * Returns the model's base_url when set, otherwise the provider default.
+     * For Ollama that is `rag.{type}.base_url` (RAG_*_BASE_URL is the Ollama
+     * server URL); hosted providers use their public API endpoint.
+     *
+     * @return string The resolved base URL. Example: "http://localhost:11434"
+     */
+    public function baseUrl(): string
+    {
+        if ($this->base_url !== null && $this->base_url !== '') {
+            return $this->base_url;
+        }
+
+        return match ($this->provider) {
+            'ollama' => (string) config("rag.{$this->configSection()}.base_url", 'http://localhost:11434'),
+            'gemini' => 'https://generativelanguage.googleapis.com/v1beta',
+            'claude' => 'https://api.anthropic.com/v1',
+            'deepseek' => 'https://api.deepseek.com/v1',
+            default => 'https://api.openai.com/v1',
+        };
+    }
+
+    /**
+     * Build an unsaved model from config/rag.php.
+     *
+     * Used when no AiModel row is configured (fresh install, DB unavailable)
+     * so provider construction still goes through ProviderFactory with the
+     * same fallback rules as database models.
+     *
+     * @param  string  $type  "embedding" or "llm". Example: "llm"
+     * @return self Transient model; never persisted. Example: AiModel::fromConfig('llm')->modelName()
+     */
+    public static function fromConfig(string $type): self
+    {
+        $model = new self;
+        $model->forceFill([
+            'type' => $type,
+            'provider' => (string) config("rag.{$type}.provider", 'ollama'),
+            // Other columns stay null so each resolver falls back to config.
+            'dimensions' => $type === 'embedding' ? config('rag.embedding.dimensions') : null,
+            'is_active' => true,
+        ]);
+
+        return $model;
+    }
+
+    /**
+     * @return string The config/rag.php section for this model's type. Example: "embedding"
+     */
+    private function configSection(): string
+    {
+        return $this->type === 'embedding' ? 'embedding' : 'llm';
+    }
+
+    /**
+     * Embedding vector dimensions
+     *
+     * Returns the model's dimensions column when set, otherwise the
+     * provider-typical default (1536 for OpenAI, 768 otherwise).
+     *
+     * @return int The resolved dimensions. Example: 768
+     */
+    public function dimensions(): int
+    {
+        return $this->dimensions ?? ($this->provider === 'openai' ? 1536 : 768);
+    }
+
+    /**
+     * Batch size for embedding generation
+     *
+     * Returns the model's batch_size column, falling back to the embedding
+     * batch_size from config/rag.php when the column is null.
+     *
+     * @return int The resolved batch size. Example: 100
+     */
+    public function batchSize(): int
+    {
+        return $this->batch_size ?? (int) config('rag.embedding.batch_size', 100);
+    }
+
+    /**
+     * Request timeout in seconds
+     *
+     * Returns the model's timeout column, falling back to the type-specific
+     * timeout from config/rag.php when the column is null.
+     *
+     * @return int The resolved timeout. Example: 30
+     */
+    public function timeout(): int
+    {
+        return $this->timeout
+            ?? (int) config("rag.{$this->configSection()}.timeout", 30);
+    }
+
+    /**
+     * LLM generation temperature
+     *
+     * Returns the model's temperature column, falling back to the LLM
+     * temperature from config/rag.php when the column is null.
+     *
+     * @return float The resolved temperature. Example: 0.3
+     */
+    public function temperature(): float
+    {
+        return $this->temperature ?? (float) config('rag.llm.temperature', 0.3);
+    }
+
+    /**
+     * Resolve generation temperature for a possibly-null AiModel record.
+     *
+     * Returns temperature() when a record is present, otherwise the LLM
+     * temperature from config/rag.php. Used when no active LLM model exists.
+     *
+     * @param  self|null  $model  The AiModel record, or null when unconfigured. Example: AiModel::find("01J...")
+     * @return float The resolved temperature. Example: 0.3
+     */
+    public static function resolveTemperature(?self $model): float
+    {
+        return $model?->temperature() ?? (float) config('rag.llm.temperature', 0.3);
     }
 
     /**

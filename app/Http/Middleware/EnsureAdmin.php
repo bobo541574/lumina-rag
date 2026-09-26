@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Middleware;
 
+use App\Http\Responses\ApiResponse;
 use App\Models\User;
 use Closure;
 use Illuminate\Http\Request;
@@ -30,10 +31,7 @@ class EnsureAdmin
         $user = $request->input('authenticated_user');
 
         if (! $user instanceof User || ! $user->isAdmin()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Administrator privileges required.',
-            ], 403);
+            return ApiResponse::error('Administrator privileges required.', 403);
         }
 
         return $next($request);

@@ -5,24 +5,20 @@ declare(strict_types=1);
 namespace Modules\LLMModule\Providers;
 
 use Illuminate\Support\ServiceProvider;
+use Modules\EmbeddingModule\Services\ProviderFactory;
 use Modules\LLMModule\Contracts\LLMProviderInterface;
 use Modules\LLMModule\Contracts\LLMServiceInterface;
 use Modules\LLMModule\Services\LLMService;
-use Modules\LLMModule\Services\OllamaLLMProvider;
-use Modules\LLMModule\Services\OpenAILLMProvider;
+use Modules\SettingsModule\Models\AiModel;
 
 /**
  * LLM Module Service Provider
  *
  * Registers the LLM Module's core services into the Laravel container.
- * Binds the LLMProviderInterface to a concrete provider (OpenAI or Ollama)
- * based on config/rag.php settings, and binds the LLMServiceInterface to
- * the LLMService that wraps the provider with prompt assembly logic.
- *
- * The provider is selected by the `rag.llm.provider` config value, defaulting
- * to OpenAI. Ollama requires a local running instance at the configured base_url.
- *
- * @throws \RuntimeException If the configured provider type is not supported
+ * Binds the LLMProviderInterface to a fallback provider built by
+ * ProviderFactory from `AiModel::fromConfig('llm')` (config/rag.php), and binds
+ * the LLMServiceInterface to the LLMService that wraps it with prompt assembly.
+ * RAGPipelineService replaces this fallback with the active AiModel's provider.
  */
 class LLMModuleServiceProvider extends ServiceProvider
 {
@@ -30,31 +26,20 @@ class LLMModuleServiceProvider extends ServiceProvider
      * Register module services in the container.
      *
      * Creates two singletons:
-     * 1. LLMProviderInterface — concrete provider based on config
+     * 1. LLMProviderInterface — fallback provider built from config/rag.php via ProviderFactory
      * 2. LLMServiceInterface — prompt-assembly service wrapping the provider
      */
     public function register(): void
     {
-        $this->app->singleton(LLMProviderInterface::class, function (): LLMProviderInterface {
-            $provider = (string) config('rag.llm.provider', 'openai');
-
-            return match ($provider) {
-                'ollama' => new OllamaLLMProvider(
-                    baseUrl: (string) config('rag.llm.base_url', 'http://localhost:11434'),
-                    model: (string) config('rag.llm.model', 'llama3.2'),
-                    timeout: (int) config('rag.llm.timeout', 60),
-                ),
-                default => new OpenAILLMProvider(
-                    apiKey: (string) config('rag.llm.api_key', (string) env('OPENAI_API_KEY', '')),
-                    model: (string) config('rag.llm.model', 'gpt-4o'),
-                    timeout: (int) config('rag.llm.timeout', 60),
-                ),
-            };
-        });
+        // Fallback provider when no LLM AiModel is configured; built through
+        // ProviderFactory so config-based and DB-based models share one code path.
+        $this->app->singleton(LLMProviderInterface::class, fn ($app): LLMProviderInterface => $app
+            ->make(ProviderFactory::class)
+            ->createLLMProvider(AiModel::fromConfig('llm')));
 
         $this->app->singleton(LLMServiceInterface::class, fn ($app): LLMService => new LLMService(
             provider: $app->make(LLMProviderInterface::class),
-            maxContextTokens: (int) config('rag.llm.max_context_tokens', 4000),
+            maxContextTokens: AiModel::fromConfig('llm')->maxContextTokens(),
         ));
     }
 

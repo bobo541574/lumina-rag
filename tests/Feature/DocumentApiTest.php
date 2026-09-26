@@ -163,3 +163,68 @@ test('test_document_delete_removes_document', function (): void {
     $response->assertStatus(200);
     expect(Document::find($doc->id))->toBeNull();
 });
+
+function makeOwnedDocument(string $userId, string $status = 'completed'): Document
+{
+    return Document::create([
+        'user_id' => $userId,
+        'title' => 'Owned',
+        'original_filename' => 'owned.txt',
+        'file_path' => 'documents/owned.txt',
+        'file_hash' => hash('sha256', $userId.$status),
+        'mime_type' => 'text/plain',
+        'file_size' => 10,
+        'status' => $status,
+    ]);
+}
+
+test('test_document_endpoints_hide_other_users_documents', function (string $method, string $suffix): void {
+    $auth = createDocumentTestUser();
+    $other = User::create([
+        'name' => 'Other',
+        'email' => 'other@example.com',
+        'password' => Hash::make('password123'),
+    ]);
+    $document = makeOwnedDocument($other->id, 'failed');
+
+    $this->withHeaders($auth['headers'])
+        ->json($method, "/api/documents/{$document->id}{$suffix}")
+        ->assertStatus(404)
+        ->assertExactJson(['success' => false, 'message' => 'Document not found.']);
+})->with([
+    'show' => ['GET', ''],
+    'status' => ['GET', '/status'],
+    'retry' => ['POST', '/retry'],
+    'update' => ['PUT', ''],
+    'delete' => ['DELETE', ''],
+]);
+
+test('test_document_status_returns_status_value', function (): void {
+    $auth = createDocumentTestUser();
+    $document = makeOwnedDocument($auth['user']->id);
+
+    $this->withHeaders($auth['headers'])
+        ->getJson("/api/documents/{$document->id}/status")
+        ->assertOk()
+        ->assertJsonPath('data.status', 'completed');
+});
+
+test('test_document_retry_rejects_non_failed_document', function (): void {
+    $auth = createDocumentTestUser();
+    $document = makeOwnedDocument($auth['user']->id);
+
+    $this->withHeaders($auth['headers'])
+        ->postJson("/api/documents/{$document->id}/retry")
+        ->assertStatus(400)
+        ->assertJsonPath('message', 'Only failed documents can be retried.');
+});
+
+test('test_document_upload_validation_errors_use_envelope', function (): void {
+    $auth = createDocumentTestUser();
+
+    $this->withHeaders($auth['headers'])
+        ->postJson('/api/documents', [])
+        ->assertStatus(422)
+        ->assertJsonPath('success', false)
+        ->assertJsonValidationErrors(['file']);
+});

@@ -12,6 +12,8 @@ use Modules\ChatModule\Events\KnowledgeChanged;
 use Modules\DocumentModule\Contracts\DocumentServiceInterface;
 use Modules\DocumentModule\Contracts\TextChunkingServiceInterface;
 use Modules\DocumentModule\Contracts\TextExtractionServiceInterface;
+use Modules\DocumentModule\Enums\DocumentStatus;
+use Modules\DocumentModule\Exceptions\InvalidDocumentStateException;
 use Modules\DocumentModule\Jobs\ProcessDocumentJob;
 use Modules\DocumentModule\Models\Document;
 use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
@@ -135,7 +137,7 @@ class DocumentService implements DocumentServiceInterface
         if ($embeddingModelId !== null) {
             $aiModel = AiModel::find($embeddingModelId);
             if ($aiModel !== null && $aiModel->type === 'embedding') {
-                $modelName = $aiModel->model;
+                $modelName = $aiModel->modelName();
             }
         }
 
@@ -150,7 +152,7 @@ class DocumentService implements DocumentServiceInterface
             'file_size' => $file->getSize(),
             'mime_type' => $file->getMimeType(),
             'file_hash' => $hash,
-            'status' => 'pending',
+            'status' => DocumentStatus::Pending,
             'user_id' => $userId,
             'report_date' => $reportDate,
             'project' => $project,
@@ -171,31 +173,22 @@ class DocumentService implements DocumentServiceInterface
      * may be retried; other statuses are rejected.
      *
      * @param  string  $id  The ULID of the document to retry. Example: "01J..."
-     * @param  string|null  $userId  Optional ULID to scope the query to a specific user. Example: "01J..."
+     * @param  string  $userId  Owner ULID; other users' documents are not found. Example: "01J..."
      * @return Document The updated document record (fresh from DB) with status "pending".
      *                  Example: Document { id: "01J...", status: "pending", error_message: null }
      *
-     * @throws \RuntimeException If the document status is not "failed"
-     *                           Example: $service->retryDocument($completedId) → RuntimeException("Only failed documents can be retried.")
+     * @throws InvalidDocumentStateException If the document status is not "failed"
+     *                                       Example: $service->retryDocument($completedId, $userId) → InvalidDocumentStateException("Only failed documents can be retried.")
      */
-    public function retryDocument(string $id, ?string $userId = null): Document
+    public function retryDocument(string $id, string $userId): Document
     {
-        $query = Document::where('id', $id);
+        $document = $this->findOwned($id, $userId);
 
-        if ($userId !== null) {
-            $query->where('user_id', $userId);
+        if (! $document->status->canRetry()) {
+            throw new InvalidDocumentStateException('Only failed documents can be retried.');
         }
 
-        $document = $query->firstOrFail();
-
-        if ($document->status !== 'failed') {
-            throw new \RuntimeException('Only failed documents can be retried.');
-        }
-
-        $document->update([
-            'status' => 'pending',
-            'error_message' => null,
-        ]);
+        $document->markPendingRetry();
 
         ProcessDocumentJob::dispatch($document->id);
 
@@ -210,20 +203,14 @@ class DocumentService implements DocumentServiceInterface
      * record. This is irreversible.
      *
      * @param  string  $id  The ULID of the document to delete. Example: "01J..."
-     * @param  string|null  $userId  Optional ULID to scope the query to a specific user. Example: "01J..."
+     * @param  string  $userId  Owner ULID; other users' documents are not found. Example: "01J..."
      *
      * @throws ModelNotFoundException If the document does not exist
      *                                Example: $service->deleteDocument("nonexistent") → ModelNotFoundException
      */
-    public function deleteDocument(string $id, ?string $userId = null): void
+    public function deleteDocument(string $id, string $userId): void
     {
-        $query = Document::where('id', $id);
-
-        if ($userId !== null) {
-            $query->where('user_id', $userId);
-        }
-
-        $document = $query->firstOrFail();
+        $document = $this->findOwned($id, $userId);
         $this->vectorStore->deleteByDocumentId($document->id);
         $document->chunks()->delete();
         Storage::delete($document->file_path);
@@ -242,22 +229,16 @@ class DocumentService implements DocumentServiceInterface
      *
      * @param  string  $id  The ULID of the document to update. Example: "01J..."
      * @param  array  $data  Associative array of fields to update. Example: ["title" => "Updated Title", "project" => "Orion"]
-     * @param  string|null  $userId  Optional ULID to scope the query to a specific user. Example: "01J..."
+     * @param  string  $userId  Owner ULID; other users' documents are not found. Example: "01J..."
      * @return Document The updated document record (fresh from DB).
      *                  Example: Document { id: "01J...", title: "Updated Title", project: "Orion" }
      *
      * @throws ModelNotFoundException If the document does not exist
      *                                Example: $service->updateDocument("nonexistent", []) → ModelNotFoundException
      */
-    public function updateDocument(string $id, array $data, ?string $userId = null): Document
+    public function updateDocument(string $id, array $data, string $userId): Document
     {
-        $query = Document::where('id', $id);
-
-        if ($userId !== null) {
-            $query->where('user_id', $userId);
-        }
-
-        $document = $query->firstOrFail();
+        $document = $this->findOwned($id, $userId);
 
         $allowed = ['title', 'description', 'report_date', 'project'];
         $updateData = array_intersect_key($data, array_flip($allowed));
@@ -277,12 +258,12 @@ class DocumentService implements DocumentServiceInterface
      *
      * Returns a paginated array of document records. Supports filtering by status,
      * free-text search (title/original_filename via ILIKE), sorting by allowed keys,
-     * and configurable page/per_page pagination. Results are scoped to the given user
-     * when a userId is provided.
+     * and configurable page/per_page pagination. Results are always scoped
+     * to the given user.
      *
      * @param  array  $filters  Associative array with optional keys: status, search, sort_key,
      *                          sort_dir, per_page, page. Example: ["status" => "completed", "per_page" => 10]
-     * @param  string|null  $userId  Optional ULID to scope results to a specific user. Example: "01J..."
+     * @param  string  $userId  Owner ULID; only their documents are listed. Example: "01J..."
      * @return array Paginated result set with keys: data, current_page, last_page,
      *               per_page, total, from, to.
      *               Example: ["data" => [...], "total" => 42, "current_page" => 1, "per_page" => 20]
@@ -290,12 +271,9 @@ class DocumentService implements DocumentServiceInterface
      * @throws \InvalidArgumentException If an invalid sort_key or sort_dir is provided
      *                                   Example: $service->listDocuments(["sort_key" => "invalid"]) → defaults to "created_at"
      */
-    public function listDocuments(array $filters = [], ?string $userId = null): array
+    public function listDocuments(array $filters, string $userId): array
     {
-        $query = Document::query();
-        if ($userId !== null) {
-            $query->where('user_id', $userId);
-        }
+        $query = Document::ownedBy($userId);
         if (isset($filters['status'])) {
             $query->where('status', $filters['status']);
         }
@@ -449,5 +427,32 @@ class DocumentService implements DocumentServiceInterface
         if (str_contains($name, '..') || str_contains($name, '/') || str_contains($name, '\\')) {
             throw new \InvalidArgumentException('Filename contains invalid characters');
         }
+    }
+
+    /**
+     * Load one of the user's documents with its chunk count.
+     *
+     * @param  string  $id  The ULID of the document. Example: "01J..."
+     * @param  string  $userId  Owner ULID. Example: "01J..."
+     * @return Document The document with chunks_count loaded
+     *
+     * @throws ModelNotFoundException If the user owns no such document
+     */
+    public function getDocument(string $id, string $userId): Document
+    {
+        return Document::ownedBy($userId)->withCount('chunks')->findOrFail($id);
+    }
+
+    /**
+     * Find a document owned by the given user.
+     *
+     * @param  string  $id  The ULID of the document. Example: "01J..."
+     * @param  string  $userId  Owner ULID. Example: "01J..."
+     *
+     * @throws ModelNotFoundException If the user owns no such document
+     */
+    private function findOwned(string $id, string $userId): Document
+    {
+        return Document::ownedBy($userId)->findOrFail($id);
     }
 }

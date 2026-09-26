@@ -19,6 +19,11 @@
           <AppSelect id="model-provider" v-model="form.provider">
             <option value="openai">OpenAI</option>
             <option value="ollama">Ollama</option>
+            <option value="gemini">Gemini</option>
+            <template v-if="form.type === 'llm'">
+              <option value="claude">Claude</option>
+              <option value="deepseek">DeepSeek</option>
+            </template>
           </AppSelect>
         </div>
         <div>
@@ -28,7 +33,7 @@
         <div>
           <label for="model-api-key" class="block text-sm font-medium text-surface-700 mb-1">
             API Key
-            <span v-if="form.provider === 'openai'" class="text-danger-600" aria-label="required">*</span>
+            <span v-if="form.provider !== 'ollama'" class="text-danger-600" aria-label="required">*</span>
             <span v-else class="text-surface-400 text-xs font-normal">(optional)</span>
           </label>
           <AppInput
@@ -287,6 +292,13 @@ const baseUrlPlaceholder = computed(() =>
 )
 
 watch(() => props.initialValues, (m) => applyInitialValues(m), { immediate: true })
+
+// Claude and DeepSeek have no embedding API — reset if the type flips to embedding.
+watch(() => form.value.type, (type) => {
+  if (type === 'embedding' && ['claude', 'deepseek'].includes(form.value.provider)) {
+    form.value.provider = 'openai'
+  }
+})
 
 function buildPayload(): Record<string, unknown> | null {
   settingsJsonError.value = null

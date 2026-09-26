@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace Modules\ChatModule\Controllers;
 
+use App\Http\Responses\ApiResponse;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
+use Illuminate\Support\Facades\Log;
 use Modules\ChatModule\Contracts\RAGPipelineServiceInterface;
+use Modules\ChatModule\Exceptions\ChatSessionException;
 use Modules\ChatModule\Requests\ChatRequest;
 use Modules\DocumentModule\Models\Document;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -23,6 +26,8 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  */
 class ChatController extends Controller
 {
+    private const GENERATION_FAILED = 'Unable to generate an answer right now. Please try again.';
+
     private RAGPipelineServiceInterface $pipeline;
 
     /**
@@ -49,43 +54,27 @@ class ChatController extends Controller
      *                                       Example (stream): StreamedResponse with Content-Type: text/event-stream
      *
      * @throws \InvalidArgumentException Via pipeline->ask() for empty/oversized questions (caught → 400)
-     * @throws \RuntimeException Via pipeline->ask() for session/message limit errors (caught → 422)
+     * @throws ChatSessionException Via pipeline->ask() for session/message limit errors (caught → 422)
+     * @throws \Throwable Any other failure (e.g. LLM provider down) is logged and returned as a generic 502
      */
     public function ask(ChatRequest $request): JsonResponse|StreamedResponse
     {
-        $stream = $request->boolean('stream', true);
-
-        if ($stream) {
+        if ($request->boolean('stream', true)) {
             return $this->streamResponse($request);
         }
 
         try {
-            $user = $request->input('authenticated_user');
-            $result = $this->pipeline->ask(
-                $request->input('question'),
-                [
-                    'session_id' => $request->input('session_id'),
-                    'document_filter' => $this->scopeDocumentFilter($request->input('document_filter', []), $user),
-                    'user_id' => $user?->id,
-                    'llm_model_id' => $request->input('llm_model_id'),
-                    'think' => $request->input('think'),
-                ],
-            );
+            $result = $this->pipeline->ask($request->input('question'), $this->pipelineOptions($request));
 
-            return response()->json([
-                'success' => true,
-                'data' => $result,
-            ]);
+            return ApiResponse::success($result);
         } catch (\InvalidArgumentException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => $e->getMessage(),
-            ], 400);
-        } catch (\RuntimeException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => $e->getMessage(),
-            ], 422);
+            return ApiResponse::error($e->getMessage(), 400);
+        } catch (ChatSessionException $e) {
+            return ApiResponse::error($e->getMessage(), 422);
+        } catch (\Throwable $e) {
+            $this->logFailure($e, $request);
+
+            return ApiResponse::error(self::GENERATION_FAILED, 502);
         }
     }
 
@@ -102,22 +91,11 @@ class ChatController extends Controller
      */
     public function sessions(Request $request): JsonResponse
     {
-        $user = $request->input('authenticated_user');
         $page = $request->integer('page') ?: 1;
-        $sessions = $this->pipeline->listSessions($user?->id, $page);
 
-        return response()->json([
-            'success' => true,
-            'data' => $sessions['data'],
-            'meta' => [
-                'current_page' => $sessions['current_page'],
-                'last_page' => $sessions['last_page'],
-                'per_page' => $sessions['per_page'],
-                'total' => $sessions['total'],
-                'from' => $sessions['from'],
-                'to' => $sessions['to'],
-            ],
-        ]);
+        return ApiResponse::paginated(
+            $this->pipeline->listSessions($request->input('authenticated_user')->id, $page),
+        );
     }
 
     /**
@@ -134,20 +112,9 @@ class ChatController extends Controller
      */
     public function showSession(Request $request, string $id): JsonResponse
     {
-        try {
-            $user = $request->input('authenticated_user');
-            $session = $this->pipeline->getSession($id, $user?->id);
-
-            return response()->json([
-                'success' => true,
-                'data' => $session,
-            ]);
-        } catch (\Throwable $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Session not found.',
-            ], 404);
-        }
+        return ApiResponse::success(
+            $this->pipeline->getSession($id, $request->input('authenticated_user')->id),
+        );
     }
 
     /**
@@ -164,20 +131,9 @@ class ChatController extends Controller
      */
     public function destroySession(Request $request, string $id): JsonResponse
     {
-        try {
-            $user = $request->input('authenticated_user');
-            $this->pipeline->deleteSession($id, $user?->id);
+        $this->pipeline->deleteSession($id, $request->input('authenticated_user')->id);
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Session deleted successfully.',
-            ]);
-        } catch (\Throwable $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Session not found.',
-            ], 404);
-        }
+        return ApiResponse::success(message: 'Session deleted successfully.');
     }
 
     /**
@@ -225,45 +181,74 @@ class ChatController extends Controller
      */
     private function streamResponse(ChatRequest $request): StreamedResponse
     {
-        $user = $request->input('authenticated_user');
+        $options = $this->pipelineOptions($request);
 
-        return response()->stream(function () use ($request, $user): void {
-            header('Content-Type: text/event-stream');
-            header('Cache-Control: no-cache');
-            header('Connection: keep-alive');
-            header('X-Accel-Buffering: no');
-
+        return response()->stream(function () use ($request, $options): void {
             try {
-                $generator = $this->pipeline->askStream(
-                    $request->input('question'),
-                    [
-                        'session_id' => $request->input('session_id'),
-                        'document_filter' => $this->scopeDocumentFilter($request->input('document_filter', []), $user),
-                        'user_id' => $user?->id,
-                        'llm_model_id' => $request->input('llm_model_id'),
-                        'think' => $request->input('think'),
-                    ],
-                );
-
-                foreach ($generator as $event) {
-                    echo "data: {$event}\n\n";
-                    if (ob_get_level()) {
-                        ob_flush();
-                    }
-                    flush();
+                foreach ($this->pipeline->askStream($request->input('question'), $options) as $event) {
+                    $this->sendEvent($event);
                 }
+            } catch (\InvalidArgumentException|ChatSessionException $e) {
+                $this->sendEvent(json_encode(['type' => 'error', 'message' => $e->getMessage()]));
             } catch (\Throwable $e) {
-                echo 'data: '.json_encode(['type' => 'error', 'message' => $e->getMessage()])."\n\n";
-                if (ob_get_level()) {
-                    ob_flush();
-                }
-                flush();
+                $this->logFailure($e, $request);
+                $this->sendEvent(json_encode(['type' => 'error', 'message' => self::GENERATION_FAILED]));
             }
         }, 200, [
             'Content-Type' => 'text/event-stream',
             'Cache-Control' => 'no-cache',
             'Connection' => 'keep-alive',
             'X-Accel-Buffering' => 'no',
+        ]);
+    }
+
+    /**
+     * Pipeline options shared by the sync and streaming paths.
+     *
+     * @param  ChatRequest  $request  The validated chat request
+     * @return array Options for RAGPipelineService::ask()/askStream(). Example: ["session_id" => "01J...", "user_id" => "01J..."]
+     */
+    private function pipelineOptions(ChatRequest $request): array
+    {
+        $user = $request->input('authenticated_user');
+
+        return [
+            'session_id' => $request->input('session_id'),
+            'document_filter' => $this->scopeDocumentFilter($request->input('document_filter', []), $user),
+            'user_id' => $user->id,
+            'llm_model_id' => $request->input('llm_model_id'),
+            'think' => $request->input('think'),
+        ];
+    }
+
+    /**
+     * Write one SSE `data:` frame and flush it to the client.
+     *
+     * @param  string  $event  JSON-encoded event. Example: '{"type":"chunk","content":"Hi"}'
+     */
+    private function sendEvent(string $event): void
+    {
+        echo "data: {$event}\n\n";
+        if (ob_get_level()) {
+            ob_flush();
+        }
+        flush();
+    }
+
+    /**
+     * Log an unexpected pipeline failure; the client only gets a generic message
+     * so provider errors and internals are not exposed.
+     *
+     * @param  \Throwable  $e  The failure
+     * @param  ChatRequest  $request  The chat request
+     */
+    private function logFailure(\Throwable $e, ChatRequest $request): void
+    {
+        Log::channel(config('rag.logging.channel', 'rag'))->error('Chat request failed', [
+            'user_id' => $request->input('authenticated_user')?->id,
+            'session_id' => $request->input('session_id'),
+            'exception' => $e::class,
+            'error' => $e->getMessage(),
         ]);
     }
 }

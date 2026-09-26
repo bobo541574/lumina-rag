@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Middleware;
 
+use App\Http\Responses\ApiResponse;
 use App\Models\User;
 use App\Support\ApiToken;
 use Closure;
@@ -73,9 +74,6 @@ class AuthenticateWithToken
      */
     private function unauthorized(string $message): Response
     {
-        return response()->json([
-            'success' => false,
-            'message' => $message,
-        ], 401);
+        return ApiResponse::error($message, 401);
     }
 }
