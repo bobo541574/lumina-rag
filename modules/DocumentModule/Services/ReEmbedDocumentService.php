@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Modules\DocumentModule\Services;
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Modules\ChatModule\Events\KnowledgeChanged;
 use Modules\DocumentModule\Enums\DocumentStatus;
 use Modules\DocumentModule\Models\Document;
@@ -62,12 +63,18 @@ class ReEmbedDocumentService
      *
      * @param  string  $documentId  The ULID of the document to re-embed. Example: "01J..."
      *
-     * @throws ModelNotFoundException If the document does not exist
-     *                                Example: $service->reEmbed("nonexistent") → ModelNotFoundException
+     * A document that no longer exists is skipped (logged), not an error.
      */
     public function reEmbed(string $documentId): void
     {
-        $document = Document::findOrFail($documentId);
+        $document = Document::find($documentId);
+        if ($document === null) {
+            // Deleted (or the database was reset) after the job was queued.
+            // Nothing to do, and a queue retry cannot bring it back.
+            Log::channel(config('rag.logging.channel', 'rag'))->info('Re-embed skipped: document no longer exists', ['document_id' => $documentId]);
+
+            return;
+        }
 
         $chunks = DocumentChunk::where('document_id', $documentId)
             ->orderBy('chunk_index')

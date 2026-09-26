@@ -60,3 +60,13 @@ test('reembed_replaces_vectors_on_success', function (): void {
     expect($rows)->toHaveCount(1);
     expect($rows[0]->model_name)->not->toBe('old');
 });
+
+test('reembed_skips_documents_deleted_after_the_job_was_queued', function (): void {
+    $embedder = mock(EmbeddingServiceInterface::class);
+    $embedder->shouldNotReceive('embedBatch');
+    app()->instance(EmbeddingServiceInterface::class, $embedder);
+
+    app(ReEmbedDocumentService::class)->reEmbed('01M310AMVGQ5XSE7JSFZQ2DNXF');
+
+    expect(DB::table('vector_embeddings')->count())->toBe(0);
+});

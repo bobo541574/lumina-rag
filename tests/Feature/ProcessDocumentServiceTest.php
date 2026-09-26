@@ -90,3 +90,9 @@ test('process_marks_failed_on_the_final_attempt', function (): void {
     expect($document->status)->toBe(DocumentStatus::Failed);
     expect(DocumentChunk::where('document_id', $document->id)->count())->toBe(0);
 });
+
+test('process_skips_documents_deleted_after_the_job_was_queued', function (): void {
+    app(ProcessDocumentService::class)->process('01M310AMVGQ5XSE7JSFZQ2DNXF');
+
+    expect(DocumentChunk::count())->toBe(0);
+});

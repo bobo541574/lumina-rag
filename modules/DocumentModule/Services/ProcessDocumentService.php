@@ -90,13 +90,22 @@ class ProcessDocumentService
      * @param  string  $documentId  The ULID of the document to process. Example: "01J..."
      * @param  bool  $finalAttempt  Whether a failure is final (no queue retry left). Example: true
      *
+     * A document that no longer exists is skipped (logged), not an error.
+     *
      * @throws \RuntimeException If text extraction produces empty content or chunking yields no chunks
      *                           Example: $service->process($id) → RuntimeException("No extractable text found in document")
      * @throws \Throwable Any exception during processing is caught, logged to the document, and re-thrown
      */
     public function process(string $documentId, bool $finalAttempt = true): void
     {
-        $document = Document::findOrFail($documentId);
+        $document = Document::find($documentId);
+        if ($document === null) {
+            // Deleted (or the database was reset) after the job was queued.
+            // Nothing to do, and a queue retry cannot bring it back.
+            Log::channel(config('rag.logging.channel', 'rag'))->info('Processing skipped: document no longer exists', ['document_id' => $documentId]);
+
+            return;
+        }
         $document->markProcessing();
 
         try {
