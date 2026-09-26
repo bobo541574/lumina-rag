@@ -25,6 +25,15 @@ class DatabaseSeeder extends Seeder
             ReportDemoSeeder::class,
         ]);
 
+        // Jobs still queued from before a migrate:fresh/refresh point at
+        // documents that no longer exist; drop them so the worker only
+        // embeds this seed's data.
+        Artisan::call('queue:clear', [
+            'connection' => config('queue.default'),
+            '--queue' => 'document-processing',
+            '--force' => true,
+        ], $this->command?->getOutput());
+
         // Seeded chunks have no vectors yet. Queue real embeddings (newest
         // documents first, so recent data becomes searchable soonest); the
         // queue worker (Horizon) processes them in the background.

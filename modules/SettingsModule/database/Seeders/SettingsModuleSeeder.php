@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Modules\SettingsModule\Models\AiModel;
 use Modules\SettingsModule\Models\TermAlias;
+use Modules\VectorStoreModule\Support\VectorShardSchema;
 
 /**
  * Settings Module Seeder
@@ -217,14 +218,24 @@ class SettingsModuleSeeder extends Seeder
         ];
 
         $installed = $this->installedOllamaModels();
+        $seededTags = [];
 
         foreach ([...$embeddingModels, ...$llmModels] as $model) {
             $model = $this->withAvailability($model, $installed);
+            if ($model['provider'] === 'ollama' && $model['is_active']) {
+                $seededTags[] = $model['model'];
+            }
             AiModel::updateOrCreate(
                 ['type' => $model['type'], 'model' => $model['model']],
                 $model,
             );
         }
+
+        if ($installed !== null) {
+            $this->seedDiscoveredOllamaModels(array_diff($installed, $seededTags));
+        }
+
+        $this->preferConfiguredModels();
 
         $this->seedTermAliases();
     }
@@ -347,5 +358,82 @@ class SettingsModuleSeeder extends Seeder
         $this->command?->line(sprintf('  %-8s %-45s %s', $model['type'], $model['model'], $model['is_active'] ? 'active' : 'inactive'));
 
         return $model;
+    }
+
+    /**
+     * Add installed Ollama models that the catalog above does not know about,
+     * so every local model is selectable in the UI.
+     *
+     * Type and dimensions come from Ollama's /api/show. Embedding models whose
+     * dimensions have no pgvector shard table are added inactive.
+     *
+     * @param  array<string>  $tags  Installed tags not covered by the catalog. Example: ["granite4.2:8b"]
+     */
+    private function seedDiscoveredOllamaModels(array $tags): void
+    {
+        $baseUrl = rtrim((string) config('rag.embedding.base_url', 'http://localhost:11434'), '/');
+        $sortOrder = 100;
+
+        foreach ($tags as $tag) {
+            try {
+                $info = Http::timeout(5)->post("{$baseUrl}/api/show", ['model' => $tag])->throw()->json();
+            } catch (\Throwable) {
+                $this->command?->warn("  Could not inspect Ollama model {$tag}; skipped.");
+
+                continue;
+            }
+
+            $capabilities = $info['capabilities'] ?? [];
+            $modelInfo = $info['model_info'] ?? [];
+            $lengthOf = fn (string $suffix): ?int => collect($modelInfo)->first(fn ($v, $k): bool => str_ends_with($k, $suffix));
+            $isEmbedding = in_array('embedding', $capabilities, true) || str_contains(strtolower($tag), 'embed');
+
+            $model = [
+                'name' => $tag,
+                'type' => $isEmbedding ? 'embedding' : 'llm',
+                'provider' => 'ollama',
+                'model' => $tag,
+                'base_url' => $baseUrl,
+                'is_active' => true,
+                'sort_order' => $sortOrder++,
+                'description' => 'Discovered in the local Ollama server.',
+            ];
+
+            if ($isEmbedding) {
+                $dimensions = $lengthOf('.embedding_length') ?? 768;
+                $model += ['dimensions' => $dimensions, 'batch_size' => 100, 'cache_ttl' => 86400, 'timeout' => 30];
+                $model['is_active'] = in_array($dimensions, VectorShardSchema::DIMENSIONS, true);
+            } else {
+                $context = $lengthOf('.context_length') ?? 4096;
+                $model += [
+                    'temperature' => 0.3,
+                    'max_context_tokens' => min($context, (int) config('rag.llm.max_context_tokens', 32768)),
+                    'timeout' => 300,
+                    'settings' => ['max_tokens' => 4096],
+                ];
+            }
+
+            AiModel::updateOrCreate(['type' => $model['type'], 'model' => $tag], $model);
+            $this->command?->line(sprintf('  %-8s %-45s %s (discovered)', $model['type'], $tag, $model['is_active'] ? 'active' : 'inactive'));
+        }
+    }
+
+    /**
+     * Make the models named in .env (RAG_EMBEDDING_MODEL / RAG_LLM_MODEL) the
+     * defaults when they are active: the pipeline picks the lowest sort_order.
+     */
+    private function preferConfiguredModels(): void
+    {
+        foreach (['embedding', 'llm'] as $type) {
+            $configured = AiModel::where('type', $type)
+                ->where('model', (string) config("rag.{$type}.model"))
+                ->where('is_active', true)
+                ->first();
+
+            if ($configured !== null) {
+                $configured->update(['sort_order' => 0]);
+                $this->command?->info("  Default {$type}: {$configured->model}");
+            }
+        }
     }
 }
