@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Modules\DocumentModule\Providers;
 
-use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Support\ServiceProvider;
 use Modules\DocumentModule\Commands\GenerateTemplatesCommand;
 use Modules\DocumentModule\Commands\ReEmbedCommand;
@@ -14,8 +13,6 @@ use Modules\DocumentModule\Contracts\TextExtractionServiceInterface;
 use Modules\DocumentModule\Services\DocumentService;
 use Modules\DocumentModule\Services\TextChunkingService;
 use Modules\DocumentModule\Services\TextExtractionService;
-use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
-use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
 
 /**
  * Document Module Service Provider
@@ -36,24 +33,14 @@ class DocumentModuleServiceProvider extends ServiceProvider
      *
      * Binds TextExtractionServiceInterface → TextExtractionService (singleton).
      * Binds TextChunkingServiceInterface → TextChunkingService (singleton).
-     * Binds DocumentServiceInterface → DocumentService (singleton) with injected
-     * dependencies and config-driven defaults for chunk size, overlap, and batch size.
+     * Binds DocumentServiceInterface → DocumentService (singleton).
      */
     public function register(): void
     {
         $this->app->singleton(TextExtractionServiceInterface::class, TextExtractionService::class);
         $this->app->singleton(TextChunkingServiceInterface::class, TextChunkingService::class);
 
-        $this->app->singleton(DocumentServiceInterface::class, fn ($app): DocumentService => new DocumentService(
-            extractor: $app->make(TextExtractionServiceInterface::class),
-            chunker: $app->make(TextChunkingServiceInterface::class),
-            embedder: $app->make(EmbeddingServiceInterface::class),
-            vectorStore: $app->make(VectorStoreInterface::class),
-            events: $app->make(Dispatcher::class),
-            chunkSize: (int) config('rag.chunking.chunk_size', 1000),
-            overlap: (int) config('rag.chunking.overlap', 200),
-            batchSize: (int) config('rag.embedding.batch_size', 100),
-        ));
+        $this->app->singleton(DocumentServiceInterface::class, DocumentService::class);
     }
 
     /**

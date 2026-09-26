@@ -12,7 +12,7 @@ function makePgvectorDriver(): PgvectorDriver
 
 function callApplyFiltersVector($query, array $filters, string $alias = 've'): mixed
 {
-    $reflection = new ReflectionMethod(PgvectorDriver::class, 'applyFiltersVector');
+    $reflection = new ReflectionMethod(PgvectorDriver::class, 'applyFilters');
     $reflection->setAccessible(true);
 
     return $reflection->invoke(makePgvectorDriver(), $query, $filters, $alias);
@@ -20,10 +20,10 @@ function callApplyFiltersVector($query, array $filters, string $alias = 've'): m
 
 function callApplyFiltersFts($query, array $filters): mixed
 {
-    $reflection = new ReflectionMethod(PgvectorDriver::class, 'applyFiltersFts');
+    $reflection = new ReflectionMethod(PgvectorDriver::class, 'applyFilters');
     $reflection->setAccessible(true);
 
-    return $reflection->invoke(makePgvectorDriver(), $query, $filters);
+    return $reflection->invoke(makePgvectorDriver(), $query, $filters, null);
 }
 
 test('apply_filters_vector_adds_meta_where_clause', function (): void {

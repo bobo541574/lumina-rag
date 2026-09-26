@@ -264,11 +264,6 @@ class QueryRewriterService
                 continue;
             }
 
-            // Skip pure stopwords for FTS
-            if ($this->isFtsStopword($token)) {
-                continue;
-            }
-
             // Skip tokens with non-ASCII characters — the tsv_content is built
             // with to_tsvector('english', ...), which doesn't index non-English
             // text. Including Burmese/full-width tokens in to_tsquery would make
@@ -308,24 +303,6 @@ class QueryRewriterService
         }
 
         return implode(' & ', $terms);
-    }
-
-    /**
-     * Check if a token is an FTS stopword
-     *
-     * @param  string  $token  Single word token. Example: "တယ်"
-     * @return bool True if token should be excluded from FTS. Example: true
-     */
-    private function isFtsStopword(string $token): bool
-    {
-        static $stopwords = [
-            'တယ်', 'သည်', 'ကို', 'မှာ', 'မှ', 'တွင်', 'အတွက်', 'အား',
-            'ဖြင့်', 'နှင့်', 'အကြောင်း', 'ကြောင်း', 'လား', 'ဟုတ်',
-            'မဟုတ်', 'ဖူး', 'ဘူး', 'ရှိ', 'ပါ', 'လဲ',
-            'ဒီ', 'အဲဒီ', 'အဲဒါ', 'ဒါ', 'ဟို',
-        ];
-
-        return in_array($token, $stopwords, true);
     }
 
     /**

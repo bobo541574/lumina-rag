@@ -6,7 +6,7 @@ namespace Modules\DocumentModule\Commands;
 
 use Illuminate\Console\Command;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Collection;
 use Modules\DocumentModule\Enums\DocumentStatus;
 use Modules\DocumentModule\Jobs\ReEmbedDocumentJob;
 use Modules\DocumentModule\Models\Document;
@@ -16,7 +16,7 @@ class ReEmbedCommand extends Command
     protected $signature = 'rag:reembed
         {--document= : Re-embed a specific document by ULID}
         {--missing : Only re-embed completed documents that have chunks with no vector rows}
-        {--only-old-model : Only re-embed documents whose existing embeddings use a different model than the current config}
+        {--only-old-model : Only re-embed documents whose vectors were made with a different model than the model configured for that document}
         {--status= : Only re-embed documents with a specific status (e.g., completed, failed)}
         {--project= : Filter by project name (e.g., "Orion")}
         {--report-date= : Filter by report date — exact (2026-04-30), month (2026-04), or range (2026-04-01:2026-04-30)}
@@ -93,130 +93,87 @@ class ReEmbedCommand extends Command
 
     private function handleMissing(): int
     {
-        $dryRun = (bool) $this->option('dry-run');
-        $force = (bool) $this->option('force');
+        $query = Document::query();
 
-        // Find completed documents that have at least one chunk with no vector row.
-        // We check all ve_* shard tables and fall back to vector_embeddings on SQLite.
-        $isSqlite = DB::getDriverName() === 'sqlite';
-
-        $query = Document::query()->whereNull('deleted_at');
-
-        if (! $force) {
+        if (! $this->option('force')) {
             $query->where('status', DocumentStatus::Completed);
         }
 
         $this->applyCommonFilters($query);
 
-        $query->whereHas('chunks', function ($q) use ($isSqlite): void {
-            if ($isSqlite) {
-                $q->whereNotExists(function ($sub): void {
-                    $sub->selectRaw(1)
-                        ->from('vector_embeddings')
-                        ->whereColumn('vector_embeddings.chunk_id', 'document_chunks.id');
-                });
-            } else {
-                $q->whereNotExists(function ($sub): void {
-                    $sub->selectRaw(1)
-                        ->fromRaw('(SELECT chunk_id FROM ve_384 UNION ALL SELECT chunk_id FROM ve_768 UNION ALL SELECT chunk_id FROM ve_1024 UNION ALL SELECT chunk_id FROM ve_1536 UNION ALL SELECT chunk_id FROM ve_3072) AS ve_all')
-                        ->whereColumn('ve_all.chunk_id', 'document_chunks.id');
-                });
-            }
-        });
+        // vector_embeddings holds one metadata row per stored vector on every
+        // driver (the pgvector shards hold the vectors themselves), so it is
+        // the single place to look for missing vectors.
+        $query->whereHas('chunks', fn ($chunks) => $chunks->whereNotExists(
+            fn ($sub) => $sub->selectRaw(1)
+                ->from('vector_embeddings')
+                ->whereColumn('vector_embeddings.chunk_id', 'document_chunks.id'),
+        ));
 
-        $documents = $query->get(['id', 'title', 'status']);
-
-        if ($documents->isEmpty()) {
-            $this->info('No documents with missing vectors found.');
-
-            return self::SUCCESS;
-        }
-
-        $this->info("Found {$documents->count()} document(s) with missing vectors:");
-        foreach ($documents as $doc) {
-            $this->line("  [{$doc->status->value}] {$doc->title} ({$doc->id})");
-        }
-
-        if ($dryRun) {
-            $this->warn('Dry-run mode: no jobs dispatched.');
-
-            return self::SUCCESS;
-        }
-
-        $bar = $this->output->createProgressBar($documents->count());
-        $bar->start();
-
-        foreach ($documents as $document) {
-            ReEmbedDocumentJob::dispatch($document->id);
-            $bar->advance();
-        }
-
-        $bar->finish();
-        $this->newLine();
-        $this->info('Re-embed jobs dispatched.');
-
-        return self::SUCCESS;
+        return $this->dispatchFor($query->get(['id', 'title', 'status']), 'No documents with missing vectors found.');
     }
 
     private function handleBatch(): int
     {
-        $onlyOldModel = $this->option('only-old-model');
+        $query = Document::query()->whereHas('chunks');
+
         $status = $this->option('status');
-        $dryRun = (bool) $this->option('dry-run');
-
-        $query = Document::query();
-
         if ($status !== null) {
+            if (DocumentStatus::tryFrom($status) === null) {
+                $this->error("Unknown status '{$status}'. Use one of: ".implode(', ', array_column(DocumentStatus::cases(), 'value')));
+
+                return self::FAILURE;
+            }
             $query->where('status', $status);
         }
 
         $this->applyCommonFilters($query);
 
-        if ($onlyOldModel) {
-            $currentModel = config('rag.embedding.model', 'text-embedding-ada-002');
+        if ($this->option('only-old-model')) {
+            // Compare each document's vectors with the model that document is
+            // configured for, falling back to the global default model.
+            $defaultModel = (string) config('rag.embedding.model');
 
-            $query->whereExists(function ($q) use ($currentModel): void {
-                $q->selectRaw(1)
-                    ->from('document_chunks')
-                    ->leftJoin('vector_embeddings', 'vector_embeddings.chunk_id', '=', 'document_chunks.id')
-                    ->whereColumn('document_chunks.document_id', 'documents.id')
-                    ->where(function ($sub) use ($currentModel): void {
-                        $sub->whereNull('vector_embeddings.id')
-                            ->orWhere('vector_embeddings.model_name', '!=', $currentModel);
-                    });
-            });
+            $query->whereExists(fn ($q) => $q->selectRaw(1)
+                ->from('document_chunks')
+                ->leftJoin('vector_embeddings', 'vector_embeddings.chunk_id', '=', 'document_chunks.id')
+                ->whereColumn('document_chunks.document_id', 'documents.id')
+                ->where(fn ($sub) => $sub->whereNull('vector_embeddings.id')
+                    ->orWhereRaw('vector_embeddings.model_name <> COALESCE(documents.embedding_model, ?)', [$defaultModel])));
         }
 
-        $documents = $query->get();
+        return $this->dispatchFor($query->get(['id', 'title', 'status']), 'No documents found to re-embed.');
+    }
 
+    /**
+     * List the documents and, unless --dry-run, queue a re-embed job for each.
+     *
+     * @param  Collection<int, Document>  $documents  Documents to re-embed
+     * @param  string  $emptyMessage  Shown when there is nothing to do. Example: "No documents found to re-embed."
+     * @return int Command exit code
+     */
+    private function dispatchFor($documents, string $emptyMessage): int
+    {
         if ($documents->isEmpty()) {
-            $this->warn('No documents found to re-embed.');
+            $this->info($emptyMessage);
 
             return self::SUCCESS;
         }
 
-        $this->info("Found {$documents->count()} document(s) to re-embed.");
+        $this->info("Found {$documents->count()} document(s) to re-embed:");
+        foreach ($documents as $doc) {
+            $this->line("  [{$doc->status->value}] {$doc->title} ({$doc->id})");
+        }
 
-        if ($dryRun) {
-            foreach ($documents as $doc) {
-                $this->line("  [{$doc->status->value}] {$doc->title} ({$doc->id})");
-            }
+        if ($this->option('dry-run')) {
             $this->warn('Dry-run mode: no jobs dispatched.');
 
             return self::SUCCESS;
         }
 
-        $bar = $this->output->createProgressBar($documents->count());
-        $bar->start();
-
-        foreach ($documents as $document) {
-            ReEmbedDocumentJob::dispatch($document->id);
-            $bar->advance();
-        }
-
-        $bar->finish();
+        $this->withProgressBar($documents, fn (Document $document) => ReEmbedDocumentJob::dispatch($document->id));
         $this->newLine();
-        $this->info('All jobs dispatched successfully.');
+        $this->info('Re-embed jobs dispatched.');
 
         return self::SUCCESS;
     }

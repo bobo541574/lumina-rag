@@ -84,7 +84,7 @@ class Retriever
      * @param  EmbeddingServiceInterface  $embedder  Embedder matching the target documents
      * @param  AiModel|null  $embeddingModel  Model whose vectors to search
      * @param  string  $ftsQuery  Plain FTS query. Example: "Q3 revenue"
-     * @param  RewrittenQuery  $rewritten  Rewriter output (boolean FTS query)
+     * @param  string|null  $booleanFtsQuery  Boolean FTS query from FtsQueryBuilder::constrainBoolean(). Example: "revenue & q3"
      * @param  array  $filters  Tenant-safe filters from FilterResolver
      * @param  string  $questionType  QuestionClassifier type. Example: "factual"
      * @param  PipelineSettings  $settings  Pipeline settings
@@ -96,7 +96,7 @@ class Retriever
         EmbeddingServiceInterface $embedder,
         ?AiModel $embeddingModel,
         string $ftsQuery,
-        RewrittenQuery $rewritten,
+        ?string $booleanFtsQuery,
         array $filters,
         string $questionType,
         PipelineSettings $settings,
@@ -112,8 +112,8 @@ class Retriever
         );
         $searchFilters['similarity_threshold'] = $settings->minInitialThreshold;
         $searchFilters['model_name'] = AiModel::resolveModelName($embeddingModel, 'embedding');
-        if ($rewritten->ftsQuery !== null) {
-            $searchFilters['boolean_fts_query'] = $rewritten->ftsQuery;
+        if ($booleanFtsQuery !== null) {
+            $searchFilters['boolean_fts_query'] = $booleanFtsQuery;
         }
 
         $candidates = [];

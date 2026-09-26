@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\ChatModule\Services;
 
+use App\Support\VectorMath;
 use Illuminate\Support\Facades\DB;
 use Modules\ChatModule\Models\DocumentVersion;
 use Modules\ChatModule\Models\KnowledgeVersion;
@@ -92,7 +93,7 @@ class SemanticCacheService
                 continue;
             }
 
-            $score = $this->cosineSimilarity($queryVector, $storedVector);
+            $score = VectorMath::cosine($queryVector, $storedVector);
             if ($score > $bestScore) {
                 $bestScore = $score;
                 $best = $row;
@@ -287,32 +288,5 @@ class SemanticCacheService
         }
 
         return false;
-    }
-
-    /**
-     * Compute cosine similarity between two vectors.
-     *
-     * @param  array  $a  First vector. Example: [0.1, 0.2]
-     * @param  array  $b  Second vector. Example: [0.4, 0.5]
-     * @return float Similarity between -1 and 1. Example: 0.98
-     */
-    private function cosineSimilarity(array $a, array $b): float
-    {
-        $dot = 0.0;
-        $normA = 0.0;
-        $normB = 0.0;
-        $len = min(count($a), count($b));
-
-        for ($i = 0; $i < $len; $i++) {
-            $dot += (float) $a[$i] * (float) $b[$i];
-            $normA += (float) $a[$i] * (float) $a[$i];
-            $normB += (float) $b[$i] * (float) $b[$i];
-        }
-
-        if ($normA === 0.0 || $normB === 0.0) {
-            return 0.0;
-        }
-
-        return $dot / (sqrt($normA) * sqrt($normB));
     }
 }

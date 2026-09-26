@@ -182,7 +182,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         [
             'question' => $question, 'questionType' => $questionType, 'session' => $session,
             'rewritten' => $rewritten, 'searchQuestion' => $searchQuestion, 'ftsQuery' => $ftsQuery,
-            'llmQuestion' => $llmQuestion, 'filters' => $filters, 'profile' => $profile,
+            'booleanFtsQuery' => $booleanFtsQuery, 'llmQuestion' => $llmQuestion, 'filters' => $filters, 'profile' => $profile,
             'embeddingModel' => $embeddingModel, 'embedder' => $embedder,
         ] = $this->prepare($question, $options);
 
@@ -228,7 +228,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         yield $status('searching', 'စာရွက်စာတမ်းများတွင် ရှာဖွေနေသည်...', 'Searching documents...');
 
         ['chunks' => $chunks, 'searchTime' => $searchTime] = $this->retriever->retrieve(
-            $queries, $embedder, $embeddingModel, $ftsQuery, $rewritten, $filters, $questionType, $this->settings, $options,
+            $queries, $embedder, $embeddingModel, $ftsQuery, $booleanFtsQuery, $filters, $questionType, $this->settings, $options,
         );
 
         // Nothing relevant: refuse without calling the LLM.
@@ -302,7 +302,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
      *
      * @param  string  $question  Raw question
      * @param  array  $options  Request options with user_id resolved
-     * @return array{question: string, questionType: string, session: ChatSession, rewritten: RewrittenQuery, searchQuestion: string, ftsQuery: string, llmQuestion: string, filters: array, profile: LlmProfile, embeddingModel: AiModel|null, embedder: EmbeddingServiceInterface}
+     * @return array{question: string, questionType: string, session: ChatSession, rewritten: RewrittenQuery, searchQuestion: string, ftsQuery: string, booleanFtsQuery: string|null, llmQuestion: string, filters: array, profile: LlmProfile, embeddingModel: AiModel|null, embedder: EmbeddingServiceInterface}
      */
     private function prepare(string $question, array $options): array
     {
@@ -315,9 +315,9 @@ class RAGPipelineService implements RAGPipelineServiceInterface
         $extracted = $this->filterExtractor->extract($question);
         $rewritten = $this->queryRewriter->rewrite($question);
         $searchQuestion = $this->termAliasService->expandText($rewritten->embeddingText);
-        $ftsQuery = $this->termAliasService->expandFtsQuery(
-            $this->ftsQueryBuilder->refine($rewritten->ftsQuery ?? $question, $extracted),
-        );
+        $refined = $this->ftsQueryBuilder->refine($rewritten->ftsQuery ?? $question, $extracted);
+        $ftsQuery = $this->termAliasService->expandFtsQuery($refined);
+        $booleanFtsQuery = $this->ftsQueryBuilder->constrainBoolean($rewritten->ftsQuery, $refined);
 
         $this->sessionManager->saveUserMessage($session, $question);
 
@@ -331,6 +331,7 @@ class RAGPipelineService implements RAGPipelineServiceInterface
             'rewritten' => $rewritten,
             'searchQuestion' => $searchQuestion,
             'ftsQuery' => $ftsQuery,
+            'booleanFtsQuery' => $booleanFtsQuery,
             'llmQuestion' => $this->filterExtractor->resolveTimeReferences($question),
             'filters' => $filters,
             'profile' => $this->llmProfileFor($options),

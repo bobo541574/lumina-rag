@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Modules\VectorStoreModule\Services;
 
+use App\Support\VectorMath;
 use Illuminate\Database\DatabaseManager;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Str;
 use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
 use Modules\VectorStoreModule\Models\VectorEmbedding;
@@ -52,6 +54,23 @@ class PgvectorDriver implements VectorStoreInterface
 
     /** @var array<int> Supported vector dimension shard table sizes */
     private const DIM_TABLES = [384, 768, 1024, 1536, 3072];
+
+    /** @var float Similarity cut-off when the caller passes none */
+    private const DEFAULT_THRESHOLD = 0.65;
+
+    /** @var array<string> Chunk/document columns returned by every search */
+    private const RESULT_COLUMNS = [
+        'dc.content',
+        'dc.metadata',
+        'd.id as document_id',
+        'd.title as document_title',
+        'd.user_id as document_user_id',
+        'd.project as document_project',
+        'd.report_date as document_report_date',
+        'dc.chunk_index',
+        'dc.page_number',
+        'd.created_at as document_created_at',
+    ];
 
     /** @var int Maximum supported vector dimensions */
     private const DIM_MAX = 3072;
@@ -154,101 +173,25 @@ class PgvectorDriver implements VectorStoreInterface
     public function searchHybrid(string $queryText, array $queryVector, int $topK = 5, array $filters = []): array
     {
         if ($this->isSqlite) {
-            return $this->searchSqlite($queryVector, $topK, $filters, $queryText);
+            return $this->searchSqlite($queryVector, $topK, $filters);
         }
 
-        $dimTable = $this->resolveDimTable(count($queryVector));
-        $vectorLiteral = '['.implode(',', $queryVector).']';
-
-        $vectorQuery = $this->db->table($dimTable, 've')
-            ->select(
-                've.id',
-                've.chunk_id',
-                'dc.content',
-                'dc.metadata',
-                'd.id as document_id',
-                'd.title as document_title',
-                'd.user_id as document_user_id',
-                'd.project as document_project',
-                'd.report_date as document_report_date',
-                'dc.chunk_index',
-                'dc.page_number',
-                'd.created_at as document_created_at',
-            )
-            ->selectRaw('1 - (ve.embedding <=> ?::vector) as similarity_score', [$vectorLiteral])
-            ->selectRaw('0.0 as fts_score')
-            ->join('document_chunks as dc', 'dc.id', '=', 've.chunk_id')
-            ->join('documents as d', 'd.id', '=', 'dc.document_id')
-            ->whereNull('d.deleted_at')
-            ->orderByRaw('ve.embedding <=> ?::vector', [$vectorLiteral])
-            ->limit($topK * 3);
-
-        $booleanFtsQuery = $filters['boolean_fts_query'] ?? null;
+        $booleanFtsQuery = $this->sanitiseBooleanFts((string) ($filters['boolean_fts_query'] ?? ''));
         unset($filters['boolean_fts_query']);
+        $threshold = (float) ($filters['similarity_threshold'] ?? self::DEFAULT_THRESHOLD);
 
-        // Resolve which FTS strategy to use.
-        // Prefer boolean to_tsquery when available; fall back to plainto_tsquery;
-        // skip FTS entirely when there is no meaningful text to search.
-        $sanitisedBoolean = null;
-        if ($booleanFtsQuery !== null && $booleanFtsQuery !== '') {
-            $s = $this->sanitiseBooleanFts($booleanFtsQuery);
-            if ($s !== '') {
-                $sanitisedBoolean = $s;
-            }
-        }
-
-        $skipFts = ($sanitisedBoolean === null && $queryText === '');
-
-        $ftsBase = $this->db->table('document_chunks as dc')
-            ->select(
-                'dc.id',
-                'dc.id as chunk_id',
-                'dc.content',
-                'dc.metadata',
-                'd.id as document_id',
-                'd.title as document_title',
-                'd.user_id as document_user_id',
-                'd.project as document_project',
-                'd.report_date as document_report_date',
-                'dc.chunk_index',
-                'dc.page_number',
-                'd.created_at as document_created_at',
-            )
-            ->selectRaw('0.0 as similarity_score')
-            ->join('documents as d', 'd.id', '=', 'dc.document_id')
-            ->whereNull('d.deleted_at')
-            ->limit($topK * 3);
-
-        if (! $skipFts) {
-            if ($sanitisedBoolean !== null) {
-                $tsQuery = (clone $ftsBase)
-                    ->selectRaw('ts_rank(dc.tsv_content, to_tsquery(\'english\', ?)) as fts_score', [$sanitisedBoolean])
-                    ->whereRaw('dc.tsv_content @@ to_tsquery(\'english\', ?)', [$sanitisedBoolean])
-                    ->orderByRaw('ts_rank(dc.tsv_content, to_tsquery(\'english\', ?)) desc', [$sanitisedBoolean]);
-            } else {
-                $tsQuery = (clone $ftsBase)
-                    ->selectRaw('ts_rank(dc.tsv_content, plainto_tsquery(\'english\', ?)) as fts_score', [$queryText])
-                    ->whereRaw('dc.tsv_content @@ plainto_tsquery(\'english\', ?)', [$queryText])
-                    ->orderByRaw('ts_rank(dc.tsv_content, plainto_tsquery(\'english\', ?)) desc', [$queryText]);
-            }
-        }
-
-        $vectorQuery = $this->applyFiltersVector($vectorQuery, $filters, 've');
-
-        $threshold = (float) ($filters['similarity_threshold'] ?? 0.65);
-
-        $vectorResults = $vectorQuery->get()->toArray();
-
-        if ($skipFts) {
-            $ftsResults = [];
-        } else {
-            $tsQuery = $this->applyFiltersFts($tsQuery, $filters);
-            $ftsResults = $tsQuery->get()->toArray();
-        }
-
-        $vectorResults = array_values(
-            array_filter($vectorResults, fn (object $row): bool => $row->similarity_score >= $threshold)
+        $vectorResults = $this->aboveThreshold(
+            $this->applyFilters($this->vectorQuery($queryVector, $topK * 3)->selectRaw('0.0 as fts_score'), $filters, 've')->get()->all(),
+            $threshold,
         );
+
+        // Prefer the rewriter's boolean to_tsquery; fall back to plainto_tsquery
+        // on the raw text; skip FTS when there is no meaningful text at all.
+        $ftsResults = match (true) {
+            $booleanFtsQuery !== '' => $this->ftsQuery('to_tsquery', $booleanFtsQuery, $topK * 3, $filters)->get()->all(),
+            $queryText !== '' => $this->ftsQuery('plainto_tsquery', $queryText, $topK * 3, $filters)->get()->all(),
+            default => [],
+        };
 
         return $this->fuseResults($vectorResults, $ftsResults, $topK);
     }
@@ -309,38 +252,9 @@ class PgvectorDriver implements VectorStoreInterface
             return $this->searchSqlite($queryVector, $topK, $filters);
         }
 
-        $dimTable = $this->resolveDimTable(count($queryVector));
-        $vectorLiteral = '['.implode(',', $queryVector).']';
-
-        $query = $this->db->table($dimTable, 've')
-            ->select(
-                've.id',
-                've.chunk_id',
-                'dc.content',
-                'dc.metadata',
-                'd.id as document_id',
-                'd.title as document_title',
-                'd.user_id as document_user_id',
-                'd.project as document_project',
-                'd.report_date as document_report_date',
-                'dc.chunk_index',
-                'dc.page_number',
-                'd.created_at as document_created_at',
-            )
-            ->selectRaw('1 - (ve.embedding <=> ?::vector) as similarity_score', [$vectorLiteral])
-            ->join('document_chunks as dc', 'dc.id', '=', 've.chunk_id')
-            ->join('documents as d', 'd.id', '=', 'dc.document_id')
-            ->whereNull('d.deleted_at')
-            ->orderByRaw('ve.embedding <=> ?::vector', [$vectorLiteral])
-            ->limit($topK);
-
-        $query = $this->applyFiltersVector($query, $filters, 've');
-
-        $threshold = (float) ($filters['similarity_threshold'] ?? 0.65);
-        $results = $query->get()->toArray();
-
-        return array_values(
-            array_filter($results, fn (object $row): bool => $row->similarity_score >= $threshold)
+        return $this->aboveThreshold(
+            $this->applyFilters($this->vectorQuery($queryVector, $topK), $filters, 've')->get()->all(),
+            (float) ($filters['similarity_threshold'] ?? self::DEFAULT_THRESHOLD),
         );
     }
 
@@ -354,53 +268,32 @@ class PgvectorDriver implements VectorStoreInterface
      * @param  array  $queryVector  Query vector. Example: [0.012, -0.034, ..., 0.098]
      * @param  int  $topK  Number of results to return. Example: 5
      * @param  array  $filters  Metadata filters. Example: ["project" => "Orion"]
-     * @param  string|null  $queryText  Unused in SQLite fallback. Example: null
      * @return array Result objects with similarity_score. Example: [["chunk_id" => "01J...", "similarity_score" => 0.92, "content" => "..."]]
      */
-    private function searchSqlite(array $queryVector, int $topK, array $filters, ?string $queryText = null): array
+    private function searchSqlite(array $queryVector, int $topK, array $filters): array
     {
-        $threshold = (float) ($filters['similarity_threshold'] ?? 0.65);
-
-        $query = $this->db->table('vector_embeddings as ve')
-            ->select(
-                've.id',
-                've.chunk_id',
-                've.embedding',
-                'dc.content',
-                'dc.metadata',
-                'd.id as document_id',
-                'd.title as document_title',
-                'd.user_id as document_user_id',
-                'd.project as document_project',
-                'd.report_date as document_report_date',
-                'dc.chunk_index',
-                'dc.page_number',
-                'd.created_at as document_created_at',
-            )
+        $query = $this->chunkColumns($this->db->table('vector_embeddings as ve')->select('ve.id', 've.chunk_id', 've.embedding'))
             ->join('document_chunks as dc', 'dc.id', '=', 've.chunk_id')
             ->join('documents as d', 'd.id', '=', 'dc.document_id')
             ->whereNull('d.deleted_at');
 
-        $query = $this->applyFiltersVector($query, $filters, 've');
-
-        $results = $query->get()->toArray();
         $results = array_map(function (object $row) use ($queryVector): object {
-            $embedding = $row->embedding ?? '[]';
-            $stored = is_string($embedding) ? json_decode($embedding, true) : (array) $embedding;
-            $row->similarity_score = $this->cosineSimilarity($queryVector, $stored);
+            $stored = is_string($row->embedding) ? json_decode($row->embedding, true) : (array) ($row->embedding ?? []);
+            $row->similarity_score = VectorMath::cosine($queryVector, $stored ?? []);
             unset($row->embedding);
 
             return $row;
-        }, $results);
+        }, $this->applyFilters($query, $filters, 've')->get()->all());
 
         usort($results, fn (object $a, object $b): int => $b->similarity_score <=> $a->similarity_score);
-        $results = array_values(
-            array_filter($results, fn (object $row): bool => $row->similarity_score >= $threshold)
-        );
 
         // Score in PHP first, then cut to top K — a SQL LIMIT would drop
         // rows before they were ranked.
-        return array_slice($results, 0, $topK);
+        return array_slice(
+            $this->aboveThreshold($results, (float) ($filters['similarity_threshold'] ?? self::DEFAULT_THRESHOLD)),
+            0,
+            $topK,
+        );
     }
 
     /**
@@ -548,17 +441,17 @@ class PgvectorDriver implements VectorStoreInterface
     }
 
     /**
-     * Apply metadata filters to a vector search query builder.
+     * Apply search filters to a vector or FTS query builder.
      *
      * Supports filters: document_ids, date_from, date_to, user_ids, project,
-     * report_date_from, report_date_to, model_name.
+     * report_date_from, report_date_to, meta, and model_name (vector queries only).
      *
-     * @param  mixed  $query  Query builder instance. Example: DB::table('ve_1536 as ve')
+     * @param  Builder  $query  Query joining `dc` (chunks) and `d` (documents). Example: DB::table('ve_1536 as ve')
      * @param  array  $filters  Filter conditions. Example: ["project" => "Orion", "user_ids" => ["01J..."]]
-     * @param  string  $alias  Table alias used in the query. Example: "ve"
-     * @return mixed Query builder with WHERE clauses applied
+     * @param  string|null  $alias  Vector table alias for the model filter; null for FTS queries. Example: "ve"
+     * @return Builder Query builder with WHERE clauses applied
      */
-    private function applyFiltersVector($query, array $filters, string $alias): mixed
+    private function applyFilters(Builder $query, array $filters, ?string $alias = null): Builder
     {
         if (isset($filters['document_ids'])) {
             $query->whereIn('d.id', (array) $filters['document_ids']);
@@ -581,61 +474,9 @@ class PgvectorDriver implements VectorStoreInterface
         if (isset($filters['report_date_to'])) {
             $query->where('d.report_date', '<=', $filters['report_date_to']);
         }
-        if (isset($filters['model_name'])) {
+        // Only vector queries carry a model; FTS rows are model-independent.
+        if ($alias !== null && isset($filters['model_name'])) {
             $query->where("{$alias}.model_name", $filters['model_name']);
-        }
-        if (isset($filters['meta']) && is_array($filters['meta'])) {
-            $meta = $this->whitelistMetaKeys($filters['meta']);
-            if ($meta !== []) {
-                if (! $this->isSqlite) {
-                    foreach ($meta as $key => $value) {
-                        $jsonCondition = json_encode([$key => $value]);
-                        $query->whereRaw('dc.metadata @> ?::jsonb', [$jsonCondition]);
-                    }
-                } else {
-                    foreach ($meta as $key => $value) {
-                        $query->whereRaw("json_extract(dc.metadata, '$.\"{$key}\"') = ?", [$value]);
-                    }
-                }
-            }
-        }
-
-        return $query;
-    }
-
-    /**
-     * Apply metadata filters to a full-text search query builder.
-     *
-     * Supports filters: document_ids, date_from, date_to, user_ids, project,
-     * report_date_from, report_date_to. Note: model_name filter is not
-     * supported in FTS queries (handled by vector query only).
-     *
-     * @param  mixed  $query  Query builder instance. Example: DB::table('document_chunks as dc')
-     * @param  array  $filters  Filter conditions. Example: ["project" => "Orion"]
-     * @return mixed Query builder with WHERE clauses applied
-     */
-    private function applyFiltersFts($query, array $filters): mixed
-    {
-        if (isset($filters['document_ids'])) {
-            $query->whereIn('d.id', (array) $filters['document_ids']);
-        }
-        if (isset($filters['date_from'])) {
-            $query->where('d.created_at', '>=', $filters['date_from']);
-        }
-        if (isset($filters['date_to'])) {
-            $query->where('d.created_at', '<=', $filters['date_to']);
-        }
-        if (isset($filters['user_ids'])) {
-            $query->whereIn('d.user_id', (array) $filters['user_ids']);
-        }
-        if (isset($filters['project'])) {
-            $query->where('d.project', $filters['project']);
-        }
-        if (isset($filters['report_date_from'])) {
-            $query->where('d.report_date', '>=', $filters['report_date_from']);
-        }
-        if (isset($filters['report_date_to'])) {
-            $query->where('d.report_date', '<=', $filters['report_date_to']);
         }
         if (isset($filters['meta']) && is_array($filters['meta'])) {
             $meta = $this->whitelistMetaKeys($filters['meta']);
@@ -726,35 +567,63 @@ class PgvectorDriver implements VectorStoreInterface
     }
 
     /**
-     * Compute the cosine similarity between two vectors.
+     * Nearest-neighbour query against the shard table matching the vector's dimensions.
      *
-     * Calculates dot product divided by the product of Euclidean norms.
-     * Returns 0.0 if either vector has zero magnitude.
-     *
-     * @param  array  $a  First float vector. Example: [0.1, 0.2, 0.3]
-     * @param  array  $b  Second float vector. Example: [0.4, 0.5, 0.6]
-     * @return float Cosine similarity between -1 and 1. Example: 0.975
+     * @param  array<float>  $queryVector  Query embedding. Example: [0.012, -0.034, ...]
+     * @param  int  $limit  Rows to fetch. Example: 15
      */
-    private function cosineSimilarity(array $a, array $b): float
+    private function vectorQuery(array $queryVector, int $limit): Builder
     {
-        $dot = 0.0;
-        $normA = 0.0;
-        $normB = 0.0;
-        $len = min(count($a), count($b));
+        $vectorLiteral = '['.implode(',', $queryVector).']';
 
-        for ($i = 0; $i < $len; $i++) {
-            $dot += $a[$i] * $b[$i];
-            $normA += $a[$i] * $a[$i];
-            $normB += $b[$i] * $b[$i];
-        }
+        return $this->chunkColumns($this->db->table($this->resolveDimTable(count($queryVector)), 've')->select('ve.id', 've.chunk_id'))
+            ->selectRaw('1 - (ve.embedding <=> ?::vector) as similarity_score', [$vectorLiteral])
+            ->join('document_chunks as dc', 'dc.id', '=', 've.chunk_id')
+            ->join('documents as d', 'd.id', '=', 'dc.document_id')
+            ->whereNull('d.deleted_at')
+            ->orderByRaw('ve.embedding <=> ?::vector', [$vectorLiteral])
+            ->limit($limit);
+    }
 
-        $normA = sqrt($normA);
-        $normB = sqrt($normB);
+    /**
+     * Full-text query ranked by ts_rank.
+     *
+     * @param  string  $function  "to_tsquery" (boolean syntax) or "plainto_tsquery". Example: "to_tsquery"
+     * @param  string  $terms  Query terms. Example: "revenue & q3"
+     * @param  int  $limit  Rows to fetch. Example: 15
+     * @param  array  $filters  Search filters
+     */
+    private function ftsQuery(string $function, string $terms, int $limit, array $filters): Builder
+    {
+        $tsQuery = "{$function}('english', ?)";
 
-        if ($normA === 0.0 || $normB === 0.0) {
-            return 0.0;
-        }
+        $query = $this->chunkColumns($this->db->table('document_chunks as dc')->select('dc.id', 'dc.id as chunk_id'))
+            ->selectRaw('0.0 as similarity_score')
+            ->selectRaw("ts_rank(dc.tsv_content, {$tsQuery}) as fts_score", [$terms])
+            ->join('documents as d', 'd.id', '=', 'dc.document_id')
+            ->whereNull('d.deleted_at')
+            ->whereRaw("dc.tsv_content @@ {$tsQuery}", [$terms])
+            ->orderByRaw("ts_rank(dc.tsv_content, {$tsQuery}) desc", [$terms])
+            ->limit($limit);
 
-        return $dot / ($normA * $normB);
+        return $this->applyFilters($query, $filters);
+    }
+
+    /**
+     * Add the chunk/document columns every search result carries.
+     */
+    private function chunkColumns(Builder $query): Builder
+    {
+        return $query->addSelect(self::RESULT_COLUMNS);
+    }
+
+    /**
+     * @param  array<object>  $rows  Rows with similarity_score
+     * @param  float  $threshold  Minimum similarity. Example: 0.65
+     * @return array<object> Rows at or above the threshold, reindexed
+     */
+    private function aboveThreshold(array $rows, float $threshold): array
+    {
+        return array_values(array_filter($rows, fn (object $row): bool => $row->similarity_score >= $threshold));
     }
 }

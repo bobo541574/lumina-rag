@@ -60,6 +60,7 @@ function makeEdgePipeline(
     $filterExtractor->shouldReceive('resolveTimeReferences')->andReturnArg(0);
     $ftsQueryBuilder = mock(FtsQueryBuilder::class);
     $ftsQueryBuilder->shouldReceive('refine')->andReturnArg(0);
+    $ftsQueryBuilder->shouldReceive('constrainBoolean')->andReturnArg(0);
     $queryRewriter = mock(QueryRewriterService::class);
     $queryRewriter->shouldReceive('rewrite')->andReturnUsing(fn (string $q): RewrittenQuery => new RewrittenQuery(embeddingText: $q, ftsQuery: null));
     $chunkProcessor = mock(ChunkProcessor::class);

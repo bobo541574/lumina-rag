@@ -4,19 +4,15 @@ declare(strict_types=1);
 
 namespace Modules\DocumentModule\Services;
 
-use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
 use Modules\ChatModule\Events\KnowledgeChanged;
 use Modules\DocumentModule\Contracts\DocumentServiceInterface;
-use Modules\DocumentModule\Contracts\TextChunkingServiceInterface;
-use Modules\DocumentModule\Contracts\TextExtractionServiceInterface;
 use Modules\DocumentModule\Enums\DocumentStatus;
 use Modules\DocumentModule\Exceptions\InvalidDocumentStateException;
 use Modules\DocumentModule\Jobs\ProcessDocumentJob;
 use Modules\DocumentModule\Models\Document;
-use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
 use Modules\SettingsModule\Models\AiModel;
 use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
 
@@ -26,70 +22,26 @@ use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
  * Orchestrates the full document lifecycle: upload validation, persistent storage,
  * deduplication via SHA-256, and dispatching async processing jobs. Also handles
  * CRUD operations (list, update, delete, retry) for document records.
- * All external dependencies (extractor, chunker, embedder, vector store) are
- * injected via the constructor; no service locator or facades are used.
+ * Text extraction, chunking and embedding happen asynchronously in
+ * ProcessDocumentJob / ProcessDocumentService.
  *
- * @param  TextExtractionServiceInterface  $extractor  Extracts raw text from uploaded files. Example: mock(TextExtractionServiceInterface::class)
- * @param  TextChunkingServiceInterface  $chunker  Splits extracted text into manageable chunks. Example: mock(TextChunkingServiceInterface::class)
- * @param  EmbeddingServiceInterface  $embedder  Generates vector embeddings for chunk content. Example: mock(EmbeddingServiceInterface::class)
- * @param  VectorStoreInterface  $vectorStore  Persists/removes vector embeddings in the configured store. Example: mock(VectorStoreInterface::class)
- * @param  Dispatcher  $events  Laravel event dispatcher for firing domain events. Example: $app->make(Dispatcher::class)
- * @param  int  $chunkSize  Target character length for each text chunk. Example: 1000
- * @param  int  $overlap  Character overlap between consecutive chunks. Example: 200
- * @param  int  $batchSize  Number of chunks processed per embedding batch. Example: 100
- *
- * @throws \InvalidArgumentException If chunkSize or overlap is negative
- * @throws \RuntimeException If required dependencies cannot be resolved
+ * @param  VectorStoreInterface  $vectorStore  Removes a document's vectors on delete. Example: mock(VectorStoreInterface::class)
  */
 class DocumentService implements DocumentServiceInterface
 {
-    private TextExtractionServiceInterface $extractor;
+    /** @var array<string> MIME types accepted for upload */
+    private const ALLOWED_MIME_TYPES = [
+        'application/pdf',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'text/plain',
+        'text/csv',
+        'text/markdown',
+    ];
 
-    private TextChunkingServiceInterface $chunker;
+    /** @var int Maximum upload size in bytes (50 MB) */
+    private const MAX_FILE_SIZE = 50 * 1024 * 1024;
 
-    private EmbeddingServiceInterface $embedder;
-
-    private VectorStoreInterface $vectorStore;
-
-    private Dispatcher $events;
-
-    private array $allowedMimeTypes;
-
-    private int $maxFileSize;
-
-    private int $chunkSize;
-
-    private int $overlap;
-
-    private int $batchSize;
-
-    public function __construct(
-        TextExtractionServiceInterface $extractor,
-        TextChunkingServiceInterface $chunker,
-        EmbeddingServiceInterface $embedder,
-        VectorStoreInterface $vectorStore,
-        Dispatcher $events,
-        int $chunkSize = 1000,
-        int $overlap = 200,
-        int $batchSize = 100,
-    ) {
-        $this->extractor = $extractor;
-        $this->chunker = $chunker;
-        $this->embedder = $embedder;
-        $this->vectorStore = $vectorStore;
-        $this->events = $events;
-        $this->allowedMimeTypes = [
-            'application/pdf',
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            'text/plain',
-            'text/csv',
-            'text/markdown',
-        ];
-        $this->maxFileSize = 50 * 1024 * 1024;
-        $this->chunkSize = $chunkSize;
-        $this->overlap = $overlap;
-        $this->batchSize = $batchSize;
-    }
+    public function __construct(private VectorStoreInterface $vectorStore) {}
 
     /**
      * Upload a document file
@@ -326,13 +278,13 @@ class DocumentService implements DocumentServiceInterface
             throw new \InvalidArgumentException('Uploaded file is empty');
         }
 
-        if ($file->getSize() > $this->maxFileSize) {
-            $maxMb = $this->maxFileSize / 1024 / 1024;
+        if ($file->getSize() > self::MAX_FILE_SIZE) {
+            $maxMb = self::MAX_FILE_SIZE / 1024 / 1024;
             throw new \InvalidArgumentException("File size exceeds the {$maxMb}MB limit");
         }
 
         $mime = $file->getMimeType();
-        if (! in_array($mime, $this->allowedMimeTypes, true)) {
+        if (! in_array($mime, self::ALLOWED_MIME_TYPES, true)) {
             throw new \InvalidArgumentException(
                 "File type {$mime} is not supported. Allowed: PDF, DOCX, TXT, CSV, Markdown"
             );

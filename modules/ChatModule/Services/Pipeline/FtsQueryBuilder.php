@@ -15,7 +15,7 @@ class FtsQueryBuilder
             'from', 'this', 'that', 'what', 'when', 'where', 'which', 'who',
             'will', 'would', 'could', 'should', 'can', 'need', 'want',
             'there', 'their', 'with', 'about', 'into', 'over', 'than',
-            'then', 'also', 'just', 'very', 'been', 'were', 'been', 'being',
+            'then', 'also', 'just', 'very', 'been', 'were', 'being',
             'more', 'some', 'any', 'each', 'every', 'both', 'most',
             'first', 'last', 'next', 'other', 'after', 'before', 'between',
             'your', 'yours', 'ours', 'theirs', 'mine', 'his', 'hers', 'its',
@@ -150,5 +150,35 @@ class FtsQueryBuilder
         }
 
         return $result;
+    }
+
+    /**
+     * Keep only boolean-query terms that survived refine().
+     *
+     * The rewriter's boolean query (`a & (b | c) & !d`) keeps operators,
+     * synonyms and negation but not refine()'s cleaning, so stopwords, user
+     * and project names (already enforced by filters) and dates would become
+     * required matches. A term is kept when any of its words appears in the
+     * refined plain query.
+     *
+     * @param  string|null  $booleanQuery  QueryRewriterService boolean query. Example: "show & Orion & (revenue | income)"
+     * @param  string  $refined  Output of refine() for the same question. Example: "revenue"
+     * @return string|null Constrained boolean query, or null when no term survives. Example: "(revenue | income)"
+     */
+    public function constrainBoolean(?string $booleanQuery, string $refined): ?string
+    {
+        if ($booleanQuery === null || trim($refined) === '') {
+            return null;
+        }
+
+        $words = fn (string $text): array => preg_split('/[^a-z0-9]+/', strtolower($text), -1, PREG_SPLIT_NO_EMPTY);
+        $allowed = array_flip($words($refined));
+
+        $terms = array_filter(
+            explode(' & ', $booleanQuery),
+            fn (string $term): bool => array_intersect_key(array_flip($words($term)), $allowed) !== [],
+        );
+
+        return $terms === [] ? null : implode(' & ', $terms);
     }
 }
