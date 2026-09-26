@@ -200,6 +200,9 @@ return [
         'candidate_k' => (int) env('RAG_RERANKER_CANDIDATE_K', 8),
         // How many candidates survive reranking for the final context.
         'final_k' => (int) env('RAG_RERANKER_FINAL_K', 5),
+        // Ollama-compatible server hosting the cross-encoder (defaults to the embedding server).
+        'base_url' => env('RAG_RERANKER_BASE_URL', env('RAG_EMBEDDING_BASE_URL', 'http://localhost:11434')),
+        'timeout' => (int) env('RAG_RERANKER_TIMEOUT', 30),
     ],
 
     /*

@@ -3,13 +3,13 @@
 declare(strict_types=1);
 
 use App\Models\User;
-use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Support\Facades\Hash;
 use Modules\ChatModule\Models\ChatMessage;
 use Modules\ChatModule\Models\ChatSession;
 use Modules\ChatModule\Services\Pipeline\ChunkProcessor;
 use Modules\ChatModule\Services\Pipeline\FilterExtractor;
 use Modules\ChatModule\Services\Pipeline\FtsQueryBuilder;
+use Modules\ChatModule\Services\Pipeline\PipelineSettings;
 use Modules\ChatModule\Services\Pipeline\QueryRewriterService;
 use Modules\ChatModule\Services\Pipeline\ResponseBuilder;
 use Modules\ChatModule\Services\Pipeline\RewrittenQuery;
@@ -51,7 +51,6 @@ function makeEdgePipeline(
     array $config = [],
 ): RAGPipelineService {
     $providerFactory = mock(ProviderFactory::class);
-    $cache = mock(CacheRepository::class);
     $termAliasService = mock(TermAliasServiceInterface::class);
     $termAliasService->shouldReceive('expandText')->andReturnArg(0);
     $termAliasService->shouldReceive('expandFtsQuery')->andReturnArg(0);
@@ -99,6 +98,9 @@ function makeEdgePipeline(
         return $msg;
     });
 
+    $reranker = mock(RerankerService::class);
+    $reranker->shouldReceive('rerank')->andReturnArg(1);
+
     $defaults = [
         'topK' => 5,
         'similarityThreshold' => 0.65,
@@ -116,7 +118,6 @@ function makeEdgePipeline(
         $vectorStore,
         $llm,
         $providerFactory,
-        $cache,
         $termAliasService,
         $filterExtractor,
         $ftsQueryBuilder,
@@ -126,8 +127,8 @@ function makeEdgePipeline(
         $sessionManager,
         mock(SemanticCacheService::class),
         new QuestionClassifier,
-        mock(RerankerService::class),
-        ...array_merge($defaults, $config),
+        $reranker,
+        new PipelineSettings(...array_merge($defaults, $config)),
     );
 }
 

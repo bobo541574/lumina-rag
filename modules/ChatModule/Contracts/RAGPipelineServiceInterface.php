@@ -5,15 +5,15 @@ declare(strict_types=1);
 namespace Modules\ChatModule\Contracts;
 
 use Generator;
-use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Modules\ChatModule\Exceptions\ChatSessionException;
 
 /**
  * RAG Pipeline Service Interface
  *
  * Defines the contract for orchestrating the full RAG (Retrieval-Augmented Generation)
  * flow: embedding, vector/hybrid search, filtering, and LLM-based answer generation.
- * Implementations handle both synchronous and streaming question answering, as well
- * as chat session lifecycle management (list, get, delete).
+ * Implementations handle both synchronous and streaming question answering; chat
+ * session CRUD lives in SessionManager.
  */
 interface RAGPipelineServiceInterface
 {
@@ -31,8 +31,8 @@ interface RAGPipelineServiceInterface
      *
      * @throws \InvalidArgumentException When question is empty or exceeds max length
      *                                   Example: $service->ask('') → InvalidArgumentException("Question cannot be empty")
-     * @throws \RuntimeException When session not found, expired, or message limit reached
-     *                           Example: $service->ask('question', ['session_id' => 'invalid']) → RuntimeException
+     * @throws ChatSessionException When session not found, expired, or message limit reached
+     *                              Example: $service->ask('question', ['session_id' => 'invalid']) → ChatSessionException
      */
     public function ask(string $question, array $options = []): array;
 
@@ -49,51 +49,8 @@ interface RAGPipelineServiceInterface
      *
      * @throws \InvalidArgumentException When question is empty or exceeds max length
      *                                   Example: $service->askStream('') → InvalidArgumentException
-     * @throws \RuntimeException When session not found, expired, or message limit reached
-     *                           Example: $service->askStream('question', ['session_id' => 'invalid']) → RuntimeException
+     * @throws ChatSessionException When session not found, expired, or message limit reached
+     *                              Example: $service->askStream('question', ['session_id' => 'invalid']) → ChatSessionException
      */
     public function askStream(string $question, array $options = []): Generator;
-
-    /**
-     * List chat sessions with pagination
-     *
-     * Returns a paginated list of chat sessions ordered by last activity descending.
-     * Optionally scoped to a specific user. Each page contains 20 sessions.
-     *
-     * @param  string  $userId  Owner ULID; only their sessions are listed. Example: "01J..."
-     * @param  int  $page  Page number (1-based). Example: 1
-     * @return array{data: array, current_page: int, last_page: int, per_page: int, total: int, from: int|null, to: int|null}
-     *                                                                                                                        Paginated session list. Example: ["data" => [...], "current_page" => 1, "last_page" => 3, "total" => 50]
-     */
-    public function listSessions(string $userId, int $page = 1): array;
-
-    /**
-     * Get a single session with all messages
-     *
-     * Retrieves a chat session by ULID, including all associated messages.
-     * Optionally scoped to a specific user for authorization.
-     *
-     * @param  string  $id  The session ULID. Example: "01J..."
-     * @param  string  $userId  Owner ULID; other users' sessions are not found. Example: "01J..."
-     * @return array The session array with loaded messages relation
-     *               Example: ["id" => "01J...", "title" => "New Chat", "messages" => [...]]
-     *
-     * @throws ModelNotFoundException When session is not found
-     *                                Example: $service->getSession('nonexistent') → ModelNotFoundException
-     */
-    public function getSession(string $id, string $userId): array;
-
-    /**
-     * Delete a session and its messages
-     *
-     * Soft-deletes both the session and all associated messages.
-     * Optionally scoped to a specific user for authorization.
-     *
-     * @param  string  $id  The session ULID. Example: "01J..."
-     * @param  string  $userId  Owner ULID; other users' sessions are not found. Example: "01J..."
-     *
-     * @throws ModelNotFoundException When session is not found
-     *                                Example: $service->deleteSession('nonexistent') → ModelNotFoundException
-     */
-    public function deleteSession(string $id, string $userId): void;
 }

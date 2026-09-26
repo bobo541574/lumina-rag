@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Modules\ChatModule\Models\ChatMessage;
 use Modules\ChatModule\Models\ChatSession;
 use Modules\ChatModule\Services\Pipeline\ChunkProcessor;
 use Modules\ChatModule\Services\Pipeline\FilterExtractor;
 use Modules\ChatModule\Services\Pipeline\FtsQueryBuilder;
+use Modules\ChatModule\Services\Pipeline\PipelineSettings;
 use Modules\ChatModule\Services\Pipeline\QueryRewriterService;
 use Modules\ChatModule\Services\Pipeline\ResponseBuilder;
 use Modules\ChatModule\Services\Pipeline\RewrittenQuery;
@@ -49,7 +49,6 @@ function makePipeline(
     array $config = [],
 ): RAGPipelineService {
     $providerFactory = mock(ProviderFactory::class);
-    $cache = mock(CacheRepository::class);
     $termAliasService = mock(TermAliasServiceInterface::class);
     $termAliasService->shouldReceive('expandText')->andReturnArg(0);
     $termAliasService->shouldReceive('expandFtsQuery')->andReturnArg(0);
@@ -97,7 +96,10 @@ function makePipeline(
         return $msg;
     });
 
-    return new RAGPipelineService($embedder, $vectorStore, $llm, $providerFactory, $cache, $termAliasService, $filterExtractor, $ftsQueryBuilder, $queryRewriter, $chunkProcessor, $responseBuilder, $sessionManager, mock(SemanticCacheService::class), new QuestionClassifier, mock(RerankerService::class), ...$config);
+    $reranker = mock(RerankerService::class);
+    $reranker->shouldReceive('rerank')->andReturnArg(1);
+
+    return new RAGPipelineService($embedder, $vectorStore, $llm, $providerFactory, $termAliasService, $filterExtractor, $ftsQueryBuilder, $queryRewriter, $chunkProcessor, $responseBuilder, $sessionManager, mock(SemanticCacheService::class), new QuestionClassifier, $reranker, new PipelineSettings(...$config));
 }
 
 /**
@@ -305,4 +307,91 @@ test('test_ask_uses_requested_llm_model_and_its_settings', function (): void {
     $result = $service->ask('test question', ['llm_model_id' => $override->id]);
 
     expect($result['message']['content'])->toBe('Override answer.');
+});
+
+function pipelineTestChunks(): array
+{
+    return [(object) [
+        'chunk_id' => 'chunk_1',
+        'document_id' => 'doc_1',
+        'document_title' => 'Test Doc',
+        'content' => 'Test content',
+        'chunk_index' => 0,
+        'page_number' => 1,
+        'similarity_score' => 0.89,
+    ]];
+}
+
+test('test_ask_stream_emits_events_in_order_and_streams_the_answer', function (): void {
+    $embedder = mock(EmbeddingServiceInterface::class);
+    $embedder->shouldReceive('embed')->andReturn([0.1, 0.2]);
+    $vectorStore = mock(VectorStoreInterface::class);
+    $vectorStore->shouldReceive('searchHybrid')->andReturn(pipelineTestChunks());
+
+    $llm = mock(LLMServiceInterface::class);
+    $llm->shouldReceive('completeStream')->once()->andReturnUsing(function (): Generator {
+        yield 'Hello';
+        yield ' world';
+    });
+    $llm->shouldReceive('countTokens')->andReturn(2);
+
+    $events = array_map(
+        fn (string $e): array => json_decode($e, true),
+        iterator_to_array(makePipeline($embedder, $vectorStore, $llm)->askStream('test question'), false),
+    );
+
+    expect(array_column($events, 'type'))->toBe(['rewrite_info', 'status', 'status', 'sources', 'status', 'chunk', 'chunk', 'done']);
+    expect($events[3]['sources'][0]['document_id'])->toBe('doc_1');
+    expect($events[5]['content'].$events[6]['content'])->toBe('Hello world');
+    expect($events[7]['tokens_used'])->toBe(2);
+});
+
+test('test_query_expansion_searches_every_reformulation', function (): void {
+    $embedder = mock(EmbeddingServiceInterface::class);
+    $embedder->shouldReceive('embed')->andReturn([0.1, 0.2]);
+    $vectorStore = mock(VectorStoreInterface::class);
+    $vectorStore->shouldReceive('searchHybrid')->times(3)->andReturn(pipelineTestChunks());
+
+    $expansion = mock(LLMResponseInterface::class);
+    $expansion->shouldReceive('getContent')->andReturn("first rewrite\nsecond rewrite");
+    $answer = mock(LLMResponseInterface::class);
+    $answer->shouldReceive('getContent')->andReturn('Answer.');
+    $answer->shouldReceive('getFinishReason')->andReturn('stop');
+    $answer->shouldReceive('getTotalTokens')->andReturn(5);
+    $answer->shouldReceive('getPromptTokens')->andReturn(3);
+    $answer->shouldReceive('getCompletionTokens')->andReturn(2);
+
+    $llm = mock(LLMServiceInterface::class);
+    $llm->shouldReceive('complete')
+        ->withArgs(fn (string $system, string $user, array $context, array $options): bool => $system === '' && $context === [] && $options['max_tokens'] === 500)
+        ->once()
+        ->andReturn($expansion);
+    $llm->shouldReceive('complete')
+        ->withArgs(fn (string $system): bool => $system !== '')
+        ->once()
+        ->andReturn($answer);
+
+    $result = makePipeline($embedder, $vectorStore, $llm, ['queryExpansionEnabled' => true, 'numExpansionQueries' => 2])
+        ->ask('test question');
+
+    expect($result['message']['content'])->toBe('Answer.');
+});
+
+test('test_ask_returns_semantic_cache_hit_without_searching', function (): void {
+    $embedder = mock(EmbeddingServiceInterface::class);
+    $embedder->shouldReceive('embed')->andReturn([0.1, 0.2]);
+    $vectorStore = mock(VectorStoreInterface::class);
+    $vectorStore->shouldNotReceive('searchHybrid');
+    $llm = mock(LLMServiceInterface::class);
+    $llm->shouldNotReceive('complete');
+
+    $service = makePipeline($embedder, $vectorStore, $llm);
+    $cache = (new ReflectionProperty(RAGPipelineService::class, 'answerCache'))->getValue($service);
+    $semantic = (new ReflectionProperty($cache, 'semanticCache'))->getValue($cache);
+    $semantic->shouldReceive('get')->andReturn(['question' => 'q', 'answer' => 'Cached answer.', 'sources' => [], 'is_refusal' => false]);
+
+    $result = $service->ask('test question');
+
+    expect($result['message']['content'])->toBe('Cached answer.');
+    expect($result['message']['cached'])->toBeTrue();
 });

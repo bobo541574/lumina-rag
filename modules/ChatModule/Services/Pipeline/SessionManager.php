@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\ChatModule\Services\Pipeline;
 
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Modules\ChatModule\Exceptions\ChatSessionException;
 use Modules\ChatModule\Models\ChatMessage;
 use Modules\ChatModule\Models\ChatSession;
@@ -84,5 +85,49 @@ class SessionManager
             'content' => $content,
             'sources' => $sources,
         ]);
+    }
+
+    /**
+     * List the user's sessions, most recently active first.
+     *
+     * @param  string  $userId  Owner ULID. Example: "01J..."
+     * @param  int  $page  Page number (1-based). Example: 1
+     * @return array Laravel paginator array (data, current_page, last_page, per_page, total, from, to)
+     */
+    public function listSessions(string $userId, int $page = 1): array
+    {
+        return ChatSession::ownedBy($userId)
+            ->orderByDesc('last_activity_at')
+            ->paginate((int) config('rag.pagination.per_page', 20), ['*'], 'page', $page)
+            ->toArray();
+    }
+
+    /**
+     * Load one of the user's sessions with its messages.
+     *
+     * @param  string  $id  Session ULID. Example: "01J..."
+     * @param  string  $userId  Owner ULID; other users' sessions are not found. Example: "01J..."
+     * @return array Session with messages
+     *
+     * @throws ModelNotFoundException When the user owns no such session
+     */
+    public function getSession(string $id, string $userId): array
+    {
+        return ChatSession::ownedBy($userId)->with('messages')->findOrFail($id)->toArray();
+    }
+
+    /**
+     * Delete one of the user's sessions and its messages.
+     *
+     * @param  string  $id  Session ULID. Example: "01J..."
+     * @param  string  $userId  Owner ULID; other users' sessions are not found. Example: "01J..."
+     *
+     * @throws ModelNotFoundException When the user owns no such session
+     */
+    public function deleteSession(string $id, string $userId): void
+    {
+        $session = ChatSession::ownedBy($userId)->findOrFail($id);
+        $session->messages()->delete();
+        $session->delete();
     }
 }

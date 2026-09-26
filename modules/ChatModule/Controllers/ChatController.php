@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Log;
 use Modules\ChatModule\Contracts\RAGPipelineServiceInterface;
 use Modules\ChatModule\Exceptions\ChatSessionException;
 use Modules\ChatModule\Requests\ChatRequest;
+use Modules\ChatModule\Services\Pipeline\SessionManager;
 use Modules\DocumentModule\Models\Document;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
@@ -28,24 +29,23 @@ class ChatController extends Controller
 {
     private const GENERATION_FAILED = 'Unable to generate an answer right now. Please try again.';
 
-    private RAGPipelineServiceInterface $pipeline;
-
     /**
      * Create a new ChatController instance
      *
      * @param  RAGPipelineServiceInterface  $pipeline  The RAG pipeline service. Example: $app->make(RAGPipelineServiceInterface::class)
+     * @param  SessionManager  $sessions  Chat session store. Example: $app->make(SessionManager::class)
      */
-    public function __construct(RAGPipelineServiceInterface $pipeline)
-    {
-        $this->pipeline = $pipeline;
-    }
+    public function __construct(
+        private RAGPipelineServiceInterface $pipeline,
+        private SessionManager $sessions,
+    ) {}
 
     /**
      * Ask a question (sync or streaming)
      *
      * Accepts a validated chat request and routes to either streaming SSE
      * response or synchronous JSON response based on the stream flag.
-     * Catches InvalidArgumentException (400) and RuntimeException (422).
+     * Maps InvalidArgumentException → 400, ChatSessionException → 422, others → 502.
      *
      * @param  ChatRequest  $request  The validated chat request containing question, session_id, stream flag, etc.
      *                                Example: new ChatRequest(['question' => 'What is Q3 revenue?', 'stream' => false])
@@ -94,7 +94,7 @@ class ChatController extends Controller
         $page = $request->integer('page') ?: 1;
 
         return ApiResponse::paginated(
-            $this->pipeline->listSessions($request->input('authenticated_user')->id, $page),
+            $this->sessions->listSessions($request->input('authenticated_user')->id, $page),
         );
     }
 
@@ -113,7 +113,7 @@ class ChatController extends Controller
     public function showSession(Request $request, string $id): JsonResponse
     {
         return ApiResponse::success(
-            $this->pipeline->getSession($id, $request->input('authenticated_user')->id),
+            $this->sessions->getSession($id, $request->input('authenticated_user')->id),
         );
     }
 
@@ -131,7 +131,7 @@ class ChatController extends Controller
      */
     public function destroySession(Request $request, string $id): JsonResponse
     {
-        $this->pipeline->deleteSession($id, $request->input('authenticated_user')->id);
+        $this->sessions->deleteSession($id, $request->input('authenticated_user')->id);
 
         return ApiResponse::success(message: 'Session deleted successfully.');
     }
