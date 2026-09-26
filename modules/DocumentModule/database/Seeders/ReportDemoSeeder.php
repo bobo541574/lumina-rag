@@ -36,6 +36,16 @@ class ReportDemoSeeder extends Seeder
             return;
         }
 
+        // All or nothing: an interrupted run must not leave a partial demo set,
+        // which the guard above would then keep forever.
+        DB::transaction(fn () => $this->generateReports());
+    }
+
+    /**
+     * Generate the demo reports, their chunks and FTS vectors.
+     */
+    private function generateReports(): void
+    {
         $startTime = microtime(true);
         $this->command?->info('Generating report data...');
 
