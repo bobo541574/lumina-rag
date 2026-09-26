@@ -10,6 +10,7 @@ use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Str;
 use Modules\VectorStoreModule\Contracts\VectorStoreInterface;
 use Modules\VectorStoreModule\Models\VectorEmbedding;
+use Modules\VectorStoreModule\Support\VectorShardSchema;
 
 /**
  * pgvector Vector Store Driver
@@ -53,7 +54,7 @@ class PgvectorDriver implements VectorStoreInterface
     private DatabaseManager $db;
 
     /** @var array<int> Supported vector dimension shard table sizes */
-    private const DIM_TABLES = [384, 768, 1024, 1536, 3072];
+    private const DIM_TABLES = VectorShardSchema::DIMENSIONS;
 
     /** @var float Similarity cut-off when the caller passes none */
     private const DEFAULT_THRESHOLD = 0.65;

@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use Modules\DocumentModule\Enums\DocumentStatus;
+use Modules\DocumentModule\Models\Document;
 use Modules\DocumentModule\Services\ChunkWriter;
 use Modules\DocumentModule\Services\TextChunkingService;
 use Modules\SettingsModule\Models\AiModel;
@@ -27,6 +28,13 @@ class ReportDemoSeeder extends Seeder
     public function run(): void
     {
         $this->createDemoUsers();
+
+        // Idempotent: demo reports live under demo/ and are generated once.
+        if (Document::where('file_path', 'like', 'demo/%')->exists()) {
+            $this->command?->info('Demo reports already seeded — skipping.');
+
+            return;
+        }
 
         $startTime = microtime(true);
         $this->command?->info('Generating report data...');

@@ -7,6 +7,7 @@ namespace Modules\SettingsModule\Database\Seeders;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Modules\SettingsModule\Models\AiModel;
 use Modules\SettingsModule\Models\TermAlias;
 
@@ -28,9 +29,11 @@ class SettingsModuleSeeder extends Seeder
     /**
      * Run the database seeders
      *
-     * Seeds embedding models (3 defaults), LLM models (4 defaults), and
-     * term aliases (18 mappings covering project names, technical terms,
-     * and abbreviations). Each seed uses updateOrCreate to ensure idempotency.
+     * Seeds the embedding and LLM model catalog and term aliases (18 mappings
+     * covering project names, technical terms, and abbreviations). A model is
+     * active only if usable here: Ollama models must be installed (another
+     * tag of the same model is substituted), hosted models need an API key.
+     * Each seed uses updateOrCreate to ensure idempotency.
      */
     public function run(): void
     {
@@ -213,16 +216,12 @@ class SettingsModuleSeeder extends Seeder
             ],
         ];
 
-        foreach ($embeddingModels as $model) {
-            AiModel::updateOrCreate(
-                ['type' => 'embedding', 'model' => $model['model']],
-                $model,
-            );
-        }
+        $installed = $this->installedOllamaModels();
 
-        foreach ($llmModels as $model) {
+        foreach ([...$embeddingModels, ...$llmModels] as $model) {
+            $model = $this->withAvailability($model, $installed);
             AiModel::updateOrCreate(
-                ['type' => 'llm', 'model' => $model['model']],
+                ['type' => $model['type'], 'model' => $model['model']],
                 $model,
             );
         }
@@ -295,5 +294,58 @@ class SettingsModuleSeeder extends Seeder
                 $alias,
             );
         }
+    }
+
+    /**
+     * Models pulled into the local Ollama server.
+     *
+     * @return array<string>|null Model tags, or null when Ollama is unreachable. Example: ["nomic-embed-text:v1.5", "gemma4:latest"]
+     */
+    private function installedOllamaModels(): ?array
+    {
+        $baseUrl = rtrim((string) config('rag.embedding.base_url', 'http://localhost:11434'), '/');
+
+        try {
+            $response = Http::timeout(3)->get("{$baseUrl}/api/tags");
+            if ($response->successful()) {
+                return array_column($response->json('models', []), 'name');
+            }
+        } catch (\Throwable) {
+            // fall through
+        }
+
+        $this->command?->warn("Ollama not reachable at {$baseUrl}: Ollama models keep their default is_active.");
+
+        return null;
+    }
+
+    /**
+     * Activate a catalog model only if it can actually be used here.
+     *
+     * Ollama models must be installed; a different tag of the same model
+     * (e.g. nomic-embed-text:v1.5 for nomic-embed-text:latest) is used in its
+     * place. Hosted models need an API key.
+     *
+     * @param  array  $model  Catalog entry. Example: ["provider" => "ollama", "model" => "gemma4:e4b", ...]
+     * @param  array<string>|null  $installed  Output of installedOllamaModels()
+     * @return array The entry with `model` and `is_active` adjusted
+     */
+    private function withAvailability(array $model, ?array $installed): array
+    {
+        if ($model['provider'] !== 'ollama') {
+            $model['is_active'] = ($model['is_active'] ?? true) && ! empty($model['api_key']);
+        } elseif ($installed !== null) {
+            $family = strtok($model['model'], ':');
+            $match = in_array($model['model'], $installed, true)
+                ? $model['model']
+                : collect($installed)->first(fn (string $tag): bool => strtok($tag, ':') === $family);
+
+            $model['is_active'] = $match !== null;
+            $model['model'] = $match ?? $model['model'];
+        }
+
+        $this->command?->line(sprintf('  %-8s %-45s %s', $model['type'], $model['model'], $model['is_active'] ? 'active' : 'inactive'));
+
+        return $model;
     }
 }

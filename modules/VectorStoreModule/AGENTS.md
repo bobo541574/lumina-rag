@@ -185,7 +185,7 @@ ANALYZE vector_embeddings;
 - Transaction wrapping for batch operations
 
 ## Seeder
-`VectorStoreModuleSeeder` — creates vector embeddings for existing document chunks. Skips if pgvector extension is unavailable or if embeddings already exist. Idempotent. Called automatically by `DatabaseSeeder`.
+Seeding does not create vectors: `DatabaseSeeder` queues `rag:reembed --missing` so seeded chunks get real embeddings from the active embedding model.
 
 ### Retrieval Performance
 

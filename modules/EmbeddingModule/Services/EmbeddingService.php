@@ -11,14 +11,13 @@ use Modules\EmbeddingModule\Contracts\EmbeddingServiceInterface;
 /**
  * Caching wrapper around embedding providers.
  *
- * Caches embeddings by MD5 hash of the input text to avoid redundant
- * API calls. Supports single and batch embedding with automatic cache
- * hit detection. Cache keys follow the pattern "embedding:{model}:{hash}"
+ * Caches single-text embeddings (questions, which repeat) by MD5 hash of
+ * the input text. Cache keys follow the pattern "embedding:{model}:{hash}"
  * and live in the configured Laravel cache store (Redis in production).
  *
- * When embedBatch is called, the service checks the cache for each text
- * independently and only dispatches API calls for texts that are not yet
- * cached. Results are reassembled in their original order.
+ * embedBatch() (document ingestion) deliberately bypasses the cache: each
+ * chunk is embedded once per model, so caching would only fill Redis with
+ * vectors that are never read again (~15 KB each, 100k+ per corpus).
  *
  * @param  EmbeddingProviderInterface  $provider  The underlying embedding provider used for cache misses. Example: mock(EmbeddingProviderInterface::class)
  * @param  CacheRepository  $cache  Laravel cache store for embedding results. Example: $app->make(CacheRepository::class)
@@ -74,12 +73,8 @@ class EmbeddingService implements EmbeddingServiceInterface
     }
 
     /**
-     * Embed multiple texts, using cached results and only hitting the API
-     * for texts not yet cached.
-     *
-     * For each text, the service checks the cache individually. Uncachedexts
-     * are sent to the provider in a single batch, then each new vector is
-     * stored in the cache before returning all results in original order.
+     * Embed multiple texts (document chunks) straight through the provider,
+     * without the cache — see the class docblock.
      *
      * @param  array  $texts  Array of text strings to embed. Example: ["first chunk", "second chunk", "third chunk"]
      * @param  string|null  $model  Optional model override passed through to provider. Example: "nomic-embed-text:latest"
@@ -90,37 +85,6 @@ class EmbeddingService implements EmbeddingServiceInterface
      */
     public function embedBatch(array $texts, ?string $model = null): array
     {
-        $modelName = $model ?? $this->provider->getModelName();
-        $hashes = array_map(md5(...), $texts);
-        $results = [];
-        $uncached = [];
-        $uncachedIndices = [];
-
-        foreach ($texts as $i => $text) {
-            $cacheKey = "embedding:{$modelName}:{$hashes[$i]}";
-            $cached = $this->cache->get($cacheKey);
-            if ($cached !== null) {
-                $results[$i] = $cached;
-            } else {
-                $uncached[$i] = $text;
-                $uncachedIndices[] = $i;
-            }
-        }
-
-        if ($uncached !== []) {
-            $newVectors = $this->provider->embedBatch(array_values($uncached), $model);
-            $vecIndex = 0;
-            foreach ($uncachedIndices as $i) {
-                $vector = $newVectors[$vecIndex];
-                $cacheKey = "embedding:{$modelName}:{$hashes[$i]}";
-                $this->cache->put($cacheKey, $vector, $this->cacheTtl);
-                $results[$i] = $vector;
-                $vecIndex++;
-            }
-        }
-
-        ksort($results);
-
-        return array_values($results);
+        return $this->provider->embedBatch($texts, $model);
     }
 }

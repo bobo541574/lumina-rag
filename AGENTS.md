@@ -14,7 +14,7 @@ Compact reference for AI agents. **Trust code over config, config over docs** wh
 | Single suite | `php artisan test --testsuite=Unit` or `--testsuite=Feature` |
 | Frontend tests | `npm run test` (Vitest; `--watch` for watch mode) |
 | Format PHP | `./vendor/bin/pint` (add `--dirty` for changed-only) |
-| Seed models | `php artisan db:seed` |
+| Seed everything (demo data) | `php artisan migrate:fresh --seed` — AI models (only Ollama models actually installed / hosted models with an API key are marked active), users, ~49k demo reports since 2023, then queues `rag:reembed --missing` (newest first); **run Horizon** to embed them (~1h locally). Stop Horizon before `migrate:fresh`/`refresh` or stale jobs will hit dropped tables. |
 
 Tests use SQLite `:memory:`, `QUEUE_CONNECTION=sync`. `tests/Pest.php` applies `RefreshDatabase` to Feature suite only. **No ESLint/typecheck gating exists** — PHPDoc/JSDoc is convention-only, not tool-enforced.
 
@@ -107,7 +107,7 @@ Settings routes are admin-only; the seeded `admin@lumina.test` user carries `is_
 - All PKs are **ULIDs** (`HasUlids` trait, `->whereUlid()` route binding).
 - **No DB-level FK constraints** — enforced in application code.
 - **Migrations live in `modules/{Module}/database/migrations/`**, loaded via `loadMigrationsFrom()` in each module's SP `boot()`. Root `database/migrations/` only holds the 3 stock Laravel tables (users, cache, jobs).
-- pgvector shard tables (`ve_{384,768,1024,1536,3072}`) created conditionally; skipped on SQLite. On SQLite, `vector_embeddings` carries a real `embedding` column as fallback.
+- pgvector shard tables (`ve_{384,768,1024,1536,3072}`) are created by `VectorShardSchema::ensure()` (which also runs `CREATE EXTENSION IF NOT EXISTS vector` and fails loudly if pgvector is missing); skipped on SQLite. `EmbeddingService::embedBatch()` (document ingestion) bypasses the embedding cache; only single-text `embed()` (questions) is cached. On SQLite, `vector_embeddings` carries a real `embedding` column as fallback.
 - `ai_models.api_key` is **encrypted at rest** via `App\Casts\EncryptedString` (ISO 27002:8.24) — `null`/`''` values passed through untouched; undecryptable legacy values returned verbatim. Settings responses expose only a `has_api_key` boolean (model's `api_key` is `$hidden`).
 - `rag:reembed` with no selector queues every document that has chunks (`--status=` narrows, validated against `DocumentStatus`). `--missing` looks for chunks without a `vector_embeddings` row (one exists per vector on every driver) and only covers completed documents unless `--force`. `--only-old-model` compares each document's vectors with that document's `embedding_model` (config default as fallback). `--document={ulid}` targets one, `--dry-run` is the safe preview.
 - `ai_models` columns: `id, name, type, provider, model, api_key, base_url, collection, dimensions, batch_size, cache_ttl, temperature, max_context_tokens, timeout, description, settings` (JSONB), `is_active, sort_order`.

@@ -110,7 +110,7 @@ class ReEmbedCommand extends Command
                 ->whereColumn('vector_embeddings.chunk_id', 'document_chunks.id'),
         ));
 
-        return $this->dispatchFor($query->get(['id', 'title', 'status']), 'No documents with missing vectors found.');
+        return $this->dispatchFor($this->newestFirst($query)->get(['id', 'title', 'status']), 'No documents with missing vectors found.');
     }
 
     private function handleBatch(): int
@@ -142,7 +142,7 @@ class ReEmbedCommand extends Command
                     ->orWhereRaw('vector_embeddings.model_name <> COALESCE(documents.embedding_model, ?)', [$defaultModel])));
         }
 
-        return $this->dispatchFor($query->get(['id', 'title', 'status']), 'No documents found to re-embed.');
+        return $this->dispatchFor($this->newestFirst($query)->get(['id', 'title', 'status']), 'No documents found to re-embed.');
     }
 
     /**
@@ -160,12 +160,12 @@ class ReEmbedCommand extends Command
             return self::SUCCESS;
         }
 
-        $this->info("Found {$documents->count()} document(s) to re-embed:");
-        foreach ($documents as $doc) {
-            $this->line("  [{$doc->status->value}] {$doc->title} ({$doc->id})");
-        }
+        $this->info("Found {$documents->count()} document(s) to re-embed.");
 
         if ($this->option('dry-run')) {
+            foreach ($documents as $doc) {
+                $this->line("  [{$doc->status->value}] {$doc->title} ({$doc->id})");
+            }
             $this->warn('Dry-run mode: no jobs dispatched.');
 
             return self::SUCCESS;
@@ -176,5 +176,13 @@ class ReEmbedCommand extends Command
         $this->info('Re-embed jobs dispatched.');
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Queue the most recent reports first so they become searchable soonest.
+     */
+    private function newestFirst(Builder $query): Builder
+    {
+        return $query->orderByRaw('report_date desc nulls last')->orderByDesc('created_at');
     }
 }
