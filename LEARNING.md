@@ -663,16 +663,31 @@ Passport က:
 - Database tables ၆ ခုလောက်လိုတယ်
 - Complexity များတယ်
 
-**ဒီ project ရဲ့ auth:**
+**ဒီ project ရဲ့ auth (ASP.NET-style claim-based မဟုတ်ဘူး — simple bearer token):**
 ```php
-// User မှာ api_token column တစ်ခုပဲ
-$token = bin2hex(random_bytes(40)); // 80-char hex
-$user = User::where('api_token', $token)->first();
+// Login/Register မှာ raw token ကို 80-char hex အနေနဲ့ထုတ်ပေးတယ် (ApiToken::make)
+$raw = ApiToken::make(); // bin2hex(random_bytes(40)) ≈ 320 bits entropy
+
+// ဒါပေမယ့် DB မှာတော့ SHA-256 digest သာ သိမ်းတယ် (ApiToken::hash)
+$digest = hash('sha256', $raw); // 64-char hex — raw token ကိုဘယ်နေရာမှမထားဘူး
+$user->update(['api_token' => $digest, 'api_token_expires_at' => now()->addDays(30)]);
 ```
 
-- Simple: token က user table ထဲမှာပဲရှိတယ်
-- Secure: random hex (80 chars = 320 bits entropy)
-- Stateless: token ကို DB မှာပဲစစ်
+**ဘာလို့ hash သိမ်းပြီး plaintext မသိမ်းတာလဲ?** (ISO 27002:8.24)
+- ပုံမှန်ဆို token က password လိုပဲ sensitive credential ဖြစ်တယ်
+- DB leak ဖြစ်ရင် plaintext token တွေကို တန်းသုံးလို့ရတယ် — SHA-256 digest ဆို ပြန်မရနိုင်ဘူး
+
+**Expiry + sliding renewal (ISO 27002:8.5):**
+- `app/Support/ApiToken.php` — `expiresAt()` က `RAG_API_TOKEN_TTL_DAYS` (default 30) နဲ့ expiry ရက်တွက်တယ်
+- `AuthenticateWithToken` middleware — request တိုင်းမှာ token ကို SHA-256 ပြောင်းပြီး DB နဲ့ယှဉ်တယ်။ Expire ဖြစ်နေရင် 401 ပြန်တယ်။ သက်တမ်းမကုန်သေးရင် `saveQuietly()` နဲ့ expiry ကို နောက်ကို ပြန်တွန်းပေးတယ် (active user တွေ log out ပြန်ဝင်စရာမလိုဘူး)
+- `RAG_API_TOKEN_TTL_DAYS` ကို null ထားရင် expiry မရှိ (အားနည်းဆုံးရွေးချယ်မှု)
+
+**Enumeration-safe ဖြစ်အောင်:**
+- Login မှားရင် "invalid credentials" generic message ပဲပြန်တယ် (user ရှိမရှိ မဖေါ်ပြဘူး — login-denial enumeration ကို ကာကွယ်)
+- `DELETE /api/auth/me` က account ကို အပြီးဖျက်တယ် — `AccountDeletionService` က documents/chunks/vectors/files/chat/session တွေကိုပါ သိမ်းဖျက်ပေးတယ် (ISO 27701 right-to-erasure)
+- `auth.security` log channel မှာ login/logout/register/delete တွေကို audit လုပ်တယ်
+
+Still simple, stateless — ဒါပေမယ့် credential-at-rest encryption + expiry နဲ့ hardened ဖြစ်သွားတယ်။
 
 ---
 
@@ -784,16 +799,15 @@ Config file ကို ဖျက်လို့မရတဲ့အကြောင�
 Job တွေက background မှာပြေးရင် test က job ပြီးတာကိုစောင့်ရမယ်။
 `sync` ဆိုရင် job က synchronous ပြေးတယ် — test ထဲမှာ result ကိုချက်ချင်းစစ်လို့ရတယ်။
 
-### Root-level PHP Scripts
+### Manual debugging (root scripts အစား)
 
-`diagnostic.php`, `test_ask.php`, `bulk_fix_vectors.php` — ဒါတွေက test suite မဟုတ်ဘူး၊ **ad-hoc debugging scripts** တွေပဲ။
+အရင်က root မှာရှိခဲ့တဲ့ `diagnostic.php`, `test_ask.php`, `bulk_fix_vectors.php` စတဲ့ ad-hoc scripts တွေကို ဖျက်လိုက်ပြီ (ဖျက်ထားတဲ့ private method တွေကို ခေါ်နေလို့ ပျက်နေခဲ့တယ်)။ အစားထိုးသုံးရန် —
 
-| | tests/ (Pest) | Root scripts |
-|---|---|---|
-| **Run ပုံ** | `php artisan test` | `php script.php` |
-| **DB** | SQLite `:memory:` | Real PostgreSQL |
-| **Mocking** | Yes (services တွေကို mock) | No (real API calls) |
-| **ဘာအတွက်လဲ** | Automated CI + regression | Manual debugging, one-off ops |
+| လုပ်ချင်တာ | သုံးရမယ့်ဟာ |
+|---|---|
+| Vector ပြန်ထုတ် / ပျောက်နေတာ ဖြည့် | `php artisan rag:reembed --document={ulid}` / `--missing` (`--dry-run` နဲ့ အရင်ကြည့်) |
+| Filter ဘာထွက်လဲ စစ် | `php artisan tinker` → `app(Modules\ChatModule\Services\Pipeline\FilterExtractor::class)->extract('...')` |
+| မေးခွန်းတစ်ခု end-to-end စမ်း | `php artisan tinker` → `app(Modules\ChatModule\Contracts\RAGPipelineServiceInterface::class)->ask('...', ['user_id' => '...'])` |
 
 ---
 
@@ -822,6 +836,13 @@ Job တွေက background မှာပြေးရင် test က job ပြ�
 | **Follow-up inheritance** | Natural conversation flow without repeating context |
 | **Burmese language support** | Myanmar digit conversion, Burmese stopwords, month names |
 | **FTS non-ASCII stripping** | English parser can't handle Burmese; vector search handles non-English |
+| **Query rewriting (SIMPLE/COMPLEX)** | Complexity-scored adaptive rewrite: rule-based or LLM reformulation |
+| **Question classifier** | Lexical type detection (comparative/analytical/factual) routes search strategy |
+| **Boolean FTS (`& \| !`)** | Exact multi-term matching without tsquery syntax errors |
+| **Term alias expansion** | Burmese↔English vocabulary map widens recall before search |
+| **Semantic cache** | Reuse answers for semantically-equivalent questions; DB-backed, version-aware |
+| **Cross-encoder reranker (optional)** | Higher-quality final ordering than bi-encoder cosine scores alone |
+| **Tenant isolation** | Users only retrieve their own documents (ISO 27002:8.3 / 27701) |
 
 ---
 
@@ -832,10 +853,10 @@ Job တွေက background မှာပြေးရင် test က job ပြ�
 Possible reasons:
 1. **Similarity threshold too high** → Check `config('rag.search.similarity_threshold')`
 2. **Wrong embedding model** → Document က model A, question က model B (dimension mismatch)
-3. **Date filter too narrow** → Check `extractFiltersFromQuestion()` output
-4. **FTS query empty** → `refineFtsQuery()` က fallback "report" ပဲကျန်တယ်
+3. **Date filter too narrow** → Check `FilterExtractor::extract()` output
+4. **FTS query empty** → `FtsQueryBuilder::refine()` / `constrainBoolean()` က term မကျန်တော့ဘူး (vector search ပဲ အလုပ်လုပ်တယ်)
 
-Debug: `php diagnostic.php` — ဒီ script က step-by-step debug လုပ်ပေးတယ်
+Debug: `storage/logs/rag.log` ထဲက `RAG pipeline:` log (search/LLM time, chunks_found) ကိုကြည့်ပါ
 
 ### "Response cut off mid-sentence"
 
@@ -846,12 +867,220 @@ Fix: `.env` မှာ `RAG_LLM_MAX_TOKENS=8192` ထည့် (သို့) AiMo
 ### "Follow-up doesn't work"
 
 1. Check if previous answer was a refusal (date inheritance skips on refusal)
-2. Check if `extractFiltersFromQuestion()` extracts the new date correctly
-3. Run `php test_extraction.php` to see what filters are extracted
+2. Check if `FilterExtractor::extract()` extracts the new date correctly
+3. Follow-up inheritance က `FilterResolver` ထဲမှာရှိတယ် — tinker နဲ့ `extract()` output ကို စစ်ပါ
 
 ---
 
-## 14. How to Extend This Project
+## 14. Default RAG Flow — တစ်ချက်ချင်း Deep Dive
+
+ဒါက default (base) RAG pipeline ကို ထပ်ထည့်ထားတဲ့ improvement တွေနဲ့အတူ ခေတ်မီ flow အပြည့်အစုံပါ။ သော့ချက် — base flow က **5 steps ပဲ** (`ပြင်ဆင် → embed → search → LLM → save`), systematic improvement တွေက အဲဒါနဲ့အတူ ထပ်နေတာပါ။
+
+```
+POST /api/chat                                   ChatController
+   question, document_filter{...}, llm_model_id, think
+   │  validate → throttle(20/min) → document_filter ကို whitelist + owner-scope
+   ▼
+┌─ buildPipelineContext()                              RAGPipelineService
+│  1. normalizeQuestion()          trim / truncate / "2026-04"→"2026-April"
+│  2. QuestionClassifier           comparative / analytical / factual / generic
+│  3. resolveSession()             resume or create; expiry + ownership check
+│  4. extractFilters()             user / project / date / quarter / Burmese month
+│  5. queryRewriter.rewrite()      complexity score → SIMPLE / COMPLEX
+│  6. termAlias.expandText/+Fts()  မြန်မာ ↔ အင်္ဂလိပ် alias ချဲ့
+│  7. ftsQueryBuilder.refine()     content words ချည်းထုတ် (strip stopwords/non-ASCII)
+│  8. saveUserMessage()
+│  9. follow-up inheritance        မရှိခဲ့ရင် user/project/date + source-doc scope ဆက်ခံ
+│ 10. applyTenantIsolation()       ကိုယ့် document တွေထဲပဲ ရှာလို့ရအောင် ချုပ်
+│ 11. resolveLLM() + embedding model auto-select (filter နဲ့ကိုက်တာကိုယူ)
+│ 12. ▼
+├─ lookupSemanticCache() ──────── HIT → answer + sources ပြန်, retrieval/LLM ကျော်
+│                                MISS → ဆက်သွား
+│ 13. expandQuery()               analytical/comparative (သို့) enable ရင် LLM reformulations
+│ 14. ▼
+├─ runSearchQueries()
+│    a. embed(each query)
+│    b. searchHybrid()  vector cosine + FTS ── RRF(fusion)   (factual → hybrid အတင်းသုံး)
+│       သို့ search()    pure vector (search_mode='vector' ဆို)
+│    c. dedupe by chunk_id
+│    d. applyDynamicThreshold()  elbow method
+│    e. reranker.rerank()        optional cross-encoder (bge-reranker)
+│    f. applyMMR()               diversity selection (topK)
+│ 15. assessConfidence + hasOldDocuments + buildSystemPrompt
+│ 16. reorderForLostInTheMiddle()    top chunk ရှေ့, lowest နောက်
+│ 17. history (last 4) + "Search Scope" မှတ်စု prepend
+│ 18. ▼
+├─ llm.complete() / completeStream()            LLMService
+│    temperature, max_tokens, num_ctx (max_context_tokens), think
+│ 19. finish_reason='length' → truncation မှတ်ချက် ထပ်ပေါင်း
+│ 20. saveAssistantMessage(sources JSONB)         SessionManager
+│ 21. writeSemanticCache()                        SemanticCacheService
+│ 22. Log (rag channel): timing, tokens
+└─ response (session_id + message)  /  SSE events
+```
+
+**Config priority တန်ဖိုး (မမေ့ဖို့):** ဒီ flow တစ်လျှောက် scalar settings (topK, threshold, search mode, MMR, max tokens…) တွေက `config/rag.php` → AiModel DB `settings` JSONB → request params ဆိုပြီး **နောက်ပိုင်းက ရှေ့ကို override** လုပ်တယ်။ အဆုံးစွန်ဆုံးမှာ:
+> `RAGPipelineService` constructor မှာ `$this->embedder` ကို `ProviderFactory::createEmbeddingService()`, `$this->llm` ကို `createLLMProvider()` နဲ့ override လုပ်တယ် — constructor ထဲ inject ထားတဲ့ service တွေက fallback ပဲ။ AiModel ရဲ့ `temperature`, `max_context_tokens`, `timeout`, `model`, `base_url`, `api_key` တွေက အမြဲအနိုင်ရတယ်။
+
+---
+
+## 15. Improvement Layers — တစ်ခုချင်းစီ အသေးစိတ် (Deep Dive)
+
+### 15.1 Query Rewriting — `Pipeline/QueryRewriterService.php`
+
+**ပြဿနာ:** Raw question ကို တန်းထည့်ရင် "မနေ့က ရာသီဥတုရော" ကို vector/FTS က မှားတွေ့တယ်။
+
+**အဖြေ:** `rewrite()` က 3-stage လုပ်:
+1. **Complexity score** (`calculateComplexity`): word count (0-3) + negation ရှိတိုင်း +2 (`မဟုတ်/မ/မရှိ`) + logical operator (`နဲ့/သို့/ဒါပေမယ့်`) + ambiguous term (`အဲဒါ/ဒါ/ဟို/ဘယ်လို`) +2
+2. **SIMPLE (score < 5):** rule-based — `resolveTimeReferences()` (မနေ့က → 2026-05-19) → `fixSpelling()` (ရသဥတု→ရာသီဥတု → static `SPELLING_MAP`) → `expandSynonyms()` (embedding text မှာ "ရာသီဥတု မိုးလေဝသ" နှစ်မျိုးလုံးထည့်)
+3. **COMPLEX (score ≥ 5):** အပေါ်က အကုန်လုပ်ပြီး **နောက်ထပ် LLM reformulation ပါ** — `expandQuery()` (section 15.9)
+
+Result က `RewrittenQuery{embeddingText, ftsQuery, mode, score}` — streaming မှာ `rewrite_info` SSE event နဲ့ score/mode ပို့ပေးတယ်။
+
+### 15.2 Boolean FTS Query — PostgreSQL `to_tsquery`
+
+`buildBooleanFtsQuery()` က question ကို boolean expression အဖြစ်ပြောင်းတယ်:
+- Adjacent ASCII words → `&` (AND) — "Q3 revenue" → `Q3 & revenue`
+- Synonym ရှိတဲ့ word → `(word | synonym)` (OR group)
+- Negation (`မဟုတ်`) → အရှေ့ term ကို `!` (NOT) ပြောင်း
+- **ဖျက်ထုတ်တာတွေ:** non-ASCII tokens (`to_tsvector('english')` က non-English ကို index မလုပ်လို့), hyphenated dates (`2026-06-09` — date filtering က SQL `report_date` filter နဲ့ပြီးသားလို့), bare numbers, pure stopwords (မြန်မာ: တယ်/သည်/မှာ/အတွက်…)
+
+`PgvectorDriver` က `boolean_fts_query` filter ရှိရင် `to_tsquery('english', ...)` သုံးပြီး မရှိရင် `plainto_tsquery` fallback။ `sanitiseBooleanFts()` က syntax error မဖြစ်အောင် နောက်တစ်ခါ ဆန်းစစ်တယ်။
+
+### 15.3 Question Classifier — `QuestionClassifier.php`
+
+**ဘာလို့:** မေးခွန်းအမျိုးအစားနဲ့ search strategy ကိုတွဲဖို့၊ LLM တစ်ခါမှမခေါ်ဘဲ lexical pattern နဲ့ခွဲတယ်။
+
+- `comparative` (compare/vs/ကွဲပြား/နှိုင်း) → recall boost
+- `analytical` (trend/analy/explain/why/ဘာကြောင့်) → recall boost + multi-query expansion
+- `factual` (who/what/when/how much/ဘယ်သူ/ဘယ်လောက်) → **keyword_boost** — search mode ကို hybrid အတင်းပြောင်း (exact names/numbers တွေက FTS နဲ့ကိုက်တာ ပိုမှန်လို့, `runSearchQueries` မှာ အသက်သွင်း)
+- `generic` → default
+
+### 15.4 Hybrid Search + Adaptive Mode
+
+- Default mode `hybrid`: vector (cosine) + FTS ပြိုင်ပြေး → `fuseResults()` RRF (`score = 1/(60+vectorRank) + 1/(60+ftsRank)`) နဲ့ပေါင်း
+- `factual` ဖြစ်ရင် mode ဘာပဲထားထား hybrid ကိုပဲသုံး (section 15.3)
+- Query အနည်းမျိုးစုံရှိရင် (`expandQuery`) တစ်ခုချင်းစီ embed + search → `chunk_id` နဲ့ dedupe → score sort
+
+### 15.5 Dynamic Threshold (Elbow Method) — `ChunkProcessor::applyDynamicThreshold`
+
+Fixed cutoff (0.65) ရဲ့အဆင်မပြေတာကို အဆင့် 4 နဲ့ဖြေရှင်း:
+1. Scores sort → ဆက်တိုက် score တွေကြားက **အကြီးဆုံး gap** ကိုရှာ
+2. Gap က `gap_significance` (0.15) ကျော်ရင် အဲဒီနေရာမှာဖြတ်
+3. Gap မရှိရင် `max(base, top_score × 0.85)` — `score_scaling` (0.85)
+4. Filter ရှိနေရင် (user/project/date) base threshold ကို 0.45 (`filtered_base`) လျှော့ပေး — narrow search ဖြစ်လို့
+5. ကျန်တာ အကုန်ပါသွားရင် safety valve: top score ≥ 0.25 (`fallback_min`) ဆို အကောင်းဆုံး 1 chunk ပြန်ထား
+
+vector store ကို floor `min_initial_threshold` (0.20) နဲ့ခေါ်ပြီး elbow က အပေါ်မှာ cutoff ရှာတယ် — floor မမြင့်ရင် elbow ကိုတွေ့မှာမဟုတ်ဘူး။
+
+### 15.6 MMR Diversity — `ChunkProcessor::applyMMR`
+
+```php
+MMR = λ×relevance − (1−λ)×(same-document penalty)
+// λ = 0.7 (mmr_lambda), penalty = contentJaccard() (ရလဒ်နဲ့ထပ်နေလေလေ ပြစ်ဒဏ်များလေလေ)
+```
+တူညီတဲ့အကြောင်းအရာ ၃ ခုထည့်မယ့်အစား မတူတဲ့ ၃ ခုထည့်ဖို့ — context window အသုံးချမှု ပိုထိရောက်တယ်။ ပထမ chunk က အမြဲတမ်း highest-scoring။
+
+### 15.7 Cross-Encoder Reranker — `RerankerService.php` (optional, default off)
+
+- Bi-encoder (retrieval) က question နဲ့ chunk ကို သပ်သပ်ထည့်ပြီး cosine တွက်တယ် — order က အကြမ်း။ Cross-encoder က question+chunk တွဲထည့်ပြီး **တစ်ခါတည်း relevance score** ထုတ်တယ် — အရည်အသွေးပိုမြင့်
+- Ollama-compatible `/api/rerank` (bge-reranker:latest), `candidate_k=8` → rerank → ကျန် `final_k=5`
+- Fail ဖြစ်ရင် original order ကိုပဲပြန် (graceful degradation — pipeline မပျက်ဘူး)
+- Enable: `RAG_RERANKER_ENABLED=true`
+
+### 15.8 Semantic Cache — `SemanticCacheService.php`
+
+**ပုံမှန် exact cache (MD5 embedding cache) နဲ့ကွာခြားချက်:** semantic cache က **အဓိပ္ပါယ်တူတဲ့** question ကိုပါ hit တယ် ("Q3 revenue?", "သုံးလပတ် ဝင်ငွေ?", "third-quarter earnings?" — exact text တူစရာမလို)။
+
+**Hit detection:** incoming question ကို embed → `rag_answer_caches` table ထဲက row တွေနဲ့ cosine similarity → `semantic_threshold` (0.95) ကျော်ရင် hit။
+
+**Scope key ၃ ခု (cross-tenant/cross-model leak မဖြစ်ဖို့):**
+1. `version` — `KnowledgeVersion::current()` — document lifecycle (upload/delete/update/re-embed) တိုင်း ပြောင်းတယ် → corpus ပြောင်းတာနဲ့ cache တစ်ပြားလုံး invalidate
+2. `user_id` — user တစ်ယောက်ရဲ့ ရလဒ်ကို တစ်ခြားသူ မမြင်ရ
+3. `model_hash` — `md5("model|temperature|max_tokens")` — LLM config ပြောင်းရင် namespace ပြောင်း
+
+**Fine-grained invalidation (Phase 2):** entry တစ်ခုစီမှာ `document_ids` + `doc_versions` snapshot ထည့်ထားတယ်။ Lookup မှာ `isStale()` က source document ပြောင်းထားလား စစ်ပြီး stale ဆို entry ကို ဖျက်တာမို့ corpus အကုန်မချဘဲ ပစ်မှတ်ထား ဖျက်လို့ရ။
+
+**ဘယ်အခါ cache မလုပ်သလဲ:** session မှာ history ရှိနေရင် (message_count > 1 — follow-up က history ပေါ်သက်ရောက်လို့) နဲ့ `cacheEnabled=false` ဆို။ Refusal response တွေကိုလည်း cache လုပ်တယ် (တူတူ refusal ပြန်မတွက်ရအောင်)။ TTL 7 ရက် (`ttl_days`) → prune။
+
+### 15.9 Query Expansion — `RAGPipelineService::expandQuery`
+
+- Enable (`RAG_QUERY_EXPANSION_ENABLED`) ရင် LLM ကို "ရလဒ်ပိုရအောင် ပုံစံအမျိုးမျိုးနဲ့ပြန်ရေး" → reformulation `num_queries` ခု → original ပါထည့်
+- **Adaptive boost:** question type က analytical/comparative ဖြစ်ရင် global toggle off ဖြစ်နေရင်တောင် auto-enable (recall အရေးကြီးလို့)
+- LLM fail ရင် original question တစ်ခုတည်းနဲ့ fallback
+
+### 15.10 Filter Extraction + Follow-up Inheritance — `Pipeline/FilterExtractor.php`
+
+- **Extract:** user names (users table, 5min cache) / project names (distinct project, 5min cache) / date patterns (YYYY-MM-DD, YYYY-MM, YYYY-MonthName, MonthName DD, Q1 2026, bare year) / Burmese month ရဲ့အမည် (ဇန်နဝါရီ…ဒီဇင်ဘာ) + Burmese digit normalization (၀-၉ → 0-9) + quarter
+- **Inheritance (follow-up):** လက်ရှိ question မှာ user/project မပါရင် အရင်မေးခွန်းကနေ ယူတယ်။ **Date ကိုတော့ အရင်အဖြေက refusal ဖြစ်ခဲ့ရင် inherit မလုပ်ဘူး** (user က "ဒါဆိုဘာရှိလဲ" ပြန်မေးလို့ရအောင်)။ အပြင် follow-up ဆို အရင်အဖြေမှာကိုးထားတဲ့ `document_ids` ကိုပါ scope အနေနဲ့ထည့်ပေးတယ် (citation scoping)
+- **Time reference:** `resolveTimeReferences()` က "ဒီနေ့/မနေ့/ဒီလ/ပြီးခဲ့တဲ့အပတ်" (မြန်မာ+အင်္ဂလိပ်) တွေကို literal date ပြောင်းတယ် — LLM က "ယနေ့" ဆိုတာ မှန်းစရာမလို
+
+### 15.11 Dynamic Embedding Model Selection
+
+Filter (user/project/date) နဲ့ target documents တွေက ဘယ် embedding model နဲ့ embed လုပ်ထားလဲ (`distinct embedding_model_id`) ကြည့်ပြီး:
+- တစ်မျိုးတည်းပဲရှိရင် → question ကိုလည်း အဲဒီ model နဲ့ embed (`ProviderFactory` → `new EmbeddingService`) — **dimension mismatch ကာကွယ်**
+- ကွဲနေရင် / မသိနိုင်ရင် → active default model
+
+### 15.12 Streaming SSE Lifecycle — `RAGPipelineService::askStream()`
+
+question ထဲ Burmese (`\x{1000}-\x{109F}`) ပါရင် status messages တွေက မြန်မာလိုပြ။ Event sequence:
+
+| Event | ဘယ်အချိန် | Payload |
+|---|---|---|
+| `rewrite_info` | query rewrite ပြီး | score, mode, embedding_text, fts_query, question_type |
+| `status (embedding)` | embed လုပ်နေ | မြန်မာ/English message |
+| `status (searching)` | search လုပ်နေ | — |
+| `cached` | semantic cache hit | sources |
+| `sources` | chunks တွေ့ | document citations |
+| `status (generating)` | LLM ခေါ်နေ | — |
+| `chunk` | token တစ်ပိုင်းစီ | content |
+| `done` | ပြီးဆုံး | session_id, times, tokens_used, cached |
+
+UI က typing effect + stage indicators ပြနိုင်တယ်။
+
+### 15.13 Answer Quality Guardrails
+
+- **`assessConfidence`:** ≥3 chunks & avg ≥0.60 → high; else low → system prompt မှာ "Based on limited available information…" note
+- **`hasOldDocuments`:** source document > 1 နှစ် → "Some sources are over a year old" rule
+- **`reorderForLostInTheMiddle`:** best-first, worst-last — LLM တွေက context အလယ်ကို မေ့တတ်တာကို balance လုပ်တယ်
+- **Search Scope note:** applied filters (e.g. "date: 2026-05-15") ကို context ရှေ့ထည့်တယ် — LLM က "yesterday" လိုအနက် ကိုယ့်ဟာကိုယ် မှန်းစရာမလို
+- **History window (4):** အရင် message အနည်းငယ်ကို prompt ထဲထည့်
+- **`finish_reason='length'`:** token limit ကျော်ရင် "ဖြတ်တောက်ထားပါသည်" မှတ်ချက်
+- **num_ctx:** `buildLlmOptions()` က active LLM ရဲ့ `max_context_tokens` ကို Ollama `num_ctx` အနေနဲ့ ပို့တယ်
+
+### 15.14 Tenant Isolation — `RAGPipelineService::applyTenantIsolation()`
+
+Request filters တွေကို **defense-in-depth** အနေနဲ့ pipeline ထဲမှာ တစ်ခါထပ် ချုပ်တယ် (Controller မှာက document_filter ကို whitelist + owner-scope လုပ်ပြီးသား):
+- user ၀င်ထားရင် `user_ids` ကို `[ကိုယ့် user id]` ထဲပဲထား
+- `document_ids` ကို ကိုယ်ပိုင် documents အထိပဲ ဖြတ်
+- `RAG_TENANT_ISOLATION=false` ထားမှသာ org-wide corpus ဖြစ်
+
+(User ဘယ်သူမဆို "John" လို့ထည့်မေးရာကနေ user_ids filter ပါလာရင်တောင် John ရဲ့ docs ကို မရနိုင်ဘူး — ကိုယ့် docs ပဲရတယ်)
+
+---
+
+## 16. Improvement Map — Feature → File → Why
+
+| Improvement | File | Trigger |
+|---|---|---|
+| Query rewriting | `ChatModule/Services/Pipeline/QueryRewriterService.php` | complexity ≥ 5 → LLM expansion |
+| Question classifier | `ChatModule/Services/QuestionClassifier.php` | lexical keywords → routing |
+| Boolean FTS | `QueryRewriterService::buildBooleanFtsQuery` + `PgvectorDriver::searchHybrid` | rewritten ftsQuery ရှိရင် `to_tsquery` |
+| Hybrid (RRF) | `VectorStoreModule/Services/PgvectorDriver.php` | mode='hybrid' |
+| Elbow threshold | `ChatModule/Services/Pipeline/ChunkProcessor.php` | score gap / scaling |
+| MMR | `ChunkProcessor::applyMMR` | `RAG_SEARCH_MMR_ENABLED=true` |
+| Cross-encoder rerank | `ChatModule/Services/RerankerService.php` | `RAG_RERANKER_ENABLED=true` |
+| Semantic cache | `ChatModule/Services/SemanticCacheService.php` (+ `rag_answer_caches` table) | cosine ≥ 0.95, history မရှိ |
+| Query expansion | `RAGPipelineService::expandQuery` | enable သို့ analytical/comparative |
+| Filter extraction | `ChatModule/Services/Pipeline/FilterExtractor.php` | NL → user/project/date |
+| Follow-up inherit | `RAGPipelineService::buildPipelineContext` | no user/project in current question |
+| Model auto-select | `buildPipelineContext` (lines ~880-917) | distinct filter target model = 1 |
+| SSE streaming | `RAGPipelineService::askStream` | `stream=true` |
+| Tenant isolation | `RAGPipelineService::applyTenantIsolation` | `RAG_TENANT_ISOLATION=true` |
+
+---
+
+## 17. How to Extend This Project
 
 ### Add a new embedding/LLM provider (e.g., Mistral)
 
