@@ -97,10 +97,15 @@ function makePipeline(
         return $msg;
     });
 
+    // Cache miss by default; tests that need a hit override get().
+    $semanticCache = mock(SemanticCacheService::class);
+    $semanticCache->shouldReceive('get')->andReturnNull()->byDefault();
+    $semanticCache->shouldReceive('put')->byDefault();
+
     $reranker = mock(RerankerService::class);
     $reranker->shouldReceive('rerank')->andReturnArg(1);
 
-    return new RAGPipelineService($embedder, $vectorStore, $llm, $providerFactory, $termAliasService, $filterExtractor, $ftsQueryBuilder, $queryRewriter, $chunkProcessor, $responseBuilder, $sessionManager, mock(SemanticCacheService::class), new QuestionClassifier, $reranker, new PipelineSettings(...$config));
+    return new RAGPipelineService($embedder, $vectorStore, $llm, $providerFactory, $termAliasService, $filterExtractor, $ftsQueryBuilder, $queryRewriter, $chunkProcessor, $responseBuilder, $sessionManager, $semanticCache, new QuestionClassifier, $reranker, new PipelineSettings(...$config));
 }
 
 /**

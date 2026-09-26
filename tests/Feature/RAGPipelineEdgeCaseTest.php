@@ -99,6 +99,11 @@ function makeEdgePipeline(
         return $msg;
     });
 
+    // Cache miss by default; tests that need a hit override get().
+    $semanticCache = mock(SemanticCacheService::class);
+    $semanticCache->shouldReceive('get')->andReturnNull()->byDefault();
+    $semanticCache->shouldReceive('put')->byDefault();
+
     $reranker = mock(RerankerService::class);
     $reranker->shouldReceive('rerank')->andReturnArg(1);
 
@@ -126,7 +131,7 @@ function makeEdgePipeline(
         $chunkProcessor,
         $responseBuilder,
         $sessionManager,
-        mock(SemanticCacheService::class),
+        $semanticCache,
         new QuestionClassifier,
         $reranker,
         new PipelineSettings(...array_merge($defaults, $config)),
