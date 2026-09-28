@@ -2,9 +2,10 @@
 
 // Router for `php -S` used by provider HTTP tests. The first path segment
 // picks the scenario:
-//   /fail/...   → 401
-//   /flaky/{id} → 500 on the first request for {id}, then a normal response
-//   /ok/...     → a normal response for the endpoint that was called
+//   /fail/...    → 401
+//   /flaky/{id}  → 500 on the first request for {id}, then a normal response
+//   /hang/...    → streams a first delta then stalls forever (never sends done)
+//   /ok/...      → a normal response for the endpoint that was called
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 $body = json_decode((string) file_get_contents('php://input'), true) ?? [];
 
@@ -13,6 +14,14 @@ if (str_starts_with($path, '/fail')) {
     echo '{"error":"invalid api key"}';
 
     return;
+}
+
+if (str_starts_with($path, '/hang')) {
+    header('Content-Type: text/event-stream');
+    echo 'data: '.json_encode(['choices' => [['delta' => ['content' => 'Hello']]]])."\n\n";
+    while (true) {
+        usleep(100_000);
+    }
 }
 
 if (preg_match('#^/flaky/([\w-]+)#', $path, $m)) {

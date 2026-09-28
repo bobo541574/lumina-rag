@@ -48,3 +48,20 @@ test('stream_connection_failure_throws', function (): void {
     expect(fn () => iterator_to_array($provider->completeStream('s', 'u')))
         ->toThrow(RuntimeException::class, 'DeepSeek streaming request failed');
 });
+
+test('stream_that_never_terminates_throws_a_catchable_timeout', function (): void {
+    $provider = new DeepSeekLLMProvider('key', 'deepseek-chat', 1, $GLOBALS['llmStreamBase'].'/hang');
+
+    $start = microtime(true);
+    expect(fn () => iterator_to_array($provider->completeStream('s', 'u'), false))
+        ->toThrow(RuntimeException::class);
+    $caught = null;
+    try {
+        iterator_to_array($provider->completeStream('s', 'u'), false);
+    } catch (RuntimeException $e) {
+        $caught = $e->getMessage();
+    }
+    expect(str_contains(strtolower($caught), 'timeout'))->toBeTrue()
+        ->and($caught)->not->toContain('Fatal error');
+    expect(microtime(true) - $start)->toBeLessThan(10.0);
+});

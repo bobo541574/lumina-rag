@@ -36,6 +36,19 @@ trait StreamsHttpLines
         $errorBody = '';
         $httpOk = null;
 
+        // Lift PHP's execution budget so the configured provider timeout, not
+        // PHP's max_execution_time watchdog, governs the stream. Without this,
+        // a long-running stream on a model with timeout >= max_execution_time is
+        // hard-killed by an uncatchable FatalError mid-transfer instead of
+        // failing cleanly. 0 means unlimited (CLI) — leave it alone.
+        $currentLimit = (int) ini_get('max_execution_time');
+        $neededLimit = $timeout + 60;
+        if ($currentLimit !== 0 && $currentLimit < $neededLimit) {
+            set_time_limit($neededLimit);
+        }
+
+        $deadline = hrtime(true) + $timeout * 1_000_000_000;
+
         $consume = function (string $line) use (&$queue, $parseLine): void {
             $line = trim($line);
             if ($line === '') {
@@ -85,6 +98,7 @@ trait StreamsHttpLines
         curl_multi_add_handle($mh, $ch);
 
         $running = null;
+        $timedOut = false;
         do {
             $status = curl_multi_exec($mh, $running);
             if ($status !== CURLM_OK) {
@@ -96,7 +110,12 @@ trait StreamsHttpLines
             }
 
             if ($running > 0 && $queue === []) {
-                usleep(5_000); // 5ms
+                if (hrtime(true) >= $deadline) {
+                    $timedOut = true;
+
+                    break;
+                }
+                curl_multi_select($mh, 0.02);
             }
         } while ($running > 0);
 
@@ -119,6 +138,9 @@ trait StreamsHttpLines
         curl_multi_remove_handle($mh, $ch);
         curl_multi_close($mh);
 
+        if ($timedOut) {
+            throw new \RuntimeException("{$label} streaming request timed out after {$timeout}s (no completion received)");
+        }
         if ($httpCode !== 0 && $httpCode !== 200) {
             throw new \RuntimeException("{$label} streaming request failed (HTTP {$httpCode}): ".mb_substr($errorBody, 0, 500));
         }

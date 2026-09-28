@@ -95,7 +95,7 @@ class OllamaLLMProvider implements LLMProviderInterface
 
         if (isset($options['think'])) {
             $payload['think'] = (bool) $options['think'];
-        } elseif ($this->isQwenModel()) {
+        } elseif ($this->isReasoningModel()) {
             $payload['think'] = false;
         }
 
@@ -152,7 +152,7 @@ class OllamaLLMProvider implements LLMProviderInterface
 
         if (isset($options['think'])) {
             $payload['think'] = (bool) $options['think'];
-        } elseif ($this->isQwenModel()) {
+        } elseif ($this->isReasoningModel()) {
             $payload['think'] = false;
         }
 
@@ -197,18 +197,21 @@ class OllamaLLMProvider implements LLMProviderInterface
     }
 
     /**
-     * Check whether the loaded model is a Qwen variant
+     * Check whether the loaded model is a reasoning (chain-of-thought) variant
      *
-     * Qwen models (qwen3.5, qwen2.5, sorc/qwen*, etc.) ship with chain-of-thought
-     * reasoning enabled by default. This detection is used to automatically set
-     * think=false in the Ollama payload unless explicitly overridden via options.
+     * Reasoning models (Qwen, granite, sorc/qwen*, etc.) emit a `thinking`
+     * preamble before their answer by default. The StreamsHttpLines parser
+     * only reads `message.content`, so letting them think on stream yields
+     * nothing for minutes and then an empty answer. This detection is used to
+     * automatically set think=false in the Ollama payload unless explicitly
+     * overridden via options.
      *
-     * @return bool True if the model name contains "qwen" (case-insensitive).
-     *              Example: true for "qwen3.5:9b" or "sorc/qwen3.5-claude-4.6-opus:9b"
+     * @return bool True if the model name contains "qwen" or "granite" (case-insensitive).
+     *              Example: true for "qwen3.5:9b", "granite4.2:8b" or "sorc/qwen3.5-claude-4.6-opus:9b"
      */
-    private function isQwenModel(): bool
+    private function isReasoningModel(): bool
     {
-        return stripos($this->model, 'qwen') !== false;
+        return stripos($this->model, 'qwen') !== false || stripos($this->model, 'granite') !== false;
     }
 
     /**

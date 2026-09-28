@@ -29,6 +29,18 @@ final class HttpJsonClient
     {
         $backoffMs = (array) config('rag.http.retry_backoff_ms', [1000, 5000]);
         $maxAttempts = count($backoffMs) + 1;
+
+        // Lift PHP's execution budget so the configured provider timeout, not
+        // PHP's max_execution_time watchdog, governs the request. Without this,
+        // a slow call on a model with timeout >= max_execution_time is killed by
+        // an uncatchable FatalError instead of failing cleanly. Total worst case
+        // is attempts * timeout plus backoff sleeps. 0 means unlimited (CLI).
+        $currentLimit = (int) ini_get('max_execution_time');
+        $neededLimit = $maxAttempts * $timeout + (int) array_sum($backoffMs) / 1000 + 60;
+        if ($currentLimit !== 0 && $currentLimit < $neededLimit) {
+            set_time_limit((int) $neededLimit);
+        }
+
         $headers[] = 'Content-Type: application/json';
         $body = json_encode($payload, JSON_THROW_ON_ERROR);
 
